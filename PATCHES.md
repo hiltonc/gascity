@@ -14,7 +14,6 @@ One branch per upstream release. `high/v1.4.1` is branched from `v1.4.1`.
 
 | Commit | Upstream | What it fixes |
 | --- | --- | --- |
-| `ecf762c` | PR #4721, issue #4703 | `GET /v0/city/{city}/agents` reports every bounded-pool worker as `state=stopped, running=false` while it is executing. The handler reconstructs a deterministic tmux name from the agent slot and probes it, but the runtime names ephemeral pool sessions after the session id and without the rig prefix, so the probe never matches. Everything gated on `running` is skipped too: `Session`, `LastActivity`, `Attached`, peek, `enrichSessionMeta`. The fix indexes live sessions by qualified identity and consults that index when the probe misses. |
 | local | none | `mise.toml` pinning go 1.26.5, which `go.mod` requires and upstream does not pin. Build-environment only, no product change. |
 | `850d560` | none yet, OURS | `OutputTurn` carried only `{role, text, timestamp}`. The agent output endpoints accept `before`/`after` entry-ID cursors and report `has_older_messages`, so a client could see that older messages exist and have nothing to send as a cursor; an invented ID answers 500. Adds the entry ID to every turn, on the paged read, the live stream, and the history path. |
 | `3d55dc0` | none yet, OURS | A `tool_use` block rendered as its bare name, so a transcript read as `[Bash]` then a result: answers to questions that are never shown. Over one agent's 733 turns, 225 tool labels against 225 results. The input was already parsed and only the name serialized; appends the field a human reads first, flattened to one line and bounded at 500 like `tool_result` beside it. |
@@ -36,9 +35,42 @@ hand-edited schema would make the response invalid against its own spec. Run:
     go run ./cmd/genspec
     PATH="$(go env GOPATH)/bin:$PATH" go generate ./internal/api/genclient
 
-Upstream PR #4721 was open and `CONFLICTING` against `main` as of 2026-09-09,
-last touched 2026-08-14, with no review. It cherry-picks cleanly onto `v1.4.1`,
-because the conflict is with main having moved on rather than with the release.
+## Removed: the agent-liveness fix (PR #4721, issue #4703)
+
+Carried from 2026-09-09 and dropped 2026-09-10, deliberately, not because it was
+wrong. `GET /v0/city/{city}/agents` still reports every running agent as
+`state=stopped, running=false, session=null` — verified live that day: 0 of 14
+running while a reviewer session was executing.
+
+We dropped it because our reason for carrying it went away. Dispatch does not
+read the roster's liveness at all: `Core/GasCityRepository/Sources/AgentRoster.swift`
+derives liveness by joining the sessions list itself, and says so in a comment at
+the top of the file. That workaround shipped in PR #31 and was extended to
+Overview in PR #34, which fixed a real `0/14 Agents` on a busy city. So the
+server-side fix would change nothing the app shows.
+
+What still pays the cost: the built-in dashboard SPA, which reads `/agents` in
+`App.tsx`, `CityBootstrap.tsx` and `attention/registry.ts`, so it shows an idle
+city and its attention logic sees nothing to attend to. That was already true —
+the patch had never actually run in the supervisor (see below) — so nothing
+regressed by removing it.
+
+To bring it back: `git cherry-pick ecf762c76`, still on
+`backup/high-v1.4.1-with-liveness`.
+
+## A patch is not live until the supervisor restarts
+
+`make install` writes `~/go/bin/gc` and symlinks `~/.local/bin/gc`, which is
+ahead of brew on PATH, so a shell's `gc` is patched immediately. The long-lived
+`gc supervisor` process keeps executing whatever binary launched it. On
+2026-09-10 that process had been up 2d14h and was still `/opt/homebrew/bin/gc`,
+so the liveness fix installed on 2026-09-09 had never once run.
+
+Check the API, not the filesystem:
+
+    curl -s "http://127.0.0.1:8372/v0/city/<city>/agent/<agent>/output?tail=1"
+
+Installing is safe at any time; restarting drops whatever workflow is mid-flight.
 
 ## Rebasing onto a new release
 
