@@ -6,11 +6,12 @@ ours to maintain, and every patch is meant to disappear when upstream merges it.
 
 ## Branch shape
 
-    high/v<version>     branched from tag v<version>, patches on top, newest last
+    patches/on-v<version>     branched from tag v<version>, patches on top, newest last
 
-One branch per upstream release. `high/v1.4.1` is branched from `v1.4.1`.
+One branch per upstream release. `patches/on-v1.4.1` is branched from `v1.4.1`. The name carries the BASE TAG, not
+what the build calls itself, because the rebase recipe below is read straight off it.
 
-## Patches on high/v1.4.1
+## Patches on patches/on-v1.4.1
 
 | Commit | Upstream | What it fixes |
 | --- | --- | --- |
@@ -56,7 +57,39 @@ the patch had never actually run in the supervisor (see below) — so nothing
 regressed by removing it.
 
 To bring it back: `git cherry-pick ecf762c76`, still on
-`backup/high-v1.4.1-with-liveness`.
+`backup/on-v1.4.1-with-liveness`.
+
+## `gc version` on this branch lies, and says 1.4.2
+
+A build of this branch self-reports **1.4.2**, which is not a release: upstream's
+latest tag is v1.4.1 and there is no v1.4.2 anywhere. The binary is honest; the
+version string is not.
+
+The chain, worth knowing before anyone treats it as evidence of a bad build:
+
+1. The Makefile stamps the version from `git describe --tags --exact-match`,
+   which fails on this branch (we are five commits past the tag), so it falls
+   back to `-X main.version=dev`. Correct so far.
+2. `cmd/gc/cmd_version.go` then treats `dev` as "unknown" and falls back to Go's
+   build info: `info.Main.Version`.
+3. Go stamps the main module with a **pseudo-version**, which by convention names
+   the NEXT patch after the last tag:
+   `v1.4.2-0.20260910144616-1a99c077eb81`.
+4. `normalizeVersion` strips the pseudo-version suffix with
+   `^(.*)-0\.\d{14}-[0-9a-f]{12,}$`, leaving a bare `1.4.2`.
+
+So a pseudo-version meaning "somewhere after v1.4.1" is rewritten into a claim to
+be a release that does not exist. `git describe --tags` says the honest thing:
+`v1.4.1-5-g38b02e173`.
+
+Verify provenance from the build info rather than the version string:
+
+    go version -m ~/go/bin/gc | grep -E 'mod|vcs.revision|vcs.modified'
+
+`vcs.revision` is the real commit and `vcs.modified=false` means a clean tree.
+This is an upstream bug in `normalizeVersion` and worth reporting: stripping the
+suffix is right for a real tagged build and wrong for a pseudo-version, which
+should keep enough of itself to stay distinguishable from a release.
 
 ## A patch is not live until the supervisor restarts
 
@@ -75,8 +108,8 @@ Installing is safe at any time; restarting drops whatever workflow is mid-flight
 ## Rebasing onto a new release
 
     git fetch origin --tags
-    git checkout -b high/v1.4.2 high/v1.4.1
-    git rebase --onto v1.4.2 v1.4.1 high/v1.4.2
+    git checkout -b patches/on-v1.4.2 patches/on-v1.4.1
+    git rebase --onto v1.4.2 v1.4.1 patches/on-v1.4.2
 
 A patch upstream has merged becomes an empty commit and drops out, which is the
 signal to delete its row from the table above. Resolve anything else by hand,
