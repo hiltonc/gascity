@@ -34,7 +34,7 @@ func entryToTurn(e *worker.TranscriptEntry) outputTurn {
 				}
 			case "tool_use":
 				if b.Name != "" {
-					parts = append(parts, "["+b.Name+"]")
+					parts = append(parts, "["+b.Name+"]"+toolInvocationSuffix(b.Input))
 				}
 			case "tool_result":
 				text := extractToolResultText(b.Content)
@@ -82,7 +82,7 @@ func historyEntryToTurn(entry worker.HistoryEntry) outputTurn {
 				}
 			case worker.BlockKindToolUse:
 				if block.Name != "" {
-					parts = append(parts, "["+block.Name+"]")
+					parts = append(parts, "["+block.Name+"]"+toolInvocationSuffix(block.Input))
 				}
 			case worker.BlockKindToolResult:
 				text := extractToolResultText(block.Content)
@@ -254,4 +254,50 @@ func historyRawEntryText(raw json.RawMessage) string {
 		return ""
 	}
 	return unwrapDoubleEncoded(entry.Message)
+}
+
+// toolInvocationText renders a tool_use block's input as a single readable
+// line. The label alone ("[Bash]") tells a reader that a tool ran but not what
+// it did, which leaves a transcript full of results to questions that are not
+// shown. Preference order is the field a human would read first.
+func toolInvocationText(input json.RawMessage) string {
+	if len(input) == 0 {
+		return ""
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(input, &fields); err != nil {
+		return ""
+	}
+	for _, key := range []string{"command", "file_path", "path", "pattern", "query", "url", "prompt", "description"} {
+		raw, ok := fields[key]
+		if !ok {
+			continue
+		}
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			continue
+		}
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// toolInvocationSuffix is toolInvocationText flattened to one line, bounded,
+// and prefixed with a space so it appends to a tool label. It returns the empty
+// string when there is nothing worth showing, so the label stands alone as before.
+func toolInvocationSuffix(input json.RawMessage) string {
+	text := toolInvocationText(input)
+	if text == "" {
+		return ""
+	}
+	// A turn is one line per part, so a multi-line command must not split into
+	// what would read as separate turns.
+	text = strings.Join(strings.Fields(text), " ")
+	const maxToolInvocation = 500
+	if len(text) > maxToolInvocation {
+		text = text[:maxToolInvocation] + "\u2026"
+	}
+	return " " + text
 }
