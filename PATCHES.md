@@ -117,9 +117,31 @@ ahead of brew on PATH, so a shell's `gc` is patched immediately. The long-lived
 2026-09-10 that process had been up 2d14h and was still `/opt/homebrew/bin/gc`,
 so the liveness fix installed on 2026-09-09 had never once run.
 
-Check the API, not the filesystem:
+There is a THIRD layer, and it is the one that will fool you. The supervisor runs
+as a launchd service whose plist HARDCODES the binary path. Ours said:
+
+    ProgramArguments = ["/opt/homebrew/bin/gc", "supervisor", "run"]
+
+launchd never consults PATH, so `gc supervisor stop && gc supervisor start`
+faithfully relaunches whatever the plist names. You get a genuine restart, a new
+PID, and the same stock binary. Point the service at the patched build:
+
+    cp ~/Library/LaunchAgents/com.gascity.supervisor.plist /tmp/plist.bak
+    gc supervisor install --force
+
+`gc supervisor install` resolves a STABLE path (it prefers `~/.local/bin/gc`,
+then `~/go/bin/gc`, whichever matches the running binary), so the plist does not
+end up pointing into a build directory. It refuses without `--force` when the
+existing plist names a different binary, which is a good guard: read the refusal
+before overriding it.
+
+Check the API, not the filesystem, and not the PID:
 
     curl -s "http://127.0.0.1:8372/v0/city/<city>/agent/<agent>/output?tail=1"
+
+A turn carrying an `id` field means the patched binary is serving. Verified here
+2026-09-10: PID 69545 on `~/.local/bin/gc`, `id` present, and `[Bash]` carrying
+its command instead of a bare label.
 
 Installing is safe at any time; restarting drops whatever workflow is mid-flight.
 
