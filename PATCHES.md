@@ -42,9 +42,22 @@ hand-edited schema would make the response invalid against its own spec. Run:
 ## Removed: the agent-liveness fix (PR #4721, issue #4703)
 
 Carried from 2026-09-09 and dropped 2026-09-10, deliberately, not because it was
-wrong. `GET /v0/city/{city}/agents` still reports every running agent as
-`state=stopped, running=false, session=null` — verified live that day: 0 of 14
-running while a reviewer session was executing.
+wrong. `GET /v0/city/{city}/agents` still under-reports liveness: on this town,
+0 of 14 agents reported running while four sessions were active.
+
+**How badly it lies is host-shaped, so do not generalize from one town.**
+personal-gas-city on the-ansible measured its own roster against sessions and
+found its three named agents joining correctly while only pool slots
+(`claude-1`) read as stopped, and concluded the gap was confined to pool slots.
+That is not what this town shows. Here `High/core.control-dispatcher` and
+`GasCityDispatch/core.control-dispatcher` are named agents, not pool members,
+each with a live session, and the roster still calls both stopped. This town's
+`mayor` is missing from the roster entirely, which is a third defect again.
+
+So the useful summary is: named agents join on some hosts and not others, pool
+slots seem to fail everywhere, and an agent can be absent rather than merely
+misreported. Measure your own roster against `/sessions` before deciding the
+patch is or is not worth carrying.
 
 We dropped it because our reason for carrying it went away. Dispatch does not
 read the roster's liveness at all: `Core/GasCityRepository/Sources/AgentRoster.swift`
@@ -173,10 +186,19 @@ two rollbacks that look obvious both fail:
 
     ln -sf /opt/homebrew/bin/gc ~/.local/bin/gc
 
+**Check what `~/.local/bin/gc` IS before you install.** The one-liner above
+restores a symlink into brew, which is right only if that is what was there. If
+it was a real file rather than a symlink, installing deleted something the
+one-liner does not bring back, and you need to reinstall it from wherever it
+came from. Read the link before you overwrite it:
+
+    ls -la ~/.local/bin/gc
+
 Found by Jane on the-ansible, 2026-09-10, where `~/.local/bin/gc` had pointed
 into brew since 2026-07-31. The workshop has the same shape after installing.
-This is the sentence someone reaches for while something is already broken, so
-it is worth being exactly right.
+The host-shaped caveat is personal-gas-city's mayor, same day. This is the
+sentence someone reaches for while something is already broken, so it is worth
+being exactly right.
 
 The ICU flags matter for `go test` and not for `make build`, because the
 Makefile already sets them and a bare `go test` does not inherit them. Without
