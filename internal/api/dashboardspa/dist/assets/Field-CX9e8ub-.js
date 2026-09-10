@@ -1,1 +1,5 @@
+<<<<<<<< HEAD:internal/api/dashboardspa/dist/assets/Field-CX9e8ub-.js
 import{j as e}from"./index-Bjc72U5w.js";function i({label:t,children:s,variant:a="definition"}){return a==="form"?e.jsxs("label",{className:"block space-y-1.5",children:[e.jsx("span",{className:"text-label uppercase tracking-wider text-fg-muted",children:t}),s]}):e.jsxs("div",{children:[e.jsx("dt",{className:"text-label uppercase tracking-wider text-fg-faint mb-1",children:t}),e.jsx("dd",{className:"text-body text-fg",children:s})]})}export{i as F};
+========
+import{j as e}from"./index-DFDyVdRv.js";function i({label:t,children:s,variant:a="definition"}){return a==="form"?e.jsxs("label",{className:"block space-y-1.5",children:[e.jsx("span",{className:"text-label uppercase tracking-wider text-fg-muted",children:t}),s]}):e.jsxs("div",{children:[e.jsx("dt",{className:"text-label uppercase tracking-wider text-fg-faint mb-1",children:t}),e.jsx("dd",{className:"text-body text-fg",children:s})]})}export{i as F};
+>>>>>>>> 3d5cc7e20 (fix(api): an output turn carries the entry id its cursors need):internal/api/dashboardspa/dist/assets/Field-CJr1v8dZ.js
