@@ -2706,6 +2706,7 @@ type OutboundResult struct {
 
 // OutputTurn defines model for OutputTurn.
 type OutputTurn struct {
+	Id        *string `json:"id,omitempty"`
 	Role      string  `json:"role"`
 	Text      string  `json:"text"`
 	Timestamp *string `json:"timestamp,omitempty"`
