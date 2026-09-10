@@ -148,10 +148,35 @@ then rebuild and re-run the patch's own tests before installing.
     make build           # -> bin/gc, signed for macOS
     make install         # -> $GOPATH/bin/gc, NOT brew's prefix
 
-`make install` does not touch `/opt/homebrew/bin/gc`, so the brew install stays
-intact and PATH order decides which binary runs. To go back to stock, remove the
-GOPATH copy or put brew first on PATH; `brew upgrade gascity` is unaffected
-either way.
+`make install` leaves `/opt/homebrew/bin/gc` and the Cellar alone, so
+`brew upgrade gascity` is unaffected. It does NOT leave `~/.local/bin/gc` alone,
+and that is where the obvious rollback goes wrong.
+
+The install target removes whatever sits at `~/.local/bin/gc`, symlink included,
+and repoints it at the GOPATH copy:
+
+    rm -f "$(HOME)/.local/bin/$(BINARY)"
+    ln -sf "$(INSTALL_DIR)/$(BINARY)" "$(HOME)/.local/bin/$(BINARY)"
+
+On a host where `~/.local/bin/gc` was a symlink into brew, that link is the only
+thing making brew reachable under that name, and installing destroys it. So the
+two rollbacks that look obvious both fail:
+
+- **Removing the GOPATH copy** leaves `~/.local/bin/gc` dangling at a deleted
+  target. It does not fall back to brew.
+- **Putting brew first on PATH** does nothing, because the entry doing the
+  shadowing IS `~/.local/bin/gc`. On the workshop `~/.local/bin` is first on
+  PATH and `/opt/homebrew/bin` is third, so reordering would mean moving
+  `~/.local/bin` after brew, which is not what anyone means by that sentence.
+
+**The rollback that works is to restore the symlink:**
+
+    ln -sf /opt/homebrew/bin/gc ~/.local/bin/gc
+
+Found by Jane on the-ansible, 2026-09-10, where `~/.local/bin/gc` had pointed
+into brew since 2026-07-31. The workshop has the same shape after installing.
+This is the sentence someone reaches for while something is already broken, so
+it is worth being exactly right.
 
 The ICU flags matter for `go test` and not for `make build`, because the
 Makefile already sets them and a bare `go test` does not inherit them. Without
