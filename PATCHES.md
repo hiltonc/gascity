@@ -1,8 +1,11 @@
 # Local patch queue
 
-This branch is upstream Gas City at a release tag, with a small set of upstream
-fixes we care about cherry-picked on top. It is not a fork: nothing here is
-ours to maintain, and every patch is meant to disappear when upstream merges it.
+This branch is upstream Gas City at a release tag with a small set of patches on
+top. Most are upstream cherry-picks that are meant to disappear when upstream
+merges them. Two are OURS: new work that will not disappear by itself and that
+we should offer upstream (see the table).
+
+It lives on a fork, because we have READ only on `gastownhall/gascity`.
 
 ## Branch shape
 
@@ -16,8 +19,8 @@ what the build calls itself, because the rebase recipe below is read straight of
 | Commit | Upstream | What it fixes |
 | --- | --- | --- |
 | local | none | `mise.toml` pinning go 1.26.5, which `go.mod` requires and upstream does not pin. Build-environment only, no product change. |
-| `850d560` | none yet, OURS | `OutputTurn` carried only `{role, text, timestamp}`. The agent output endpoints accept `before`/`after` entry-ID cursors and report `has_older_messages`, so a client could see that older messages exist and have nothing to send as a cursor; an invented ID answers 500. Adds the entry ID to every turn, on the paged read, the live stream, and the history path. |
-| `3d55dc0` | none yet, OURS | A `tool_use` block rendered as its bare name, so a transcript read as `[Bash]` then a result: answers to questions that are never shown. Over one agent's 733 turns, 225 tool labels against 225 results. The input was already parsed and only the name serialized; appends the field a human reads first, flattened to one line and bounded at 500 like `tool_result` beside it. |
+| `25ace43` | none yet, OURS | `OutputTurn` carried only `{role, text, timestamp}`. The agent output endpoints accept `before`/`after` entry-ID cursors and report `has_older_messages`, so a client could see that older messages exist and have nothing to send as a cursor; an invented ID answers 500. Adds the entry ID to every turn, on the paged read, the live stream, and the history path. |
+| `21f91a8` | none yet, OURS | A `tool_use` block rendered as its bare name, so a transcript read as `[Bash]` then a result: answers to questions that are never shown. Over one agent's 733 turns, 225 tool labels against 225 results. The input was already parsed and only the name serialized; appends the field a human reads first, flattened to one line and bounded at 500 like `tool_result` beside it. |
 
 
 The last two rows are OURS, not upstream cherry-picks, which makes them a
@@ -56,8 +59,10 @@ city and its attention logic sees nothing to attend to. That was already true â€
 the patch had never actually run in the supervisor (see below) â€” so nothing
 regressed by removing it.
 
-To bring it back: `git cherry-pick ecf762c76`, still on
-`backup/on-v1.4.1-with-liveness`.
+To bring it back: `git cherry-pick d5c4a1898`, which is the tip of the local
+`pr-4721` branch. (An earlier `backup/on-v1.4.1-with-liveness` held the same
+change as `ecf762c76`; `pr-4721` is the durable copy, so the backup is
+disposable.)
 
 ## `gc version` on this branch lies, and says 1.4.2
 
@@ -105,11 +110,32 @@ Check the API, not the filesystem:
 
 Installing is safe at any time; restarting drops whatever workflow is mid-flight.
 
+## Remotes
+
+    origin    https://github.com/hiltonc/gascity.git      fetch + push   OURS
+    upstream  https://github.com/gastownhall/gascity.git  fetch only
+    upstream  DISABLED_read_only                          push
+
+We have READ only on `gastownhall/gascity`, so `upstream`'s push URL is
+deliberately set to a string that cannot resolve. A stray `git push upstream`
+fails immediately instead of erroring after it has done half the work.
+`git fetch upstream --tags` still works, which is what the rebase below needs.
+
+The branch is published at
+<https://github.com/hiltonc/gascity/tree/patches/on-v1.4.1>. Pushing it is not
+ceremony: it is the staging ground for offering the two OURS patches upstream,
+and it means the stack survives this laptop.
+
 ## Rebasing onto a new release
 
-    git fetch origin --tags
+    git fetch upstream --tags
     git checkout -b patches/on-v1.4.2 patches/on-v1.4.1
     git rebase --onto v1.4.2 v1.4.1 patches/on-v1.4.2
+    git push -u origin patches/on-v1.4.2
+
+Tags come from `upstream`; the branch goes to `origin`. Both halves of the
+`--onto` are read straight off the branch names, which is why the name carries
+the base tag rather than what the build calls itself.
 
 A patch upstream has merged becomes an empty commit and drops out, which is the
 signal to delete its row from the table above. Resolve anything else by hand,
