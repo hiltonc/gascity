@@ -150,6 +150,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if args == nil {
 		args = []string{}
 	}
+	if code, delegated := delegateToExternalCommand(args, stderr); delegated {
+		return code
+	}
 	lifecycle := openProductMetricsInvocationLifecycle(args)
 	defer lifecycle.Close()
 	return runWithRootCommandOptionsAndLifecycle(args, stdout, stderr, rootCommandOptionsForArgs(args), lifecycle)
