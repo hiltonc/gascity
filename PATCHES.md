@@ -21,16 +21,17 @@ what the build calls itself, because the rebase recipe below is read straight of
 | local | none | `mise.toml` pinning go 1.26.5, which `go.mod` requires and upstream does not pin. Build-environment only, no product change. |
 | `25ace43` | none yet, OURS | `OutputTurn` carried only `{role, text, timestamp}`. The agent output endpoints accept `before`/`after` entry-ID cursors and report `has_older_messages`, so a client could see that older messages exist and have nothing to send as a cursor; an invented ID answers 500. Adds the entry ID to every turn, on the paged read, the live stream, and the history path. |
 | `21f91a8` | none yet, OURS | A `tool_use` block rendered as its bare name, so a transcript read as `[Bash]` then a result: answers to questions that are never shown. Over one agent's 733 turns, 225 tool labels against 225 results. The input was already parsed and only the name serialized; appends the field a human reads first, flattened to one line and bounded at 500 like `tool_result` beside it. |
+| `404de06` | none yet, OURS | `gc` had no extension point: a subcommand it does not implement could only be a typo. Adds the git-style convention, `gc foo` running `gc-foo` on PATH, resolved before Cobra parses so the extension's own flags and `--help` survive. Built-ins and pack commands still win the name, so a future upstream `gc foo` takes it back rather than being masked. The Unix handover replaces the process image, which is what makes argv, the environment, the working directory, unbuffered streaming, Ctrl-C and exit status (signal death included) correct without forwarding code. |
 
 
-The last two rows are OURS, not upstream cherry-picks, which makes them a
+The last three rows are OURS, not upstream cherry-picks, which makes them a
 different kind of patch from everything above them. They will NOT turn into
-empty commits on a rebase and drop out by themselves. Offer them upstream (both
-are small and self-contained); until one is merged, expect to carry it and to
+empty commits on a rebase and drop out by themselves. Offer them upstream (each
+is small and self-contained); until one is merged, expect to carry it and to
 resolve real conflicts rather than watching it disappear. The reasoning and the
-measurements behind them are in the town as `hgc-di92ml`.
+measurements behind the two output-turn patches are in the town as `hgc-di92ml`.
 
-Both regenerate `internal/api/openapi.json`, the `docs/reference/schema`
+The two output-turn patches regenerate `internal/api/openapi.json`, the `docs/reference/schema`
 mirrors, and `internal/api/genclient/client_gen.go`, because `OutputTurn` is
 `additionalProperties: false` and Huma derives the schema from the Go struct. A
 hand-edited schema would make the response invalid against its own spec. Run:
@@ -38,6 +39,12 @@ hand-edited schema would make the response invalid against its own spec. Run:
     make install-oapi-codegen
     go run ./cmd/genspec
     PATH="$(go env GOPATH)/bin:$PATH" go generate ./internal/api/genclient
+
+The external-command patch touches no schema and regenerates nothing. It is the
+one row here whose commit is worth keeping clear of this file: PATCHES.md is the
+fork's own register and has no place in what gets offered upstream, so the patch
+and the row that records it are separate commits, as `25ace43` and `21f91a8`
+already are.
 
 ## Removed: the agent-liveness fix (PR #4721, issue #4703)
 
