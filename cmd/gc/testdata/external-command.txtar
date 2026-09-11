@@ -1,0 +1,93 @@
+# An unknown subcommand delegates to gc-<name> on PATH.
+#
+# Tests:
+# - argv forwards unchanged, including arguments that look like gc's own flags
+# - --help reaches the extension instead of printing gc's help
+# - environment, working directory, stdin, stdout and stderr all survive
+# - exit status propagates exactly
+# - a built-in command shadows an extension of the same name
+# - an unknown command with no extension keeps gc's own error
+
+env GC_BEADS=file
+env GC_DOLT=skip
+env GC_SESSION=fake
+
+chmod 755 $WORK/bin/gc-spike
+chmod 755 $WORK/bin/gc-status
+chmod 755 $WORK/bin/exit-code
+env PATH=$WORK/bin${:}$PATH
+env SPIKE_ENV=carried-through
+
+# Arguments forward unchanged: gc parses none of them, not even its own flags.
+exec gc spike --city x -n -- tail
+stdout '^argv0=.*/gc-spike$'
+stdout '^arg=--city$'
+stdout '^arg=x$'
+stdout '^arg=-n$'
+stdout '^arg=--$'
+stdout '^arg=tail$'
+
+# --help belongs to the extension.
+exec gc spike --help
+stdout '^arg=--help$'
+! stdout 'Available Commands'
+
+# Environment and working directory are the ones gc was invoked with.
+cd $WORK/sub
+exec gc spike
+stdout '^env=carried-through$'
+stdout '^cwd='$WORK'/sub$'
+cd $WORK
+
+# stdin reaches the extension, and both output streams come back.
+stdin stdin.txt
+exec gc spike --read
+stdout '^stdin=hello from the shell$'
+stderr '^spike stderr$'
+
+# Only the first unknown subcommand participates in lookup.
+exec gc spike inner
+stdout '^arg=inner$'
+
+# Exit status propagates exactly.
+exec exit-code gc spike --exit 3
+stdout '^status=3$'
+exec exit-code gc spike
+stdout '^status=0$'
+
+# A built-in wins over an extension of the same name.
+exec gc status --help
+stdout 'Usage:'
+! stdout 'gc-status ran'
+
+# An unknown command with no extension keeps gc's own diagnostics.
+! exec gc blorp
+stderr 'unknown command "blorp"'
+
+-- bin/gc-spike --
+#!/bin/sh
+echo "argv0=$0"
+echo "env=$SPIKE_ENV"
+echo "cwd=$(pwd)"
+echo "spike stderr" >&2
+for arg in "$@"; do
+  echo "arg=$arg"
+  if [ "$arg" = "--read" ]; then
+    echo "stdin=$(cat)"
+  fi
+  if [ "$arg" = "--exit" ]; then
+    exit 3
+  fi
+done
+exit 0
+-- bin/gc-status --
+#!/bin/sh
+echo "gc-status ran"
+-- bin/exit-code --
+#!/bin/sh
+"$@" >/dev/null 2>&1
+echo "status=$?"
+-- stdin.txt --
+hello from the shell
+-- sub/keep --
+placeholder
