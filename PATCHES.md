@@ -31,10 +31,11 @@ is small and self-contained); until one is merged, expect to carry it and to
 resolve real conflicts rather than watching it disappear. The reasoning and the
 measurements behind the two output-turn patches are in the town as `hgc-di92ml`.
 
-The two output-turn patches regenerate `internal/api/openapi.json`, the `docs/reference/schema`
-mirrors, and `internal/api/genclient/client_gen.go`, because `OutputTurn` is
-`additionalProperties: false` and Huma derives the schema from the Go struct. A
-hand-edited schema would make the response invalid against its own spec. Run:
+The two output-turn patches regenerate `internal/api/openapi.json`, the
+`docs/reference/schema` mirrors, and `internal/api/genclient/client_gen.go`,
+because `OutputTurn` is `additionalProperties: false` and Huma derives the
+schema from the Go struct. A hand-edited schema would make the response
+invalid against its own spec. Run:
 
     make install-oapi-codegen
     go run ./cmd/genspec
