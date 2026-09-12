@@ -25,6 +25,7 @@ type statusProvider struct {
 }
 
 var _ runtime.RelaunchProvider = (*statusProvider)(nil)
+var _ runtime.SessionSnapshotProvider = (*statusProvider)(nil)
 
 func statusProviderPartial(sp any) bool {
 	p, ok := sp.(*statusProvider)
@@ -88,6 +89,40 @@ func (p *statusProvider) IsAttached(name string) bool {
 	return boundedStatusCall(p, false, func() bool {
 		return p.base.IsAttached(name)
 	})
+}
+
+// SnapshotAttached forwards runtime.SessionSnapshotProvider when the wrapped
+// runtime keeps a fleet snapshot, under the same bound as the live probes; a
+// runtime without one, or a timed-out read, answers "not known" so the caller
+// falls back to IsAttached.
+func (p *statusProvider) SnapshotAttached(name string) (bool, bool) {
+	ssp, ok := p.base.(runtime.SessionSnapshotProvider)
+	if !ok {
+		return false, false
+	}
+	type answer struct{ attached, known bool }
+	got := boundedStatusCall(p, answer{}, func() answer {
+		attached, known := ssp.SnapshotAttached(name)
+		return answer{attached, known}
+	})
+	return got.attached, got.known
+}
+
+// SnapshotLastActivity is SnapshotAttached for last activity.
+func (p *statusProvider) SnapshotLastActivity(name string) (time.Time, bool) {
+	ssp, ok := p.base.(runtime.SessionSnapshotProvider)
+	if !ok {
+		return time.Time{}, false
+	}
+	type answer struct {
+		at    time.Time
+		known bool
+	}
+	got := boundedStatusCall(p, answer{}, func() answer {
+		at, known := ssp.SnapshotLastActivity(name)
+		return answer{at, known}
+	})
+	return got.at, got.known
 }
 
 func (p *statusProvider) Attach(name string) error {

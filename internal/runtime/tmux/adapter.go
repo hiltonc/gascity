@@ -35,6 +35,7 @@ var instanceTokenReader = rand.Reader
 // Compile-time check.
 var (
 	_ runtime.Provider                      = (*Provider)(nil)
+	_ runtime.SessionSnapshotProvider       = (*Provider)(nil)
 	_ runtime.DeadRuntimeSessionChecker     = (*Provider)(nil)
 	_ runtime.ImmediateNudgeProvider        = (*Provider)(nil)
 	_ runtime.InterruptBoundaryWaitProvider = (*Provider)(nil)
@@ -650,6 +651,23 @@ func (p *Provider) ListRunning(prefix string) ([]string, error) {
 // session. Delegates to [Tmux.GetSessionActivity].
 func (p *Provider) GetLastActivity(name string) (time.Time, error) {
 	return p.tm.GetSessionActivity(name)
+}
+
+// SnapshotAttached answers from the state cache's window listing: one tmux
+// fork for the fleet instead of a display-message per session. Not known when
+// the listing was unavailable, in which case the caller probes live.
+func (p *Provider) SnapshotAttached(name string) (bool, bool) {
+	return p.cache.Attached(name)
+}
+
+// SnapshotLastActivity is SnapshotAttached for last activity, with the same
+// poke discount GetLastActivity applies.
+func (p *Provider) SnapshotLastActivity(name string) (time.Time, bool) {
+	wa, known := p.cache.LastActivity(name)
+	if !known {
+		return time.Time{}, false
+	}
+	return p.tm.discountPokes(name, wa), true
 }
 
 // ClearScrollback clears the scrollback history of the named session.

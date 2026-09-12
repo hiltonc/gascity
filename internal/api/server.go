@@ -102,6 +102,10 @@ type Server struct {
 	storeHealthComputer func(ctx context.Context) (*StatusStoreHealth, error)
 	storeHealthFlight   singleflight.Group
 
+	// agentListFlight coalesces concurrent GET /agents builds per cache key;
+	// see humaHandleAgentList.
+	agentListFlight singleflight.Group
+
 	// componentVersions caches the dolt engine and bd CLI versions the
 	// supervisor drives for /v0/status. Binary versions are immutable for
 	// the process lifetime, so they are resolved once on first read.

@@ -2287,13 +2287,20 @@ func (t *Tmux) GetSessionActivity(session string) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, err
 	}
+	return t.discountPokes(session, wa), nil
+}
+
+// discountPokes applies the poke discount to a raw activity reading, so a
+// timestamp taken from the state cache's fleet-wide window listing is
+// treated exactly as one read per session.
+func (t *Tmux) discountPokes(session string, wa time.Time) time.Time {
 	t.pokeMu.Lock()
 	pk, ok := t.pokes[session]
 	t.pokeMu.Unlock()
 	if !ok {
-		return wa, nil
+		return wa
 	}
-	return discountPokeActivity(wa, pk, time.Now()), nil
+	return discountPokeActivity(wa, pk, time.Now())
 }
 
 // rawSessionActivity returns the most recent tmux per-window activity timestamp.
