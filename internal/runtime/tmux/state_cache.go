@@ -266,7 +266,13 @@ type tmuxFetcher struct {
 	tm *Tmux
 }
 
-// FetchState runs one tmux pane snapshot and one process-table snapshot.
+// FetchState runs three subprocesses in series against one fetchTimeout: a
+// tmux pane snapshot, a fleet-wide window listing, and a process-table
+// snapshot. Only the pane snapshot is load-bearing — it establishes session
+// liveness and its failure fails the fetch. The window listing and the
+// process snapshot are refinements that degrade to per-session probes and to
+// optimistic liveness rather than failing.
+//
 // Sessions where remain-on-exit has kept a dead pane (pane_dead=1) are
 // excluded — they represent exited processes, not running ones.
 func (f *tmuxFetcher) FetchState(ctx context.Context) (runtimeStateSnapshot, error) {
