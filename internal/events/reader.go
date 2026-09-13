@@ -553,22 +553,6 @@ func LatestArchivedMatch(path string, filter Filter) (Event, bool, error) {
 	return Event{}, false, nil
 }
 
-// TailScan is the result of a backward tail read of the active events log.
-type TailScan struct {
-	// Events are the matching events in chronological (ascending seq) order.
-	Events []Event
-	// Complete reports that no event older than this scan's stopping point can
-	// match the filter, so the caller may serve Events without consulting the
-	// sibling .gz archives or in-flight rotating files. It is set only when the
-	// walk reached the AfterSeq cursor carried by the filter itself, because
-	// the log is strictly seq-ordered and everything below that cursor — in
-	// this file, in a rotating file, or in an archive — is excluded by the
-	// predicate. A walk that stopped on the caller's limit, on MaxScanBytes, or
-	// at the start of the file reports false: each of those says something
-	// about this file, nothing about the rotated history beneath it.
-	Complete bool
-}
-
 // ReadFilteredTail reads the trailing matching events from path. A positive
 // limit returns at most that many events in chronological order; limit <= 0
 // falls back to ReadFiltered.
@@ -576,34 +560,18 @@ func ReadFilteredTail(path string, filter Filter, limit int) ([]Event, error) {
 	if limit <= 0 {
 		return ReadFiltered(path, filter)
 	}
-	scan, err := ReadFilteredTailBounded(path, filter, limit)
-	return scan.Events, err
-}
-
-// ReadFilteredTailBounded is ReadFilteredTail plus the reason the backward walk
-// stopped. Callers that would otherwise fall back to the full archive-aware
-// read use TailScan.Complete to skip it: a bounded request whose own predicate
-// floor was reached has already been answered in full.
-//
-// A non-positive limit has no tail to bound, so it reports Complete false and
-// leaves the caller on its existing path.
-func ReadFilteredTailBounded(path string, filter Filter, limit int) (TailScan, error) {
-	if limit <= 0 {
-		evts, err := ReadFiltered(path, filter)
-		return TailScan{Events: evts}, err
-	}
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return TailScan{}, nil
+			return nil, nil
 		}
-		return TailScan{}, fmt.Errorf("reading events tail: %w", err)
+		return nil, fmt.Errorf("reading events tail: %w", err)
 	}
 	defer f.Close() //nolint:errcheck // read-only file
 
 	info, err := f.Stat()
 	if err != nil {
-		return TailScan{}, fmt.Errorf("stat events tail: %w", err)
+		return nil, fmt.Errorf("stat events tail: %w", err)
 	}
 	return readFilteredTailFrom(f, info.Size(), filter, limit)
 }
@@ -625,19 +593,17 @@ func belowFilterFloor(e Event, f Filter) bool {
 	return f.AfterSeq > 0 && e.Seq <= f.AfterSeq
 }
 
-func readFilteredTailFrom(r io.ReaderAt, size int64, filter Filter, limit int) (TailScan, error) {
+func readFilteredTailFrom(r io.ReaderAt, size int64, filter Filter, limit int) ([]Event, error) {
 	if size <= 0 {
 		// An empty active file is the normal state immediately after a
-		// rotation, and it proves nothing: the events above the cursor may all
-		// be sitting in the archive or the in-flight rotating file. Reporting
-		// Complete here would strand that whole band behind an unminted
-		// cursor, so the caller must still do the archive-aware read.
-		return TailScan{}, nil
+		// rotation. There is no tail to walk, and the caller still reaches the
+		// archive through its existing path.
+		return nil, nil
 	}
 	const chunkSize int64 = 64 * 1024
 	var reversed []Event
 	var pending []byte
-	complete := false
+	atFloor := false
 	end := size
 	for end > 0 && len(reversed) < limit && (filter.MaxScanBytes <= 0 || size-end < filter.MaxScanBytes) {
 		n := chunkSize
@@ -658,7 +624,7 @@ func readFilteredTailFrom(r io.ReaderAt, size int64, filter Filter, limit int) (
 		start := end - n
 		chunk := make([]byte, n)
 		if _, err := r.ReadAt(chunk, start); err != nil && err != io.EOF {
-			return TailScan{}, fmt.Errorf("reading events tail: %w", err)
+			return nil, fmt.Errorf("reading events tail: %w", err)
 		}
 		data := make([]byte, 0, len(chunk)+len(pending))
 		data = append(data, chunk...)
@@ -681,14 +647,14 @@ func readFilteredTailFrom(r io.ReaderAt, size int64, filter Filter, limit int) (
 				continue
 			}
 			if belowFilterFloor(e, filter) {
-				complete = true
+				atFloor = true
 				break
 			}
 			if matchesFilter(e, filter) {
 				reversed = append(reversed, e)
 			}
 		}
-		if complete {
+		if atFloor {
 			break
 		}
 		end = start
@@ -696,7 +662,7 @@ func readFilteredTailFrom(r io.ReaderAt, size int64, filter Filter, limit int) (
 	for i, j := 0, len(reversed)-1; i < j; i, j = i+1, j-1 {
 		reversed[i], reversed[j] = reversed[j], reversed[i]
 	}
-	return TailScan{Events: reversed, Complete: complete}, nil
+	return reversed, nil
 }
 
 // ReadLatestSeq returns the highest complete event Seq visible in the

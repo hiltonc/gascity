@@ -19,6 +19,37 @@ import (
 	"github.com/gastownhall/gascity/internal/events"
 )
 
+// TestDoEventsStampsClientIdentity guards the opt-in at cmd_events.go's
+// client(): this command builds its own generated client instead of reusing
+// api.Client, so it is the one stamping site the shared editor does not reach
+// for free. It is also the hot caller of the event list, which is what made
+// the endpoint's caller unidentifiable in the first place. Delete the
+// WithRequestEditorFn line and this test fails with Go's default User-Agent.
+func TestDoEventsStampsClientIdentity(t *testing.T) {
+	gcapi.SetClientIdentity("gc events", "vtest")
+	t.Cleanup(func() { gcapi.SetClientIdentity("", "") })
+
+	var gotUA string
+	server := newEventsTestServer(t, testEventRoutes{
+		cityEvents: func(w http.ResponseWriter, r *http.Request) {
+			gotUA = r.Header.Get("User-Agent")
+			w.Header().Set("X-GC-Index", "0")
+			writeJSONResponse(t, w, cityEventsListResponse(t, nil))
+		},
+	})
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := doEvents(eventsAPIScope{apiURL: server.URL, cityName: "mc-city"}, "", "", nil, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doEvents = %d, want 0; stderr=%s", code, stderr.String())
+	}
+
+	if want := "gc/vtest (gc events)"; gotUA != want {
+		t.Fatalf("User-Agent = %q, want %q", gotUA, want)
+	}
+}
+
 func TestDoEventsCityDefaultUsesJSONLItems(t *testing.T) {
 	items := []cliWireEvent{
 		{Actor: "human", Seq: 1, Subject: "gc-1", Ts: time.Unix(1700000000, 0).UTC(), Type: "bead.created"},

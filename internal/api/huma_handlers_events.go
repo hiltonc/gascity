@@ -206,7 +206,7 @@ func fetchEventPageAscending(ep events.Provider, filter events.Filter, limit int
 		return nil, 0, err
 	}
 	scanned := len(all)
-	logEventListFullScan(filter, limit, scanned, time.Since(start))
+	logEventListFullScan(filter, limit, scanned, start, time.Since(start))
 	if len(all) > fetch {
 		all = all[len(all)-fetch:]
 	}
@@ -216,22 +216,27 @@ func fetchEventPageAscending(ep events.Provider, filter events.Filter, limit int
 // logEventListFullScan reports an archive-aware event-list read and what it
 // cost. Every field is server-side query shape, never client-supplied free
 // text, so the line is safe to emit verbatim.
-func logEventListFullScan(filter events.Filter, limit, scanned int, took time.Duration) {
+func logEventListFullScan(filter events.Filter, limit, scanned int, at time.Time, took time.Duration) {
 	log.Printf("%s type=%s actor=%s subject=%s since=%s before_seq=%d after_seq=%d limit=%d scanned=%d took=%s",
 		eventListFullScanLogPrefix,
 		filter.Type, filter.Actor, filter.Subject,
-		eventFilterSinceField(filter.Since),
+		eventFilterSinceField(filter.Since, at),
 		filter.BeforeSeq, filter.AfterSeq,
 		limit, scanned, took.Round(time.Millisecond))
 }
 
 // eventFilterSinceField renders the Since predicate as the window the caller
 // asked for, which is what identifies the query shape; a zero Since is "none".
-func eventFilterSinceField(since time.Time) string {
+//
+// The window is measured from at — the instant the read began — not from the
+// moment the line is written. Measuring at log time would inflate it by the
+// scan's own duration, so the field would be least accurate on exactly the
+// slow reads this line exists to diagnose.
+func eventFilterSinceField(since, at time.Time) string {
 	if since.IsZero() {
 		return "none"
 	}
-	return time.Since(since).Round(time.Second).String()
+	return at.Sub(since).Round(time.Second).String()
 }
 
 // listWithInFlight returns all events matching filter, folding in events still

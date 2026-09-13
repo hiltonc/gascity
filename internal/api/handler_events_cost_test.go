@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/events"
 )
@@ -135,5 +136,34 @@ func TestEventListFastPathStaysSilent(t *testing.T) {
 
 	if strings.Contains(logged, eventListFullScanLogPrefix) {
 		t.Fatalf("a probe-answered request must not log a full-scan cost; log = %q", logged)
+	}
+}
+
+// TestEventFilterSinceFieldMeasuresFromReadStart pins that since= reports the
+// window the caller asked for, not that window plus the scan's own duration.
+// Measuring at log time made the field drift by exactly took, so it was least
+// accurate on the slow reads the line exists to diagnose.
+func TestEventFilterSinceFieldMeasuresFromReadStart(t *testing.T) {
+	start := time.Now()
+	since := start.Add(-2 * time.Minute)
+
+	if got, want := eventFilterSinceField(since, start), "2m0s"; got != want {
+		t.Fatalf("since field = %q, want %q", got, want)
+	}
+
+	// A slow scan must not widen the reported window: the same read logged 90s
+	// later still asked for 2m.
+	if got, want := eventFilterSinceField(since, start), eventFilterSinceField(since, start); got != want {
+		t.Fatalf("since field is not stable: %q vs %q", got, want)
+	}
+	if got := eventFilterSinceField(since, start.Add(90*time.Second)); got == "2m0s" {
+		t.Fatal("eventFilterSinceField ignores its reference instant; the drift guard is vacuous")
+	}
+}
+
+// TestEventFilterSinceFieldZeroIsNone keeps the no-window case legible.
+func TestEventFilterSinceFieldZeroIsNone(t *testing.T) {
+	if got, want := eventFilterSinceField(time.Time{}, time.Now()), "none"; got != want {
+		t.Fatalf("zero Since = %q, want %q", got, want)
 	}
 }

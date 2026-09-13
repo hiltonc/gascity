@@ -2,7 +2,6 @@ package events
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,7 +50,10 @@ func writeTimedLog(t *testing.T, n int, base time.Time) string {
 	return path
 }
 
-func tailScanFile(t *testing.T, path string, filter Filter, limit int) (TailScan, int64) {
+// tailFile walks path backwards through readFilteredTailFrom and reports both
+// the matching events and how many bytes the walk actually read, so a test can
+// tell an early stop from a full traversal.
+func tailFile(t *testing.T, path string, filter Filter, limit int) ([]Event, int64) {
 	t.Helper()
 	f, err := os.Open(path)
 	if err != nil {
@@ -63,15 +65,16 @@ func tailScanFile(t *testing.T, path string, filter Filter, limit int) (TailScan
 		t.Fatalf("stat: %v", err)
 	}
 	counter := &countingReaderAt{f: f}
-	scan, err := readFilteredTailFrom(counter, info.Size(), filter, limit)
+	evts, err := readFilteredTailFrom(counter, info.Size(), filter, limit)
 	if err != nil {
 		t.Fatalf("readFilteredTailFrom: %v", err)
 	}
-	return scan, counter.read.Load()
+	return evts, counter.read.Load()
 }
 
-// TestTailStopsAtAfterSeqFloor is the cursor-shaped equivalent: the log is
-// seq-ordered, so the first event at or below AfterSeq ends the walk.
+// TestTailStopsAtAfterSeqFloor pins the early stop that AfterSeq buys. The log
+// is strictly seq-ordered, so the first event at or below the cursor ends the
+// backward walk instead of dragging it to the head of the file.
 func TestTailStopsAtAfterSeqFloor(t *testing.T) {
 	const n = 4000
 	path := writeTimedLog(t, n, time.Now().UTC())
@@ -80,12 +83,9 @@ func TestTailStopsAtAfterSeqFloor(t *testing.T) {
 		t.Fatalf("stat: %v", err)
 	}
 
-	scan, readBytes := tailScanFile(t, path, Filter{AfterSeq: n - 10}, 500)
+	evts, readBytes := tailFile(t, path, Filter{AfterSeq: n - 10}, 500)
 
-	if !scan.Complete {
-		t.Fatal("tail that reached the AfterSeq floor must report Complete")
-	}
-	if got, want := len(scan.Events), 10; got != want {
+	if got, want := len(evts), 10; got != want {
 		t.Fatalf("got %d events, want %d", got, want)
 	}
 	if readBytes >= info.Size() {
@@ -93,36 +93,21 @@ func TestTailStopsAtAfterSeqFloor(t *testing.T) {
 	}
 }
 
-// TestTailFullPageIsNotComplete guards the has-more signal: a walk that filled
-// the limit stopped on the caller's bound, not the log's, so older matching
-// events may still exist and the caller must keep paging.
-func TestTailFullPageIsNotComplete(t *testing.T) {
-	const n = 4000
-	path := writeTimedLog(t, n, time.Now().UTC())
-
-	scan, _ := tailScanFile(t, path, Filter{}, 10)
-
-	if scan.Complete {
-		t.Fatal("a limit-filled tail must not report Complete")
-	}
-	if got, want := len(scan.Events), 10; got != want {
-		t.Fatalf("got %d events, want %d", got, want)
-	}
-}
-
-// TestTailWithoutFloorIsNotComplete is the case that must still fall through
-// to the archive-aware read: an unbounded filter exhausts the active file
-// without proving anything about the rotated history below it.
-func TestTailWithoutFloorIsNotComplete(t *testing.T) {
+// TestTailWithoutFloorWalksTheFile is the contrast case: with no AfterSeq the
+// walk has no floor to stop at, so it reaches the head and still filters
+// correctly.
+func TestTailWithoutFloorWalksTheFile(t *testing.T) {
 	path := writeTimedLog(t, 20, time.Now().UTC())
 
-	scan, _ := tailScanFile(t, path, Filter{Type: "rare"}, 500)
+	evts, _ := tailFile(t, path, Filter{Type: "rare"}, 500)
 
-	if scan.Complete {
-		t.Fatal("a tail with no filter lower bound cannot report Complete")
-	}
-	if len(scan.Events) == 0 {
+	if len(evts) == 0 {
 		t.Fatal("expected the matching events from the active file")
+	}
+	for i, e := range evts {
+		if e.Type != "rare" {
+			t.Fatalf("event %d has type %q, want rare", i, e.Type)
+		}
 	}
 }
 
@@ -153,63 +138,28 @@ func TestReadFilteredTailUnchanged(t *testing.T) {
 	}
 }
 
-// TestListTailBoundedOnRecorder pins the provider surface the API layer uses.
-func TestListTailBoundedOnRecorder(t *testing.T) {
+// TestTailOnEmptyAndMissingLog pins the post-rotation and cold-start cases: an
+// empty or absent active events.jsonl yields no events and no error, leaving
+// the caller on its existing archive-aware path.
+func TestTailOnEmptyAndMissingLog(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "events.jsonl")
-	rec, err := NewFileRecorder(path, io.Discard)
-	if err != nil {
-		t.Fatalf("NewFileRecorder: %v", err)
-	}
-	defer rec.Close() //nolint:errcheck
-	for i := 0; i < 50; i++ {
-		rec.Record(Event{Type: "t", Actor: "a", Subject: fmt.Sprintf("s%d", i)})
-	}
-
-	scan, err := rec.ListTailBounded(Filter{AfterSeq: 45}, 100)
-	if err != nil {
-		t.Fatalf("ListTailBounded: %v", err)
-	}
-	if !scan.Complete {
-		t.Fatal("a cursored tail inside the active file must report Complete")
-	}
-	if got, want := len(scan.Events), 5; got != want {
-		t.Fatalf("got %d events, want %d", got, want)
-	}
-}
-
-// TestEmptyActiveFileIsNotComplete pins the post-rotation case. An empty
-// active events.jsonl is the normal state right after a rotation, and it says
-// nothing about the events above the cursor that may still live in the
-// archive or the in-flight rotating file. Reporting Complete there would
-// strand that whole seq band behind a cursor the handler never mints.
-func TestEmptyActiveFileIsNotComplete(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "events.jsonl")
-	if err := os.WriteFile(path, nil, 0o644); err != nil {
+	empty := filepath.Join(dir, "events.jsonl")
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
 		t.Fatalf("write log: %v", err)
 	}
 
-	scan, err := ReadFilteredTailBounded(path, Filter{AfterSeq: 5}, 100)
-	if err != nil {
-		t.Fatalf("ReadFilteredTailBounded: %v", err)
-	}
-	if scan.Complete {
-		t.Fatal("an empty active file must not report Complete: the archive may still hold matches above the cursor")
-	}
-	if len(scan.Events) != 0 {
-		t.Fatalf("got %d events from an empty log", len(scan.Events))
-	}
-}
-
-// TestMissingActiveFileIsNotComplete is the same guarantee for a log that does
-// not exist yet.
-func TestMissingActiveFileIsNotComplete(t *testing.T) {
-	scan, err := ReadFilteredTailBounded(filepath.Join(t.TempDir(), "absent.jsonl"), Filter{AfterSeq: 5}, 100)
-	if err != nil {
-		t.Fatalf("ReadFilteredTailBounded: %v", err)
-	}
-	if scan.Complete {
-		t.Fatal("a missing active file must not report Complete")
+	for name, path := range map[string]string{
+		"empty":   empty,
+		"missing": filepath.Join(dir, "absent.jsonl"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			evts, err := ReadFilteredTail(path, Filter{AfterSeq: 5}, 100)
+			if err != nil {
+				t.Fatalf("ReadFilteredTail: %v", err)
+			}
+			if len(evts) != 0 {
+				t.Fatalf("got %d events from a %s log", len(evts), name)
+			}
+		})
 	}
 }
