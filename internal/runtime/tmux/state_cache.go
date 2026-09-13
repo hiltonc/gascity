@@ -35,9 +35,27 @@ const fetchTimeout = 3 * time.Second
 // refinement reads. Without a sub-budget the window listing, which exists
 // only to spare GET /agents a fork per agent, could spend the whole budget on
 // a loaded host and leave the process snapshot none, degrading a reconciler
-// input on exactly the hosts this optimization targets. A third of the budget
-// leaves two thirds for the panes walk and the process snapshot.
+// input on exactly the hosts this optimization targets.
 const windowListingBudget = fetchTimeout / 3
+
+// processSnapshotReserve is the tail of the fetch budget that the window
+// listing must leave untouched for fetchProcessSnapshot.
+//
+// windowListingBudget alone does not reserve it. The panes walk before the
+// listing runs against the parent fetchTimeout with no sub-budget of its own
+// and can consume most of it; capping the listing at a third of the budget
+// then bounds only the listing, and the process snapshot still gets whatever
+// happens to remain — possibly nothing. listWindows therefore takes the
+// EARLIER of its own cap and the parent deadline minus this reserve, and
+// declines to run at all once the panes walk has already spent past that
+// point. The guarantee that holds is the one the reconciler depends on: the
+// window listing never shortens fetchProcessSnapshot below this reserve.
+const processSnapshotReserve = fetchTimeout / 3
+
+// errWindowListingBudgetExhausted reports that the panes walk left less than
+// processSnapshotReserve of the fetch budget, so the window listing was
+// skipped rather than run against the process snapshot's reserved tail.
+var errWindowListingBudgetExhausted = errors.New("window listing skipped: the panes walk left only the process snapshot's reserved budget")
 
 // StateFetcher abstracts tmux subprocess calls for testability.
 type StateFetcher interface {
@@ -266,7 +284,13 @@ type tmuxFetcher struct {
 	tm *Tmux
 }
 
-// FetchState runs one tmux pane snapshot and one process-table snapshot.
+// FetchState runs three subprocesses in series against one fetchTimeout: a
+// tmux pane snapshot, a fleet-wide window listing, and a process-table
+// snapshot. Only the pane snapshot is load-bearing — it establishes session
+// liveness and its failure fails the fetch. The window listing and the
+// process snapshot are refinements that degrade to per-session probes and to
+// optimistic liveness rather than failing.
+//
 // Sessions where remain-on-exit has kept a dead pane (pane_dead=1) are
 // excluded — they represent exited processes, not running ones.
 func (f *tmuxFetcher) FetchState(ctx context.Context) (runtimeStateSnapshot, error) {
@@ -350,12 +374,24 @@ func (f *tmuxFetcher) FetchState(ctx context.Context) (runtimeStateSnapshot, err
 	return state, nil
 }
 
-// listWindows runs the fleet-wide window listing under its own sub-budget so
-// it cannot consume the share of fetchTimeout that the process snapshot after
-// it needs. The parent context still applies: whichever bound expires first
-// ends the call, and a failure degrades to per-session probes.
+// listWindows runs the fleet-wide window listing under a deadline that is the
+// earlier of its own windowListingBudget and the parent's deadline less
+// processSnapshotReserve, so it can neither run long nor eat the tail of the
+// fetch budget that fetchProcessSnapshot needs. When the panes walk has
+// already spent past that point the listing is skipped outright: degrading
+// attach state to per-session probes is cheap, and starving the reconciler's
+// liveness input is not. A failure or a skip degrades to per-session probes.
 func (f *tmuxFetcher) listWindows(ctx context.Context) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, windowListingBudget)
+	deadline := time.Now().Add(windowListingBudget)
+	if parent, ok := ctx.Deadline(); ok {
+		if reserved := parent.Add(-processSnapshotReserve); reserved.Before(deadline) {
+			deadline = reserved
+		}
+	}
+	if !time.Now().Before(deadline) {
+		return "", errWindowListingBudgetExhausted
+	}
+	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	return f.tm.runCtx(ctx, "list-windows", "-a", "-F", "#{session_name}\t#{session_attached}\t#{window_activity}")
 }
