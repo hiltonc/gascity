@@ -584,6 +584,15 @@ func (r *FileRecorder) ListTail(filter Filter, limit int) ([]Event, error) {
 	return ReadFilteredTail(r.path, filter, limit)
 }
 
+// ListTailBounded returns trailing matching events from the underlying file
+// along with whether the backward walk reached the filter's own lower bound.
+// It implements [BoundedTailProvider] so a bounded event-list request can be
+// served from the active file alone instead of falling back to a full
+// archive-aware read.
+func (r *FileRecorder) ListTailBounded(filter Filter, limit int) (TailScan, error) {
+	return ReadFilteredTailBounded(r.path, filter, limit)
+}
+
 // LatestSeq returns the highest sequence number in the event log.
 func (r *FileRecorder) LatestSeq() (uint64, error) {
 	seq, err := ReadLatestSeq(r.path)

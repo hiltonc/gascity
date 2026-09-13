@@ -114,6 +114,7 @@ func NewRemoteCityScopedClient(baseURL, cityName string, opts RemoteOptions) (*C
 		genclient.WithHTTPClient(rest),
 		genclient.WithRequestEditorFn(func(_ context.Context, req *http.Request) error {
 			req.Header.Set("X-GC-Request", "true")
+			SetClientUserAgentHeader(req)
 			return nil
 		}),
 		genclient.WithRequestEditorFn(remoteAuthEditor(c)),
@@ -145,6 +146,7 @@ func NewRemoteEventsClient(baseURL string, opts RemoteOptions) (*genclient.Clien
 		genclient.WithHTTPClient(stream),
 		genclient.WithRequestEditorFn(func(_ context.Context, req *http.Request) error {
 			req.Header.Set("X-GC-Request", "true")
+			SetClientUserAgentHeader(req)
 			// This client is used exclusively for generated SSE operations.
 			req.Header.Set("Accept", "text/event-stream")
 			return nil

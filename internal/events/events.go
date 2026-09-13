@@ -523,6 +523,16 @@ type InFlightProvider interface {
 	ListInFlight(filter Filter) ([]Event, error)
 }
 
+// BoundedTailProvider is an events provider whose tail read reports why the
+// backward walk stopped. A caller that would otherwise fall back to a full
+// archive-aware read on a short tail uses TailScan.Complete to skip it: when
+// the walk reached the filter's own AfterSeq or Since floor, the events below
+// it are excluded by the predicate wherever they live, so the tail alone is
+// the complete answer. Providers that cannot prove that need not implement it.
+type BoundedTailProvider interface {
+	ListTailBounded(filter Filter, limit int) (TailScan, error)
+}
+
 // Watcher yields events one at a time. Created by [Provider.Watch].
 // Callers must call Close() when done watching.
 type Watcher interface {
