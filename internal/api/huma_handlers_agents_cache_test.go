@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/events"
 )
 
 // gatedStore counts the bead lookups an agent-list build makes and, once
@@ -154,7 +155,7 @@ func TestAgentListServesARecentBodyAfterTheBucketRolls(t *testing.T) {
 	srv := New(state)
 
 	listAgents(t, srv)
-	built := store.listByAssigneeCalls
+	built := store.activeBeadListCalls
 	if built == 0 {
 		t.Fatalf("first list made no bead lookups; the fixture is not exercising the build")
 	}
@@ -164,8 +165,8 @@ func TestAgentListServesARecentBodyAfterTheBucketRolls(t *testing.T) {
 	rollCachedResponseBucket(t, srv, agentListCacheKey())
 
 	listAgents(t, srv)
-	if store.listByAssigneeCalls != built {
-		t.Errorf("lookups after the bucket rolled = %d, want %d: the body built a moment ago was not reused", store.listByAssigneeCalls, built)
+	if store.activeBeadListCalls != built {
+		t.Errorf("lookups after the bucket rolled = %d, want %d: the body built a moment ago was not reused", store.activeBeadListCalls, built)
 	}
 }
 
@@ -180,7 +181,7 @@ func TestAgentListRebuildsOnceTheTTLFloorExpires(t *testing.T) {
 	srv := New(state)
 
 	listAgents(t, srv)
-	built := store.listByAssigneeCalls
+	built := store.activeBeadListCalls
 	if built == 0 {
 		t.Fatalf("first list made no bead lookups; the fixture is not exercising the build")
 	}
@@ -190,8 +191,8 @@ func TestAgentListRebuildsOnceTheTTLFloorExpires(t *testing.T) {
 	ageCachedResponse(t, srv, key, agentListResponseTTLFloor)
 
 	listAgents(t, srv)
-	if store.listByAssigneeCalls <= built {
-		t.Errorf("lookups after the floor expired = %d, want more than %d: a stale body was served past its TTL", store.listByAssigneeCalls, built)
+	if store.activeBeadListCalls <= built {
+		t.Errorf("lookups after the floor expired = %d, want more than %d: a stale body was served past its TTL", store.activeBeadListCalls, built)
 	}
 }
 
@@ -304,5 +305,82 @@ func TestAgentListCoalescedRequestsGetIndependentBodies(t *testing.T) {
 	}
 	if len(backing) != callers {
 		t.Errorf("distinct item arrays = %d, want %d: callers share one body, so a mutation by any of them is visible to the rest", len(backing), callers)
+	}
+}
+
+// backdateCachedResponse ages the stored entry by exactly d, leaving it well
+// inside the floor. It is how a test observes the age a hit reports without
+// sleeping for it.
+func backdateCachedResponse(t *testing.T, s *Server, key string, d time.Duration) {
+	t.Helper()
+	s.responseCacheMu.Lock()
+	defer s.responseCacheMu.Unlock()
+	entry, ok := s.responseCacheEntries[key]
+	if !ok {
+		t.Fatalf("no cache entry for %q to backdate: the build stored nothing", key)
+	}
+	entry.storedAt = entry.storedAt.Add(-d)
+	s.responseCacheEntries[key] = entry
+}
+
+// A cache hit must be labeled with the index its body was BUILT at, not the
+// index at the moment it is re-served. AgentListInput embeds BlockingParam, so
+// ?index=N&wait= is a supported shape: a client handed a body built at index
+// 100 but labeled 140 long-polls from 140 and never sees events 101-140
+// reflected, because the body it holds predates them and it will not ask
+// again until event 141.
+func TestAgentListCacheHitReportsTheIndexTheBodyWasBuiltAt(t *testing.T) {
+	pinBuckets(t, time.Hour)
+
+	state := newFakeState(t)
+	state.stores["myrig"] = &countingStore{Store: beads.NewMemStore()}
+	srv := New(state)
+	key := agentListCacheKey()
+
+	first := listAgents(t, srv)
+	builtAt := first.Index
+
+	// Events land between the build and the next read, exactly as they do on
+	// a busy city.
+	for i := 0; i < 4; i++ {
+		state.eventProv.Record(events.Event{Type: events.SessionWoke, Actor: "gc"})
+	}
+	if now := srv.latestIndex(); now == builtAt {
+		t.Fatalf("latest index is still %d after recording events; the fixture is not advancing it", now)
+	}
+
+	second := listAgents(t, srv)
+	if second.Index != builtAt {
+		t.Errorf("cache hit index = %d, want %d (the index the cached body was built at); a client long-polling from the later index would skip every event in between",
+			second.Index, builtAt)
+	}
+	if _, _, ok := srv.cachedAgentList(key); !ok {
+		t.Fatal("the second read was not served from cache; this test is not exercising the hit path")
+	}
+}
+
+// A cache-served body must say so. CacheAgeS is documented as the age of the
+// snapshot that served the response, with 0 meaning "not applicable", so
+// leaving the zero value on a hit affirmatively claims a body up to the TTL
+// floor plus a build old is fresh.
+func TestAgentListCacheHitReportsItsAge(t *testing.T) {
+	pinBuckets(t, time.Hour)
+
+	state := newFakeState(t)
+	state.stores["myrig"] = &countingStore{Store: beads.NewMemStore()}
+	srv := New(state)
+	key := agentListCacheKey()
+
+	if fresh := listAgents(t, srv); fresh.CacheAgeS != 0 {
+		t.Errorf("freshly built list CacheAgeS = %v, want 0: it was not served from cache", fresh.CacheAgeS)
+	}
+
+	const aged = 1500 * time.Millisecond
+	backdateCachedResponse(t, srv, key, aged)
+
+	hit := listAgents(t, srv)
+	if hit.CacheAgeS < aged.Seconds() {
+		t.Errorf("cache hit CacheAgeS = %v, want at least %v: a re-served body must report its age, not claim freshness",
+			hit.CacheAgeS, aged.Seconds())
 	}
 }

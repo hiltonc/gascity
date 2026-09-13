@@ -48,10 +48,11 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 		// Cache key derived from input struct tags — adding a new query
 		// param to AgentListInput automatically participates in the key.
 		cacheKey = cacheKeyFor("agents", input)
-		if body, ok := s.cachedAgentList(cacheKey); ok {
+		if entry, age, ok := s.cachedAgentList(cacheKey); ok {
 			return &ListOutput[agentResponse]{
-				Index: index,
-				Body:  body,
+				Index:     entry.Index,
+				CacheAgeS: age.Seconds(),
+				Body:      entry.Body,
 			}, nil
 		}
 	}
@@ -60,17 +61,21 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 		return s.buildAgentList(input, cfg, rawCfg, sp, cityName, sessTmpl, wantPeek)
 	}
 	var body ListBody[agentResponse]
+	var cacheAge time.Duration
 	if cacheKey == "" {
 		body = build()
 	} else {
+		// The index a coalesced waiter reports is the LEADER's, carried on
+		// the cached entry, never the waiter's own later read — see
+		// cachedAgentListEntry.
 		// Concurrent identical requests share one build. A burst of dashboard
 		// and client polls used to each walk the fleet in parallel, and on a
 		// loaded host six of them in flight at once took a minute each.
 		v, _, _ := s.agentListFlight.Do(cacheKey, func() (any, error) {
-			if cached, ok := s.cachedAgentList(cacheKey); ok {
-				return cached, nil
+			if cached, age, ok := s.cachedAgentList(cacheKey); ok {
+				return agentListFlightResult{entry: cached, age: age}, nil
 			}
-			built := build()
+			built := cachedAgentListEntry{Index: index, Body: build()}
 			// Stored under the bucket the build FINISHED in, not the one it
 			// entered. This build takes tens of seconds on the loaded hosts
 			// the cache exists for, so a bucket captured at entry is already
@@ -85,9 +90,12 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 			// the floor is lowered below the bucket TTL. /status stores the
 			// same way, and matching the sibling handler is its own reason.
 			s.storeResponse(cacheKey, responseCacheTimeBucket(time.Now()), built)
-			return built, nil
+			return agentListFlightResult{entry: built}, nil
 		})
-		body = v.(ListBody[agentResponse])
+		result := v.(agentListFlightResult)
+		index = result.entry.Index
+		cacheAge = result.age
+		body = result.entry.Body
 		// Every waiter on one flight is handed the leader's value, so give
 		// each its own copy. The sibling cache path deep-copies for exactly
 		// this reason (cloneCachedValue in response_cache.go): a body that
@@ -101,9 +109,20 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 	}
 
 	return &ListOutput[agentResponse]{
-		Index: index,
-		Body:  body,
+		Index:     index,
+		CacheAgeS: cacheAge.Seconds(),
+		Body:      body,
 	}, nil
+}
+
+// agentListFlightResult is what one coalesced agent-list build hands to every
+// waiter on it: the entry, and the age it was served at when the leader found
+// a usable cache entry instead of building. Waiters must report the LEADER's
+// index and age, not their own later reads — see cachedAgentListEntry. It is
+// never cached, so unlike cachedAgentListEntry it needs no JSON shape.
+type agentListFlightResult struct {
+	entry cachedAgentListEntry
+	age   time.Duration
 }
 
 // agentListResponseTTLFloor lets a non-blocking agent-list request reuse a
@@ -115,24 +134,46 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 // bucket-driven invalidation behavior.
 var agentListResponseTTLFloor = 3 * time.Second
 
+// cachedAgentListEntry is what the agent-list response cache stores: the built
+// body together with the event index it was built AT.
+//
+// Serving the stored index rather than the current one is what makes a cache
+// hit safe for a long-polling client. AgentListInput embeds BlockingParam, so
+// ?index=N&wait= is a supported shape; a client that received a body built at
+// index 100 but labeled with the current index 140 would long-poll from 140
+// and never see events 101-140 reflected in a body that predates them. The
+// stored index is conservative in the safe direction: it may be older than
+// the body strictly needs, which costs one extra rebuild, never a missed
+// event.
+type cachedAgentListEntry struct {
+	Index uint64                  `json:"index"`
+	Body  ListBody[agentResponse] `json:"body"`
+}
+
 // cachedAgentList returns a previously built list for cacheKey when the shared
 // response cache can still answer it: an entry from the current wall-clock
-// bucket, or one stored within agentListResponseTTLFloor. Callers that must
-// not be served from cache (blocking ?index=&wait=, ?peek) pass an empty key,
-// which never matches.
-func (s *Server) cachedAgentList(cacheKey string) (ListBody[agentResponse], bool) {
-	if body, ok := cachedResponseAs[ListBody[agentResponse]](s, cacheKey, responseCacheTimeBucket(time.Now())); ok {
-		return body, true
+// bucket, or one stored within agentListResponseTTLFloor. It reports the
+// served entry's age so the handler can surface it as X-GC-Cache-Age-S rather
+// than leaving the zero value, which affirmatively claims the response was not
+// cache-served. Callers that must not be served from cache (blocking
+// ?index=&wait=, ?peek) pass an empty key, which never matches.
+func (s *Server) cachedAgentList(cacheKey string) (cachedAgentListEntry, time.Duration, bool) {
+	if entry, age, ok := cachedResponseAgedAs[cachedAgentListEntry](s, cacheKey, responseCacheTimeBucket(time.Now())); ok {
+		return entry, age, true
 	}
-	return cachedResponseWithinAgeAs[ListBody[agentResponse]](s, cacheKey, agentListResponseTTLFloor)
+	return cachedResponseWithinAgeAgedAs[cachedAgentListEntry](s, cacheKey, agentListResponseTTLFloor)
 }
 
 // buildAgentList walks every declared agent (pool-expanded) and reads its
-// runtime state. This is the expensive half of GET /agents: one tmux fork
-// per running agent, plus a bead lookup each, so callers cache and coalesce
-// it rather than calling it per request.
+// runtime state. This is the expensive half of GET /agents, so callers cache
+// and coalesce it rather than calling it per request. Both of its fan-outs
+// are collapsed to one fleet-wide read: attach state and activity come from
+// the runtime provider's session snapshot rather than a tmux fork per agent
+// (attachedOf, lastActivityOf), and active beads come from one in_progress
+// query per rig rather than a bead lookup per agent (activeBeadIndex).
 func (s *Server) buildAgentList(input *AgentListInput, cfg *config.City, rawCfg *config.City, sp runtime.Provider, cityName, sessTmpl string, wantPeek bool) ListBody[agentResponse] {
 	var agents []agentResponse
+	activeBeads := newActiveBeadIndex(s.state.BeadStores())
 	for _, a := range cfg.Agents {
 		// Provenance is a property of the declared agent, shared by every
 		// pool-expanded instance, so compute it once per source agent.
@@ -160,8 +201,10 @@ func (s *Server) buildAgentList(input *AgentListInput, cfg *config.City, rawCfg 
 			// The suspended flag lives in the tmux session's environment, so a
 			// session that is not running cannot carry it, and asking costs a
 			// `tmux show-environment` fork that fails with session-not-found.
-			// On a fleet of ~90 agents with ~15 running, that was most of the
-			// forks behind a 20-60s GET /agents on a loaded host.
+			// On high-gas-city (30 declared agents, 0 running, measured
+			// 2026-09-13) every one of those forks was a failing read for an
+			// agent that was not running, and they were most of the forks
+			// behind a GET /agents that took tens of seconds on a loaded host.
 			if running {
 				if v, err := sp.GetMeta(sessionName, "suspended"); err == nil && v == "true" {
 					suspended = true
@@ -212,7 +255,7 @@ func (s *Server) buildAgentList(input *AgentListInput, cfg *config.City, rawCfg 
 				}
 			}
 
-			resp.ActiveBead = s.findActiveBeadForAssignees(ea.rig, sessionID, sessionName, ea.qualifiedName)
+			resp.ActiveBead = activeBeads.lookup(ea.rig, sessionID, sessionName, ea.qualifiedName)
 			quarantined := s.state.IsQuarantined(sessionName)
 			resp.State = computeAgentState(suspended, quarantined, running, resp.ActiveBead, lastActivity)
 

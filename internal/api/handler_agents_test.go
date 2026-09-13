@@ -39,7 +39,10 @@ type activeBeadQueryStore struct {
 }
 
 func (s *activeBeadQueryStore) List(query beads.ListQuery) ([]beads.Bead, error) {
-	if query.Assignee != "" && query.Status == "in_progress" {
+	// Records both shapes the active-bead lookup can take: the fleet-wide
+	// in_progress read the list build folds in memory, and the per-assignee
+	// read the single-agent detail view still makes.
+	if query.Status == "in_progress" {
 		s.queries = append(s.queries, query)
 	}
 	return s.Store.List(query)

@@ -54,7 +54,7 @@ type responseCacheEntry struct {
 }
 
 // expires is the index-keyed lookup deadline. Age-bounded lookups
-// (cachedResponseWithinAge) apply their own caller-supplied window
+// (cachedResponseWithinAgeAged) apply their own caller-supplied window
 // against storedAt instead.
 func (e responseCacheEntry) expires() time.Time {
 	return e.storedAt.Add(responseCacheTTL)
@@ -208,25 +208,50 @@ func (s *Server) evictResponseCache(now time.Time) {
 	}
 }
 
-// cachedResponseWithinAge returns the cached value for key when the entry
-// was stored within maxAge, regardless of the event index it was built at.
-// For endpoints whose rebuild fans out to external stores (status), the
-// exact-index lookup never hits on busy cities — every event advances the
-// index — so callers opt into a bounded-staleness window instead.
-func (s *Server) cachedResponseWithinAge(key string, maxAge time.Duration) (any, bool) {
+// cachedResponseWithinAgeAged returns the cached value for key when the entry
+// was stored within maxAge, regardless of the event index it was built at,
+// along with how long ago it was stored. For endpoints whose rebuild fans out
+// to external stores (status, agents), the exact-index lookup never hits on
+// busy cities — every event advances the index — so callers opt into a
+// bounded-staleness window instead. Handlers that serve a cache hit surface
+// the age as X-GC-Cache-Age-S, so a client can tell a re-served body from a
+// fresh one instead of reading the omitted zero as "not cache-served".
+func (s *Server) cachedResponseWithinAgeAged(key string, maxAge time.Duration) (any, time.Duration, bool) {
 	if key == "" {
-		return nil, false
+		return nil, 0, false
 	}
 	s.responseCacheMu.Lock()
 	defer s.responseCacheMu.Unlock()
 	if s.responseCacheEntries == nil {
-		return nil, false
+		return nil, 0, false
 	}
 	entry, ok := s.responseCacheEntries[key]
-	if !ok || time.Since(entry.storedAt) > maxAge {
-		return nil, false
+	if !ok {
+		return nil, 0, false
 	}
-	return entry.value, true
+	age := time.Since(entry.storedAt)
+	if age > maxAge {
+		return nil, 0, false
+	}
+	return entry.value, age, true
+}
+
+// cachedResponseAged is cachedResponse that also reports the entry's age, for
+// the same reason as cachedResponseWithinAgeAged.
+func (s *Server) cachedResponseAged(key string, index uint64) (any, time.Duration, bool) {
+	if key == "" {
+		return nil, 0, false
+	}
+	s.responseCacheMu.Lock()
+	defer s.responseCacheMu.Unlock()
+	if s.responseCacheEntries == nil {
+		return nil, 0, false
+	}
+	entry, ok := s.responseCacheEntries[key]
+	if !ok || entry.index != index || time.Now().After(entry.expires()) {
+		return nil, 0, false
+	}
+	return entry.value, time.Since(entry.storedAt), true
 }
 
 // cachedResponseAs is a generic helper: retrieve the cached value and
@@ -242,12 +267,32 @@ func cachedResponseAs[T any](s *Server, key string, index uint64) (T, bool) {
 
 // cachedResponseWithinAgeAs is cachedResponseAs for age-bounded lookups.
 func cachedResponseWithinAgeAs[T any](s *Server, key string, maxAge time.Duration) (T, bool) {
-	v, ok := s.cachedResponseWithinAge(key, maxAge)
+	v, _, ok := cachedResponseWithinAgeAgedAs[T](s, key, maxAge)
+	return v, ok
+}
+
+// cachedResponseWithinAgeAgedAs is cachedResponseWithinAgeAs that also reports
+// the served entry's age.
+func cachedResponseWithinAgeAgedAs[T any](s *Server, key string, maxAge time.Duration) (T, time.Duration, bool) {
+	v, age, ok := s.cachedResponseWithinAgeAged(key, maxAge)
 	if !ok {
 		var zero T
-		return zero, false
+		return zero, 0, false
 	}
-	return cloneCachedValue[T](v)
+	cloned, cloneOK := cloneCachedValue[T](v)
+	return cloned, age, cloneOK
+}
+
+// cachedResponseAgedAs is cachedResponseAs that also reports the served
+// entry's age.
+func cachedResponseAgedAs[T any](s *Server, key string, index uint64) (T, time.Duration, bool) {
+	v, age, ok := s.cachedResponseAged(key, index)
+	if !ok {
+		var zero T
+		return zero, 0, false
+	}
+	cloned, cloneOK := cloneCachedValue[T](v)
+	return cloned, age, cloneOK
 }
 
 // cloneCachedValue deep-copies a cached value via a JSON roundtrip.

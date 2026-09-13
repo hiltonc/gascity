@@ -18,6 +18,10 @@ type countingStore struct {
 	listCalls           int
 	listByLabelCalls    int
 	listByAssigneeCalls int
+	// activeBeadListCalls counts the one-per-rig in_progress read that an
+	// agent-list build folds into assignee -> bead, which is what tells a
+	// test whether a build ran at all.
+	activeBeadListCalls int
 }
 
 func (s *countingStore) ListOpen(status ...string) ([]beads.Bead, error) {
@@ -31,6 +35,8 @@ func (s *countingStore) List(query beads.ListQuery) ([]beads.Bead, error) {
 		s.listByAssigneeCalls++
 	case query.Label != "":
 		s.listByLabelCalls++
+	case query.Status == "in_progress":
+		s.activeBeadListCalls++
 	case query.Status != "" || query.AllowScan:
 		s.listCalls++
 	}
@@ -198,7 +204,7 @@ func TestHandleAgentListCachesAcrossIndexChangesWithinTheBucket(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("first agents = %d, want 200", rec.Code)
 	}
-	built := store.listByAssigneeCalls
+	built := store.activeBeadListCalls
 	if built == 0 {
 		t.Fatalf("first list made no bead lookups; the fixture is not exercising the build")
 	}
@@ -208,8 +214,8 @@ func TestHandleAgentListCachesAcrossIndexChangesWithinTheBucket(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("second agents = %d, want 200", rec.Code)
 	}
-	if store.listByAssigneeCalls != built {
-		t.Fatalf("ListByAssignee calls after cached repeat = %d, want %d", store.listByAssigneeCalls, built)
+	if store.activeBeadListCalls != built {
+		t.Fatalf("active-bead reads after cached repeat = %d, want %d", store.activeBeadListCalls, built)
 	}
 
 	state.eventProv.Record(events.Event{Type: events.SessionWoke, Actor: "gc"})
@@ -218,8 +224,8 @@ func TestHandleAgentListCachesAcrossIndexChangesWithinTheBucket(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("third agents = %d, want 200", rec.Code)
 	}
-	if store.listByAssigneeCalls != built {
-		t.Fatalf("ListByAssignee calls after an event within the bucket = %d, want %d (served from the bucket cache)", store.listByAssigneeCalls, built)
+	if store.activeBeadListCalls != built {
+		t.Fatalf("active-bead reads after an event within the bucket = %d, want %d (served from the bucket cache)", store.activeBeadListCalls, built)
 	}
 
 	// A blocking wait must not be answered from a body built before the
@@ -231,8 +237,8 @@ func TestHandleAgentListCachesAcrossIndexChangesWithinTheBucket(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("blocking agents = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
-	if store.listByAssigneeCalls != built*2 {
-		t.Fatalf("ListByAssignee calls after a blocking wait = %d, want %d (rebuilt)", store.listByAssigneeCalls, built*2)
+	if store.activeBeadListCalls != built*2 {
+		t.Fatalf("ListByAssignee calls after a blocking wait = %d, want %d (rebuilt)", store.activeBeadListCalls, built*2)
 	}
 }
 
