@@ -78,18 +78,58 @@ func (s *gatedStore) ListByAssignee(assignee, status string, limit int) ([]beads
 	return s.Store.ListByAssignee(assignee, status, limit)
 }
 
-// pinBuckets makes every request land in its own wall-clock bucket and sets
-// the age floor, so a test can separate the two lookups cachedAgentList makes.
+// pinBuckets pins the two knobs cachedAgentList reads so a test can separate
+// its two lookups. The bucket is held wide enough that it never rolls on its
+// own; a test that needs a rolled bucket or an expired floor puts the entry
+// in that state with rollCachedResponseBucket and ageCachedResponse rather
+// than waiting for wall-clock time to pass.
 func pinBuckets(t *testing.T, floor time.Duration) {
 	t.Helper()
 	prevTTL := timeBucketResponseCacheTTL
 	prevFloor := agentListResponseTTLFloor
-	timeBucketResponseCacheTTL = time.Millisecond
+	timeBucketResponseCacheTTL = time.Hour
 	agentListResponseTTLFloor = floor
 	t.Cleanup(func() {
 		timeBucketResponseCacheTTL = prevTTL
 		agentListResponseTTLFloor = prevFloor
 	})
+}
+
+// agentListCacheKey is the key humaHandleAgentList derives for an unfiltered
+// list, which is the entry the tests below reach into.
+func agentListCacheKey() string {
+	return cacheKeyFor("agents", &AgentListInput{})
+}
+
+// rollCachedResponseBucket moves the stored entry out of the wall-clock
+// bucket it was written in, leaving its age untouched. That is the state
+// every build reaches on a loaded host — it outlives its own bucket —
+// reproduced as state rather than as elapsed time.
+func rollCachedResponseBucket(t *testing.T, s *Server, key string) {
+	t.Helper()
+	s.responseCacheMu.Lock()
+	defer s.responseCacheMu.Unlock()
+	entry, ok := s.responseCacheEntries[key]
+	if !ok {
+		t.Fatalf("no cache entry for %q to roll: the build stored nothing", key)
+	}
+	entry.index--
+	s.responseCacheEntries[key] = entry
+}
+
+// ageCachedResponse backdates the stored entry past maxAge, so the age-floor
+// lookup — and the index-keyed TTL measured from the same timestamp — both
+// treat it as too old to serve.
+func ageCachedResponse(t *testing.T, s *Server, key string, maxAge time.Duration) {
+	t.Helper()
+	s.responseCacheMu.Lock()
+	defer s.responseCacheMu.Unlock()
+	entry, ok := s.responseCacheEntries[key]
+	if !ok {
+		t.Fatalf("no cache entry for %q to age: the build stored nothing", key)
+	}
+	entry.storedAt = entry.storedAt.Add(-(maxAge + time.Minute))
+	s.responseCacheEntries[key] = entry
 }
 
 func listAgents(t *testing.T, srv *Server) *ListOutput[agentResponse] {
@@ -119,9 +159,9 @@ func TestAgentListServesARecentBodyAfterTheBucketRolls(t *testing.T) {
 		t.Fatalf("first list made no bead lookups; the fixture is not exercising the build")
 	}
 
-	// Well past the 1ms bucket: the exact-bucket lookup cannot match, so a
-	// hit here can only come from the age floor.
-	time.Sleep(20 * time.Millisecond)
+	// The entry is no longer in the current bucket, so the exact-bucket
+	// lookup cannot match and a hit here can only come from the age floor.
+	rollCachedResponseBucket(t, srv, agentListCacheKey())
 
 	listAgents(t, srv)
 	if store.listByAssigneeCalls != built {
@@ -145,7 +185,9 @@ func TestAgentListRebuildsOnceTheTTLFloorExpires(t *testing.T) {
 		t.Fatalf("first list made no bead lookups; the fixture is not exercising the build")
 	}
 
-	time.Sleep(20 * time.Millisecond)
+	key := agentListCacheKey()
+	rollCachedResponseBucket(t, srv, key)
+	ageCachedResponse(t, srv, key, agentListResponseTTLFloor)
 
 	listAgents(t, srv)
 	if store.listByAssigneeCalls <= built {
@@ -160,8 +202,8 @@ func TestAgentListRebuildsOnceTheTTLFloorExpires(t *testing.T) {
 func TestAgentListCoalescedRequestsGetIndependentBodies(t *testing.T) {
 	const callers = 4
 
-	// Short bucket and floor so the burst below cannot be answered from the
-	// warm-up's cache entry and has to reach the build.
+	// A short floor to start with; the warm-up's entry is dropped outright
+	// below, so the burst has to reach the build either way.
 	pinBuckets(t, time.Millisecond)
 
 	state := newFakeState(t)
