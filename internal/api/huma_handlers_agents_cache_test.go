@@ -176,13 +176,29 @@ func TestAgentListCoalescedRequestsGetIndependentBodies(t *testing.T) {
 	if perBuild == 0 {
 		t.Fatalf("the warm-up list made no bead lookups; the fixture is not exercising the build")
 	}
-	time.Sleep(20 * time.Millisecond) // past the bucket and the floor
+	// Drop the warm-up's entry so the leader below has to build, and raise
+	// the floor so the leader's own entry stays readable for the rest of the
+	// test. A follower that arrives after the leader's build has finished is
+	// then served that entry — itself a clone, via cachedResponseWithinAgeAs
+	// — instead of missing and starting a second build. Neither assertion
+	// below then depends on which side of the leader's completion a follower
+	// lands on. pinBuckets restores the floor.
+	srv.responseCacheMu.Lock()
+	srv.responseCacheEntries = nil
+	srv.responseCacheMu.Unlock()
+	agentListResponseTTLFloor = time.Hour
+
 	store.resetCount()
 	store.arm()
 
 	outs := make(chan *ListOutput[agentResponse], callers)
 	errs := make(chan error, callers)
+	// Each caller announces itself immediately before the handler call, so
+	// the test can prove every goroutine is running and at the call site
+	// rather than sleeping long enough that it probably is.
+	atCallSite := make(chan struct{}, callers)
 	call := func() {
+		atCallSite <- struct{}{}
 		out, err := srv.humaHandleAgentList(context.Background(), &AgentListInput{})
 		if err != nil {
 			errs <- err
@@ -197,6 +213,7 @@ func TestAgentListCoalescedRequestsGetIndependentBodies(t *testing.T) {
 	// follower that does not join the leader's build must reach the store —
 	// which the lookup count below would catch.
 	go call()
+	<-atCallSite
 	select {
 	case <-store.entered:
 	case <-time.After(30 * time.Second):
@@ -205,11 +222,18 @@ func TestAgentListCoalescedRequestsGetIndependentBodies(t *testing.T) {
 	for i := 1; i < callers; i++ {
 		go call()
 	}
-	// Give the followers time to reach the singleflight while the leader is
-	// still held. A follower that is slower than this is served from the
-	// leader's cache entry instead, which is also a shared body and is also
-	// covered by the copy assertion below.
-	time.Sleep(200 * time.Millisecond)
+	// A barrier, not a sleep: release the leader only once every follower
+	// goroutine is running and at the handler call. A follower that still
+	// arrives after the leader finishes is served the leader's cache entry,
+	// which makes no store call and is its own clone, so both assertions
+	// below hold either way.
+	for i := 1; i < callers; i++ {
+		select {
+		case <-atCallSite:
+		case <-time.After(30 * time.Second):
+			t.Fatal("a follower goroutine never reached the agent-list call")
+		}
+	}
 	close(store.release)
 
 	seen := make([]*ListOutput[agentResponse], 0, callers)

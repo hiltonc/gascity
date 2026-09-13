@@ -76,6 +76,14 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 			// the cache exists for, so a bucket captured at entry is already
 			// superseded by the time the entry is written, and no later
 			// reader could ever match it.
+			//
+			// Belt-and-braces while agentListResponseTTLFloor exceeds
+			// timeBucketResponseCacheTTL: the floor then strictly dominates,
+			// so every entry this bucket could serve is one the age-floor
+			// read in cachedAgentList already answers, and that read is the
+			// half the tests own. This store becomes load-bearing only if
+			// the floor is lowered below the bucket TTL. /status stores the
+			// same way, and matching the sibling handler is its own reason.
 			s.storeResponse(cacheKey, responseCacheTimeBucket(time.Now()), built)
 			return built, nil
 		})
