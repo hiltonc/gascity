@@ -8,7 +8,7 @@ import (
 )
 
 // blockingWindowExecutor answers list-panes at once and blocks list-windows
-// until its own context is cancelled, so a test can observe exactly how much
+// until its own context is canceled, so a test can observe exactly how much
 // of the fetch budget the window listing is allowed to spend.
 type blockingWindowExecutor struct {
 	panes string
@@ -72,7 +72,7 @@ func TestListWindowsCannotConsumeTheWholeFetchBudget(t *testing.T) {
 // The sub-budget is a cap on the listing, not a floor on it: a listing that
 // answers at once must not be made to wait, and its output must still fold
 // onto the sessions the panes walk found.
-func TestFetchStateFoldsAWindowListingThatAnswersAtOnce(t *testing.T) {
+func TestListWindowsFoldsAListingThatAnswersAtOnce(t *testing.T) {
 	tm := NewTmux()
 	tm.exec = &fakeExecutor{outs: []string{"gc-a\t1\t1700000900\n"}}
 	f := &tmuxFetcher{tm: tm}
