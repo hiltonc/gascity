@@ -29,6 +29,16 @@ const defaultStaleTTL = 30 * time.Second
 // fetchTimeout is the hard timeout for a single runtime-state fetch.
 const fetchTimeout = 3 * time.Second
 
+// windowListingBudget caps the window listing's share of one fetchTimeout.
+// FetchState runs three subprocesses in series, and the third —
+// fetchProcessSnapshot — feeds processAlive, which the reconciler's liveness
+// refinement reads. Without a sub-budget the window listing, which exists
+// only to spare GET /agents a fork per agent, could spend the whole budget on
+// a loaded host and leave the process snapshot none, degrading a reconciler
+// input on exactly the hosts this optimization targets. A third of the budget
+// leaves two thirds for the panes walk and the process snapshot.
+const windowListingBudget = fetchTimeout / 3
+
 // StateFetcher abstracts tmux subprocess calls for testability.
 type StateFetcher interface {
 	// FetchState returns a runtime-state snapshot for live sessions.
@@ -312,7 +322,7 @@ func (f *tmuxFetcher) FetchState(ctx context.Context) (runtimeStateSnapshot, err
 		}
 		state.Sessions[name] = session
 	}
-	windows, err := f.tm.runCtx(ctx, "list-windows", "-a", "-F", "#{session_name}\t#{session_attached}\t#{window_activity}")
+	windows, err := f.listWindows(ctx)
 	if err != nil {
 		// Degrade like the process snapshot below: liveness is already
 		// established, attach state and activity fall back to per-session
@@ -338,6 +348,16 @@ func (f *tmuxFetcher) FetchState(ctx context.Context) (runtimeStateSnapshot, err
 	state.Processes = processes
 	state.ProcessesAvailable = true
 	return state, nil
+}
+
+// listWindows runs the fleet-wide window listing under its own sub-budget so
+// it cannot consume the share of fetchTimeout that the process snapshot after
+// it needs. The parent context still applies: whichever bound expires first
+// ends the call, and a failure degrades to per-session probes.
+func (f *tmuxFetcher) listWindows(ctx context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, windowListingBudget)
+	defer cancel()
+	return f.tm.runCtx(ctx, "list-windows", "-a", "-F", "#{session_name}\t#{session_attached}\t#{window_activity}")
 }
 
 // applyWindowListing folds `list-windows -a` output onto the sessions that

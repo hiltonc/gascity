@@ -44,12 +44,11 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 	// callers (blocking ?index=&wait=) bypass the cache so the body they
 	// receive reflects the event they waited for, never one built before it.
 	cacheKey := ""
-	bucket := responseCacheTimeBucket(time.Now())
 	if !wantPeek && !bp.isBlocking() {
 		// Cache key derived from input struct tags — adding a new query
 		// param to AgentListInput automatically participates in the key.
 		cacheKey = cacheKeyFor("agents", input)
-		if body, ok := cachedResponseAs[ListBody[agentResponse]](s, cacheKey, bucket); ok {
+		if body, ok := s.cachedAgentList(cacheKey); ok {
 			return &ListOutput[agentResponse]{
 				Index: index,
 				Body:  body,
@@ -68,20 +67,56 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 		// and client polls used to each walk the fleet in parallel, and on a
 		// loaded host six of them in flight at once took a minute each.
 		v, _, _ := s.agentListFlight.Do(cacheKey, func() (any, error) {
-			if cached, ok := cachedResponseAs[ListBody[agentResponse]](s, cacheKey, bucket); ok {
+			if cached, ok := s.cachedAgentList(cacheKey); ok {
 				return cached, nil
 			}
 			built := build()
-			s.storeResponse(cacheKey, bucket, built)
+			// Stored under the bucket the build FINISHED in, not the one it
+			// entered. This build takes tens of seconds on the loaded hosts
+			// the cache exists for, so a bucket captured at entry is already
+			// superseded by the time the entry is written, and no later
+			// reader could ever match it.
+			s.storeResponse(cacheKey, responseCacheTimeBucket(time.Now()), built)
 			return built, nil
 		})
 		body = v.(ListBody[agentResponse])
+		// Every waiter on one flight is handed the leader's value, so give
+		// each its own copy. The sibling cache path deep-copies for exactly
+		// this reason (cloneCachedValue in response_cache.go): a body that
+		// several goroutines hold must not be one a later partial-error note
+		// can append to in place.
+		if cloned, ok := cloneCachedValue[ListBody[agentResponse]](body); ok {
+			body = cloned
+		} else {
+			log.Printf("api: agent list could not be cloned for a coalesced request; waiters share one body")
+		}
 	}
 
 	return &ListOutput[agentResponse]{
 		Index: index,
 		Body:  body,
 	}, nil
+}
+
+// agentListResponseTTLFloor lets a non-blocking agent-list request reuse a
+// recently built body after the time-bucket entry has rolled over — the floor
+// /status applies (statusResponseTTLFloor in handler_status.go). Without it
+// the exact-bucket lookup is the only one, and an entry is unreadable whenever
+// the build outlived the window it was stored in, which is every build on the
+// loaded hosts this cache exists for. Var, not const, so tests can pin
+// bucket-driven invalidation behavior.
+var agentListResponseTTLFloor = 3 * time.Second
+
+// cachedAgentList returns a previously built list for cacheKey when the shared
+// response cache can still answer it: an entry from the current wall-clock
+// bucket, or one stored within agentListResponseTTLFloor. Callers that must
+// not be served from cache (blocking ?index=&wait=, ?peek) pass an empty key,
+// which never matches.
+func (s *Server) cachedAgentList(cacheKey string) (ListBody[agentResponse], bool) {
+	if body, ok := cachedResponseAs[ListBody[agentResponse]](s, cacheKey, responseCacheTimeBucket(time.Now())); ok {
+		return body, true
+	}
+	return cachedResponseWithinAgeAs[ListBody[agentResponse]](s, cacheKey, agentListResponseTTLFloor)
 }
 
 // buildAgentList walks every declared agent (pool-expanded) and reads its

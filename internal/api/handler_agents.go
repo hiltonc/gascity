@@ -435,7 +435,6 @@ func resolveProviderInfo(agentProvider string, cfg *config.City) (provider, disp
 	return provider, strings.ToUpper(provider[:1]) + provider[1:]
 }
 
-// computeAgentState derives the state enum from existing agent data.
 // lastActivityOf reads a session's last activity from the provider's fleet
 // snapshot when it keeps one (runtime.SessionSnapshotProvider), so a list of
 // N running agents costs one tmux fork rather than N. It falls back to the
@@ -460,6 +459,7 @@ func attachedOf(sp runtime.Provider, name string) bool {
 	return sp.IsAttached(name)
 }
 
+// computeAgentState derives the state enum from existing agent data.
 func computeAgentState(suspended, quarantined, running bool, activeBead string, lastActivity *time.Time) string {
 	if suspended {
 		return "suspended"
