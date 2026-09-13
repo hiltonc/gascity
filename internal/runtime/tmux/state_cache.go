@@ -29,6 +29,16 @@ const defaultStaleTTL = 30 * time.Second
 // fetchTimeout is the hard timeout for a single runtime-state fetch.
 const fetchTimeout = 3 * time.Second
 
+// windowListingBudget caps the window listing's share of one fetchTimeout.
+// FetchState runs three subprocesses in series, and the third —
+// fetchProcessSnapshot — feeds processAlive, which the reconciler's liveness
+// refinement reads. Without a sub-budget the window listing, which exists
+// only to spare GET /agents a fork per agent, could spend the whole budget on
+// a loaded host and leave the process snapshot none, degrading a reconciler
+// input on exactly the hosts this optimization targets. A third of the budget
+// leaves two thirds for the panes walk and the process snapshot.
+const windowListingBudget = fetchTimeout / 3
+
 // StateFetcher abstracts tmux subprocess calls for testability.
 type StateFetcher interface {
 	// FetchState returns a runtime-state snapshot for live sessions.
@@ -44,6 +54,10 @@ type paneRuntimeState struct {
 type sessionRuntimeState struct {
 	Running bool
 	Panes   []paneRuntimeState
+	// Attached and Activity come from the window listing (see
+	// runtimeStateSnapshot.WindowsAvailable), not from list-panes.
+	Attached bool
+	Activity time.Time
 }
 
 type processRuntimeState struct {
@@ -70,6 +84,12 @@ type runtimeStateSnapshot struct {
 	// busy fleet it is marked unavailable rather than discarding the
 	// authoritative tmux liveness, and processAlive degrades optimistically.
 	ProcessesAvailable bool
+	// WindowsAvailable reports whether the `tmux list-windows -a` listing that
+	// carries per-session attach state and window activity was fetched. Like
+	// the process snapshot it is a refinement over list-panes liveness: when
+	// it is missing, Attached and LastActivity answer "not known" and callers
+	// fall back to their per-session probes.
+	WindowsAvailable bool
 }
 
 // StateCache caches tmux runtime state to avoid spawning N subprocess calls per
@@ -246,7 +266,13 @@ type tmuxFetcher struct {
 	tm *Tmux
 }
 
-// FetchState runs one tmux pane snapshot and one process-table snapshot.
+// FetchState runs three subprocesses in series against one fetchTimeout: a
+// tmux pane snapshot, a fleet-wide window listing, and a process-table
+// snapshot. Only the pane snapshot is load-bearing — it establishes session
+// liveness and its failure fails the fetch. The window listing and the
+// process snapshot are refinements that degrade to per-session probes and to
+// optimistic liveness rather than failing.
+//
 // Sessions where remain-on-exit has kept a dead pane (pane_dead=1) are
 // excluded — they represent exited processes, not running ones.
 func (f *tmuxFetcher) FetchState(ctx context.Context) (runtimeStateSnapshot, error) {
@@ -302,6 +328,16 @@ func (f *tmuxFetcher) FetchState(ctx context.Context) (runtimeStateSnapshot, err
 		}
 		state.Sessions[name] = session
 	}
+	windows, err := f.listWindows(ctx)
+	if err != nil {
+		// Degrade like the process snapshot below: liveness is already
+		// established, attach state and activity fall back to per-session
+		// probes until the next refresh.
+		log.Printf("tmux state cache: window snapshot degraded, attach state and activity fall back to per-session probes: %v", err)
+	} else {
+		applyWindowListing(state.Sessions, windows)
+		state.WindowsAvailable = true
+	}
 	processes, err := fetchProcessSnapshot(ctx)
 	if err != nil {
 		// Degrade, do NOT discard: tmux list-panes above already established
@@ -318,6 +354,75 @@ func (f *tmuxFetcher) FetchState(ctx context.Context) (runtimeStateSnapshot, err
 	state.Processes = processes
 	state.ProcessesAvailable = true
 	return state, nil
+}
+
+// listWindows runs the fleet-wide window listing under its own sub-budget so
+// it cannot consume the share of fetchTimeout that the process snapshot after
+// it needs. The parent context still applies: whichever bound expires first
+// ends the call, and a failure degrades to per-session probes.
+func (f *tmuxFetcher) listWindows(ctx context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, windowListingBudget)
+	defer cancel()
+	return f.tm.runCtx(ctx, "list-windows", "-a", "-F", "#{session_name}\t#{session_attached}\t#{window_activity}")
+}
+
+// applyWindowListing folds `list-windows -a` output onto the sessions that
+// list-panes found: attached when any client is attached, activity as the
+// most recent window's, which is the reading Tmux.rawSessionActivity takes
+// per session (session_activity sticks at attach time for detached agents).
+// Sessions the panes listing did not report are left out; a malformed line
+// is skipped rather than failing the snapshot.
+func applyWindowListing(sessions map[string]sessionRuntimeState, out string) {
+	for _, line := range strings.Split(out, "\n") {
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) < 3 || parts[0] == "" {
+			continue
+		}
+		session, ok := sessions[parts[0]]
+		if !ok {
+			continue
+		}
+		if clients, err := strconv.Atoi(strings.TrimSpace(parts[1])); err == nil && clients > 0 {
+			session.Attached = true
+		}
+		if ts, err := strconv.ParseInt(strings.TrimSpace(parts[2]), 10, 64); err == nil && ts > 0 {
+			if at := time.Unix(ts, 0); at.After(session.Activity) {
+				session.Activity = at
+			}
+		}
+		sessions[parts[0]] = session
+	}
+}
+
+// Attached reports the attach state of the named session from the cached
+// window listing. known is false when the listing was unavailable or the
+// session is not running in the snapshot; callers then probe live.
+func (c *StateCache) Attached(name string) (attached, known bool) {
+	state := c.currentState()
+	if !state.WindowsAvailable {
+		return false, false
+	}
+	session, ok := state.Sessions[name]
+	if !ok || !session.Running {
+		return false, false
+	}
+	return session.Attached, true
+}
+
+// LastActivity reports the most recent window activity of the named session
+// from the cached window listing. known is false when the listing was
+// unavailable, the session is not running in the snapshot, or no window
+// reported a timestamp.
+func (c *StateCache) LastActivity(name string) (time.Time, bool) {
+	state := c.currentState()
+	if !state.WindowsAvailable {
+		return time.Time{}, false
+	}
+	session, ok := state.Sessions[name]
+	if !ok || !session.Running || session.Activity.IsZero() {
+		return time.Time{}, false
+	}
+	return session.Activity, true
 }
 
 func (s runtimeStateSnapshot) processAlive(sessionName string, processNames []string) bool {

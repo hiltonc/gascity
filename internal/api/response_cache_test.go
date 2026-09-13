@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -176,7 +177,16 @@ func TestHandleStatusBlockingBypassesTimeCache(t *testing.T) {
 	}
 }
 
-func TestHandleAgentListCachesUntilIndexChanges(t *testing.T) {
+// The agent list is keyed on a wall-clock bucket, not the event index: on a
+// busy city the index advances every tick, so an index-keyed entry never hit
+// and every poll rebuilt the list at one tmux fork per running agent. Within
+// the bucket an event does not rebuild; a blocking wait always does, so the
+// body reflects the event it waited for.
+func TestHandleAgentListCachesAcrossIndexChangesWithinTheBucket(t *testing.T) {
+	prev := timeBucketResponseCacheTTL
+	timeBucketResponseCacheTTL = time.Hour
+	t.Cleanup(func() { timeBucketResponseCacheTTL = prev })
+
 	state := newFakeState(t)
 	store := &countingStore{Store: beads.NewMemStore()}
 	state.stores["myrig"] = store
@@ -188,15 +198,18 @@ func TestHandleAgentListCachesUntilIndexChanges(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("first agents = %d, want 200", rec.Code)
 	}
+	built := store.listByAssigneeCalls
+	if built == 0 {
+		t.Fatalf("first list made no bead lookups; the fixture is not exercising the build")
+	}
 
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("second agents = %d, want 200", rec.Code)
 	}
-
-	if store.listByAssigneeCalls != 2 {
-		t.Fatalf("ListByAssignee calls after cached repeat = %d, want 2", store.listByAssigneeCalls)
+	if store.listByAssigneeCalls != built {
+		t.Fatalf("ListByAssignee calls after cached repeat = %d, want %d", store.listByAssigneeCalls, built)
 	}
 
 	state.eventProv.Record(events.Event{Type: events.SessionWoke, Actor: "gc"})
@@ -205,8 +218,21 @@ func TestHandleAgentListCachesUntilIndexChanges(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("third agents = %d, want 200", rec.Code)
 	}
-	if store.listByAssigneeCalls != 4 {
-		t.Fatalf("ListByAssignee calls after index change = %d, want 4", store.listByAssigneeCalls)
+	if store.listByAssigneeCalls != built {
+		t.Fatalf("ListByAssignee calls after an event within the bucket = %d, want %d (served from the bucket cache)", store.listByAssigneeCalls, built)
+	}
+
+	// A blocking wait must not be answered from a body built before the
+	// event it waited for.
+	seq, _ := state.eventProv.LatestSeq()
+	blocking := httptest.NewRequest(http.MethodGet, cityURL(state, "/agents")+fmt.Sprintf("?index=%d&wait=1s", seq-1), nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, blocking)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("blocking agents = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if store.listByAssigneeCalls != built*2 {
+		t.Fatalf("ListByAssignee calls after a blocking wait = %d, want %d (rebuilt)", store.listByAssigneeCalls, built*2)
 	}
 }
 

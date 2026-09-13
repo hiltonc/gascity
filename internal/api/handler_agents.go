@@ -11,6 +11,7 @@ import (
 	"github.com/gastownhall/gascity/internal/agentutil"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
+	"github.com/gastownhall/gascity/internal/runtime"
 	workdirutil "github.com/gastownhall/gascity/internal/workdir"
 )
 
@@ -432,6 +433,30 @@ func resolveProviderInfo(agentProvider string, cfg *config.City) (provider, disp
 	}
 	// Unknown provider — title-case the name.
 	return provider, strings.ToUpper(provider[:1]) + provider[1:]
+}
+
+// lastActivityOf reads a session's last activity from the provider's fleet
+// snapshot when it keeps one (runtime.SessionSnapshotProvider), so a list of
+// N running agents costs one tmux fork rather than N. It falls back to the
+// per-session probe when the snapshot cannot answer.
+func lastActivityOf(sp runtime.Provider, name string) (time.Time, bool) {
+	if ssp, ok := sp.(runtime.SessionSnapshotProvider); ok {
+		if t, known := ssp.SnapshotLastActivity(name); known {
+			return t, !t.IsZero()
+		}
+	}
+	t, err := sp.GetLastActivity(name)
+	return t, err == nil && !t.IsZero()
+}
+
+// attachedOf is lastActivityOf for the attach state.
+func attachedOf(sp runtime.Provider, name string) bool {
+	if ssp, ok := sp.(runtime.SessionSnapshotProvider); ok {
+		if attached, known := ssp.SnapshotAttached(name); known {
+			return attached
+		}
+	}
+	return sp.IsAttached(name)
 }
 
 // computeAgentState derives the state enum from existing agent data.

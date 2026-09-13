@@ -732,3 +732,14 @@ func SyncWorkDirEnv(cfg Config) Config {
 	cfg.Env = env
 	return cfg
 }
+
+// SessionSnapshotProvider is implemented by providers that keep a short-lived
+// snapshot of per-session attach state and last activity for the whole
+// fleet, so a list endpoint can read every session without one subprocess
+// per session. known is false when the snapshot cannot answer for the
+// session (the listing behind it was unavailable, or the session is not in
+// it); callers then fall back to IsAttached and GetLastActivity.
+type SessionSnapshotProvider interface {
+	SnapshotAttached(name string) (attached, known bool)
+	SnapshotLastActivity(name string) (t time.Time, known bool)
+}

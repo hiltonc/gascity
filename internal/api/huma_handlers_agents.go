@@ -12,6 +12,7 @@ import (
 	"github.com/danielgtaylor/huma/v2/sse"
 	"github.com/gastownhall/gascity/internal/api/apierr"
 	"github.com/gastownhall/gascity/internal/config"
+	"github.com/gastownhall/gascity/internal/runtime"
 )
 
 // humaHandleAgentList is the Huma-typed handler for GET /v0/agents.
@@ -36,12 +37,18 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 	}
 
 	index := s.latestIndex()
+	// Keyed on a wall-clock bucket rather than the event index, the /status
+	// pattern (gascity#3186): on a busy city the sequence advances every
+	// tick, so an index-keyed entry never hit and every poll rebuilt the
+	// whole list at one tmux fork per running agent. Strict-freshness
+	// callers (blocking ?index=&wait=) bypass the cache so the body they
+	// receive reflects the event they waited for, never one built before it.
 	cacheKey := ""
-	if !wantPeek {
+	if !wantPeek && !bp.isBlocking() {
 		// Cache key derived from input struct tags — adding a new query
 		// param to AgentListInput automatically participates in the key.
 		cacheKey = cacheKeyFor("agents", input)
-		if body, ok := cachedResponseAs[ListBody[agentResponse]](s, cacheKey, index); ok {
+		if body, ok := s.cachedAgentList(cacheKey); ok {
 			return &ListOutput[agentResponse]{
 				Index: index,
 				Body:  body,
@@ -49,6 +56,82 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 		}
 	}
 
+	build := func() ListBody[agentResponse] {
+		return s.buildAgentList(input, cfg, rawCfg, sp, cityName, sessTmpl, wantPeek)
+	}
+	var body ListBody[agentResponse]
+	if cacheKey == "" {
+		body = build()
+	} else {
+		// Concurrent identical requests share one build. A burst of dashboard
+		// and client polls used to each walk the fleet in parallel, and on a
+		// loaded host six of them in flight at once took a minute each.
+		v, _, _ := s.agentListFlight.Do(cacheKey, func() (any, error) {
+			if cached, ok := s.cachedAgentList(cacheKey); ok {
+				return cached, nil
+			}
+			built := build()
+			// Stored under the bucket the build FINISHED in, not the one it
+			// entered. This build takes tens of seconds on the loaded hosts
+			// the cache exists for, so a bucket captured at entry is already
+			// superseded by the time the entry is written, and no later
+			// reader could ever match it.
+			//
+			// Belt-and-braces while agentListResponseTTLFloor exceeds
+			// timeBucketResponseCacheTTL: the floor then strictly dominates,
+			// so every entry this bucket could serve is one the age-floor
+			// read in cachedAgentList already answers, and that read is the
+			// half the tests own. This store becomes load-bearing only if
+			// the floor is lowered below the bucket TTL. /status stores the
+			// same way, and matching the sibling handler is its own reason.
+			s.storeResponse(cacheKey, responseCacheTimeBucket(time.Now()), built)
+			return built, nil
+		})
+		body = v.(ListBody[agentResponse])
+		// Every waiter on one flight is handed the leader's value, so give
+		// each its own copy. The sibling cache path deep-copies for exactly
+		// this reason (cloneCachedValue in response_cache.go): a body that
+		// several goroutines hold must not be one a later partial-error note
+		// can append to in place.
+		if cloned, ok := cloneCachedValue[ListBody[agentResponse]](body); ok {
+			body = cloned
+		} else {
+			log.Printf("api: agent list could not be cloned for a coalesced request; waiters share one body")
+		}
+	}
+
+	return &ListOutput[agentResponse]{
+		Index: index,
+		Body:  body,
+	}, nil
+}
+
+// agentListResponseTTLFloor lets a non-blocking agent-list request reuse a
+// recently built body after the time-bucket entry has rolled over — the floor
+// /status applies (statusResponseTTLFloor in handler_status.go). Without it
+// the exact-bucket lookup is the only one, and an entry is unreadable whenever
+// the build outlived the window it was stored in, which is every build on the
+// loaded hosts this cache exists for. Var, not const, so tests can pin
+// bucket-driven invalidation behavior.
+var agentListResponseTTLFloor = 3 * time.Second
+
+// cachedAgentList returns a previously built list for cacheKey when the shared
+// response cache can still answer it: an entry from the current wall-clock
+// bucket, or one stored within agentListResponseTTLFloor. Callers that must
+// not be served from cache (blocking ?index=&wait=, ?peek) pass an empty key,
+// which never matches.
+func (s *Server) cachedAgentList(cacheKey string) (ListBody[agentResponse], bool) {
+	if body, ok := cachedResponseAs[ListBody[agentResponse]](s, cacheKey, responseCacheTimeBucket(time.Now())); ok {
+		return body, true
+	}
+	return cachedResponseWithinAgeAs[ListBody[agentResponse]](s, cacheKey, agentListResponseTTLFloor)
+}
+
+// buildAgentList walks every declared agent (pool-expanded) and reads its
+// runtime state. This is the expensive half of GET /agents: one tmux fork
+// per running agent, plus a bead lookup each, so callers cache and coalesce
+// it rather than calling it per request.
+func (s *Server) buildAgentList(input *AgentListInput, cfg *config.City, rawCfg *config.City, sp runtime.Provider, cityName, sessTmpl string, wantPeek bool) ListBody[agentResponse] {
 	var agents []agentResponse
 	for _, a := range cfg.Agents {
 		// Provenance is a property of the declared agent, shared by every
@@ -74,8 +157,15 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 			}
 
 			suspended := ea.suspended
-			if v, err := sp.GetMeta(sessionName, "suspended"); err == nil && v == "true" {
-				suspended = true
+			// The suspended flag lives in the tmux session's environment, so a
+			// session that is not running cannot carry it, and asking costs a
+			// `tmux show-environment` fork that fails with session-not-found.
+			// On a fleet of ~90 agents with ~15 running, that was most of the
+			// forks behind a 20-60s GET /agents on a loaded host.
+			if running {
+				if v, err := sp.GetMeta(sessionName, "suspended"); err == nil && v == "true" {
+					suspended = true
+				}
 			}
 
 			provider, displayName := resolveProviderInfo(ea.provider, cfg)
@@ -111,11 +201,11 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 			sessionID := ""
 			if running {
 				si := &sessionInfo{Name: sessionName}
-				if t, err := sp.GetLastActivity(sessionName); err == nil && !t.IsZero() {
+				if t, ok := lastActivityOf(sp, sessionName); ok {
 					si.LastActivity = &t
 					lastActivity = &t
 				}
-				si.Attached = sp.IsAttached(sessionName)
+				si.Attached = attachedOf(sp, sessionName)
 				resp.Session = si
 				if id, err := sp.GetMeta(sessionName, "GC_SESSION_ID"); err == nil {
 					sessionID = strings.TrimSpace(id)
@@ -144,15 +234,7 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 		agents = []agentResponse{}
 	}
 
-	body := ListBody[agentResponse]{Items: agents, Total: len(agents)}
-	if cacheKey != "" {
-		s.storeResponse(cacheKey, index, body)
-	}
-
-	return &ListOutput[agentResponse]{
-		Index: index,
-		Body:  body,
-	}, nil
+	return ListBody[agentResponse]{Items: agents, Total: len(agents)}
 }
 
 // humaHandleAgent is the Huma-typed handler for
@@ -188,8 +270,10 @@ func (s *Server) agentByName(name string) (*IndexOutput[agentResponse], error) {
 	running := sp.IsRunning(sessionName)
 
 	suspended := agentCfg.Suspended
-	if v, err := sp.GetMeta(sessionName, "suspended"); err == nil && v == "true" {
-		suspended = true
+	if running {
+		if v, err := sp.GetMeta(sessionName, "suspended"); err == nil && v == "true" {
+			suspended = true
+		}
 	}
 
 	provider, displayName := resolveProviderInfo(agentCfg.Provider, cfg)
