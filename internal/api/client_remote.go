@@ -109,6 +109,7 @@ func NewRemoteCityScopedClient(baseURL, cityName string, opts RemoteOptions) (*C
 		genclient.WithHTTPClient(rest),
 		genclient.WithRequestEditorFn(func(_ context.Context, req *http.Request) error {
 			req.Header.Set("X-GC-Request", "true")
+			SetClientUserAgentHeader(req)
 			return nil
 		}),
 		genclient.WithRequestEditorFn(remoteAuthEditor(c)),
@@ -140,6 +141,7 @@ func NewRemoteEventsClient(baseURL string, opts RemoteOptions) (*genclient.Clien
 		genclient.WithHTTPClient(stream),
 		genclient.WithRequestEditorFn(func(_ context.Context, req *http.Request) error {
 			req.Header.Set("X-GC-Request", "true")
+			SetClientUserAgentHeader(req)
 			return nil
 		}),
 	}
