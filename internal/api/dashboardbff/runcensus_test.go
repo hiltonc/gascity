@@ -191,6 +191,10 @@ func TestRunCensusSourceUsesIncrementalTailAfterColdLoad(t *testing.T) {
 		Metadata: beads.StringMap{beadmeta.RootBeadIDMetadataKey: "run-one"},
 	}))
 	tailer.foldNext(projector, state)
+	// No loop goroutine here, so this test plays the loop: the fold defers the
+	// whole-city projection while nothing watches, and the owner of the projector
+	// is the one that can publish it.
+	tailer.projectDeferred(projector, state)
 	if projector.LastSeq() != 2 {
 		t.Fatalf("incremental tail cursor = %d, want 2", projector.LastSeq())
 	}
@@ -199,7 +203,7 @@ func TestRunCensusSourceUsesIncrementalTailAfterColdLoad(t *testing.T) {
 	if updated.StatusCounts.Pending != 0 || updated.StatusCounts.Active != 1 {
 		t.Fatalf("incremental census = %+v, want pending=0 active=1", updated.StatusCounts)
 	}
-	projection := tailer.runProjection()
+	projection := tailer.runProjection(context.Background())
 	if !projection.Ready || len(projection.Beads) != 2 {
 		t.Fatalf("incremental projection = %+v, want ready root+step snapshot", projection)
 	}
@@ -215,7 +219,7 @@ func TestRunProjectionSourceKeepsColdLoadFailurePartialAfterIncrementalBuild(t *
 	})
 	tailer.build(projector, nil, nil)
 
-	projection := tailer.runProjection()
+	projection := tailer.runProjection(context.Background())
 	if !projection.Ready || !projection.Partial {
 		t.Fatalf("projection = %+v, want cold-load incompleteness to remain sticky", projection)
 	}
@@ -255,6 +259,9 @@ func TestRunCensusSourceMarksIncrementalDecodeMissPartial(t *testing.T) {
 		Seq: 2, Type: events.BeadUpdated, Payload: json.RawMessage(`{"status":"open"}`),
 	})
 	tailer.foldNext(projector, state)
+	// No loop goroutine here, so this test plays the loop and publishes the
+	// projection the unwatched fold deferred.
+	tailer.projectDeferred(projector, state)
 
 	got := tailer.runCensus(context.Background())
 	if !got.Ready || !got.Partial {
