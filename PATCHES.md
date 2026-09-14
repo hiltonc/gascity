@@ -1,9 +1,9 @@
 # Local patch queue
 
 This branch is upstream Gas City at a release tag with a small set of patches on
-top. Most are upstream cherry-picks that are meant to disappear when upstream
-merges them. Two are OURS: new work that will not disappear by itself and that
-we should offer upstream (see the table).
+top. Every code patch it carries today is OURS: new work that will not disappear
+by itself and that we should offer upstream (see the table). There are no
+upstream cherry-picks left waiting to become empty commits.
 
 It lives on a fork, because we have READ only on `gastownhall/gascity`.
 
@@ -18,20 +18,43 @@ what the build calls itself, because the rebase recipe below is read straight of
 
 | Commit | Upstream | What it fixes |
 | --- | --- | --- |
-| local | none | `mise.toml` pinning go 1.26.5, which `go.mod` requires and upstream does not pin. Build-environment only, no product change. |
+| `8cba0c2be` | none | `mise.toml` pinning go 1.26.5, which `go.mod` requires and upstream does not pin. Build-environment only, no product change. |
 | `25ace43` | none yet, OURS | `OutputTurn` carried only `{role, text, timestamp}`. The agent output endpoints accept `before`/`after` entry-ID cursors and report `has_older_messages`, so a client could see that older messages exist and have nothing to send as a cursor; an invented ID answers 500. Adds the entry ID to every turn, on the paged read, the live stream, and the history path. |
 | `21f91a8` | none yet, OURS | A `tool_use` block rendered as its bare name, so a transcript read as `[Bash]` then a result: answers to questions that are never shown. Over one agent's 733 turns, 225 tool labels against 225 results. The input was already parsed and only the name serialized; appends the field a human reads first, flattened to one line and bounded at 500 like `tool_result` beside it. |
 | `404de06` | none yet, OURS | `gc` had no extension point: a subcommand it does not implement could only be a typo. Adds the git-style convention, `gc foo` running `gc-foo` on PATH, resolved before Cobra parses so the extension's own flags and `--help` survive. Built-ins and pack commands still win the name, so a future upstream `gc foo` takes it back rather than being masked. The Unix handover replaces the process image, which is what makes argv, the environment, the working directory, unbuffered streaming, Ctrl-C and exit status (signal death included) correct without forwarding code. |
-| `8fd253b`, `fb4b514`, `db8fd34`, `1526a72`, `8b9f79e`, `389e868` | none yet, OURS | `GET /v0/city/{city}/agents` forked tmux once per declared agent per request (about 130 on this city, most of them failing show-environment reads for agents that are not running), coalesced nothing, and keyed its response cache on the event index, so on a loaded host it took 15 to 55 seconds and six copies ran at once. Reads the suspended flag only for running sessions, keys the list on the /status time bucket with a singleflight per key, reads an entry back through an age floor as well as its exact bucket, and folds attach state and window activity into the tmux state cache's refresh (one `list-windows -a`) behind a new optional `runtime.SessionSnapshotProvider` that only the agent handlers use. The age floor is what makes the cache able to hit at all: a build that outlives the bucket it started in — which is every build on a loaded host — is unreadable without it. Carry all six commits together; `8fd253b` alone is the version with the cache that cannot hit, an unproven snapshot path, dead forwarding, a shared fetch budget, and an aliasing hazard. The last three are review repairs, and each one closes a defect that comes straight back if a rebase stops before it: `1526a72` removes the two fixed sleeps the cache tests waited on, `8b9f79e` renames a test that claimed coverage it did not have, and `389e868` adds the `FetchState` test that fails when the window fold is deleted — without it, nothing in the tree fails when the feature this patch exists to add is removed. Re-check this list on every push to the branch. Measured on high-gas-city 2026-09-12. |
-| `d26f496` | none yet, OURS | The per-city dashboard run tailer rebuilt the WHOLE run projection on every poll second that carried a bead event, whether or not anything was reading it. On high-gas-city that made `cityRunTailer.build` the hottest gascity frame in a 10s sample of a supervisor sitting at 258% CPU for four hours, while no browser was attached to the dashboard port at all. Splits the tail's two halves by cost. Folding stays on the poll — a stat, a delta read, an in-memory `Apply` — because keeping the cursor current is what keeps the deferred build incremental instead of a cold replay. Projecting (filter every folded bead, rebuild every lane, advance the marks) now runs only on demand: a live detail-stream subscriber IS demand and keeps pushing exactly as before, and with no subscriber the loop records the debt and every warm reader (summary, detail, census, projection snapshot) collects it with one build that concurrent readers collapse onto. Builds are bounded by reader demand and are zero with no readers, where they were bounded only by the event rate. Measured here on a 300-run city with nothing attached, one bead event every 40ms for four seconds: 97 whole-city projections and 908ms of process CPU before, 0 and 51ms after. The one observable consequence is that lane progress marks advance once per published projection rather than once per folded second, so derived thrash detection samples at the polling client's cadence — a sustained thrash still trips, a burst that resolves between polls is no longer seen. Re-landed on this branch from `10f722c` on `gsc-fbe-runtailer-on-demand`, which was built on `origin/main`; re-implemented against this base rather than cherry-picked, because the base predates 844 commits of upstream drift in `internal/api`. Touches no schema and regenerates nothing. |
+| `a05e4c71b` | none yet, OURS | `GET /v0/city/{city}/agents` forked tmux once per declared agent per request (about 130 on this city, most of them failing show-environment reads for agents that are not running), coalesced nothing, and keyed its response cache on the event index, so on a loaded host it took 15 to 55 seconds and six copies ran at once. Reads the suspended flag only for running sessions, keys the list on the /status time bucket with a singleflight per key, reads an entry back through an age floor as well as its exact bucket, and folds attach state and window activity into the tmux state cache's refresh (one `list-windows -a`) behind a new optional `runtime.SessionSnapshotProvider` that only the agent handlers use. The age floor is what makes the cache able to hit at all: a build that outlives the bucket it started in — which is every build on a loaded host — is unreadable without it. Landed as one squashed commit through PR #2, which is what removes the partial-carry hazard: the six-commit series it was squashed from ended in three review repairs, and stopping a rebase before them reinstated a cache that cannot hit, an unproven snapshot path, dead forwarding, a shared fetch budget, and an aliasing hazard. `TestFetchStateFoldsTheWindowListingOntoTheSessionsItFound` is in the tree, so the repairs are inside the squash. Of the six SHAs this table used to name, five (`8fd253b`, `fb4b514`, `db8fd34`, `1526a72`, `8b9f79e`) survive only on `origin/wip/gsc-r8s-repair-preserve`, and `389e868` does not resolve in this clone at all. Measured on high-gas-city 2026-09-12. |
+| `94c52b19e` | superseded upstream in part, OURS | A backward walk of the active `events.jsonl` had no lower bound, so `GET /v0/city/{city}/events` with a selective `--type` filter read the whole log and `json.Unmarshal`'d every line to discover the page it could not fill. `belowFilterFloor` stops the walk at `Filter.AfterSeq`, which is a floor the forward path already relies on: `FileRecorder` assigns `e.Seq = r.seq++` inside one mutex-and-flock section, so the active log is strictly seq-ordered, and `activeScanStart` already skips the log's head on that basis. `Filter.Since` deliberately does NOT stop the walk, because `writeRecordLocked` preserves a caller-supplied `Ts` and timestamps are therefore not monotonic. `readFilteredTailFromFile` becomes `readFilteredTailFrom` over an `io.ReaderAt` so a test can count the bytes the walk actually reads, which is what distinguishes an early stop from a full traversal — that rename is ours and is NOT in upstream, which still takes an `*os.File`. Measured on a 58,308,326-byte live log (161,503 events): an `after_seq`-shaped read goes from 1.959s over the whole file to <1ms over 64 KiB, and a tail read that fills its page is unchanged at 4ms. |
+| `8dca11199` | none yet, OURS | The api request log carried method, path, status and duration but nothing about who asked, so an endpoint being hammered by short-lived `gc` processes had no identifiable caller. Every CLI request now carries `User-Agent: gc/<version> (<subcommand>)`, surfaced as `client="..."` on the api log line — only the resolved cobra command path, never flag values or positionals, which routinely carry paths, bead ids and message text. The identity is process-wide because one `gc` invocation runs exactly one subcommand; `gc events` builds its own generated client rather than reusing `api.Client`, so it opts into the shared editor explicitly, without which the hot caller of the event list would have stayed anonymous. The event-list fallback gunzips and decodes every retained archive and did so silently; it now logs the query shape that asked for it and what the read cost, with `since=` measured from the instant the read began so a slow scan does not inflate the window it reports. Both the User-Agent components and the logged value go through `sanitizeAuditString`, so neither an argv-derived subcommand nor a hostile User-Agent can forge a header or a second log line. |
+| `d26f496b` | none yet, OURS | The per-city dashboard run tailer rebuilt the WHOLE run projection on every poll second that carried a bead event, whether or not anything was reading it. On high-gas-city that made `cityRunTailer.build` the hottest gascity frame in a 10s sample of a supervisor sitting at 258% CPU for four hours, while no browser was attached to the dashboard port at all. Splits the tail's two halves by cost. Folding stays on the poll — a stat, a delta read, an in-memory `Apply` — because keeping the cursor current is what keeps the deferred build incremental instead of a cold replay. Projecting (filter every folded bead, rebuild every lane, advance the marks) now runs only on demand: a live detail-stream subscriber IS demand and keeps pushing exactly as before, and with no subscriber the loop records the debt and every warm reader (summary, detail, census, projection snapshot) collects it with one build that concurrent readers collapse onto. Builds are bounded by reader demand and are zero with no readers, where they were bounded only by the event rate. Measured here on a 300-run city with nothing attached, one bead event every 40ms for four seconds: 97 whole-city projections and 908ms of process CPU before, 0 and 51ms after. The one observable consequence is that lane progress marks advance once per published projection rather than once per folded second, so derived thrash detection samples at the polling client's cadence — a sustained thrash still trips, a burst that resolves between polls is no longer seen. Re-implemented against this base rather than cherry-picked, because the base predates over a hundred commits of upstream drift in `internal/api`. The earlier attempt it was re-implemented from, `10f722c` on `gsc-fbe-runtailer-on-demand`, resolves nowhere in this clone; `d26f496b` and its docs row are the only surviving copy, on this branch and on `origin/gsc-lnc-runtailer-on-demand`, merged here through PR #5. Touches no schema and regenerates nothing. |
 
 
-The last five rows are OURS, not upstream cherry-picks, which makes them a
-different kind of patch from everything above them. They will NOT turn into
+Every row here is OURS, not an upstream cherry-pick. They will NOT turn into
 empty commits on a rebase and drop out by themselves. Offer them upstream (each
 is small and self-contained); until one is merged, expect to carry it and to
 resolve real conflicts rather than watching it disappear. The reasoning and the
 measurements behind the two output-turn patches are in the town as `hgc-di92ml`.
+
+`94c52b19e` and `8dca11199` were one commit, `7b078cc83`, which is what the
+table used to point at as `7d53d19` — a SHA that resolves nowhere. Splitting it
+dropped a third change it also carried: `Filter.MaxScanBytes`, its loop guard
+and its mid-chunk clamp, plus the 8 MiB budget the event-list tail probe passed
+in. Upstream landed the reader half independently as #4418, character for
+character including the doc comment, so a rebase onto any tag carrying it would
+conflict in `reader.go` for a resolution that is simply "take upstream's copy".
+
+**The budget's consumer does not come back with it.** Upstream applies
+`MaxScanBytes` only in `internal/storehealth`, never on the `/events` tail
+probe, so a rebase onto a #4418 tag restores the field and leaves the endpoint
+unbounded. The probe walks the active log until it fills `limit+1` rows, and a
+selective filter never does — the wasted leg this branch measured at 1.482s
+over the whole file, against 255ms inside an 8 MiB budget. Re-add the two lines
+in `fetchEventPageAscending` after that rebase; the reader side will already be
+there.
+
+The pre-split stack, with `7b078cc83` and the dropped hunks intact, is tagged
+`backup/on-v1.4.1-presplit` on `origin`. That is the only copy of those hunks;
+`7b078cc83` is unreachable from the branch now, so deleting the tag garbage
+collects it.
 
 The two output-turn patches regenerate `internal/api/openapi.json`, the
 `docs/reference/schema` mirrors, and `internal/api/genclient/client_gen.go`,
@@ -43,11 +66,10 @@ invalid against its own spec. Run:
     go run ./cmd/genspec
     PATH="$(go env GOPATH)/bin:$PATH" go generate ./internal/api/genclient
 
-The external-command patch touches no schema and regenerates nothing. It is the
-one row here whose commit is worth keeping clear of this file: PATCHES.md is the
-fork's own register and has no place in what gets offered upstream, so the patch
-and the row that records it are separate commits, as `25ace43` and `21f91a8`
-already are.
+Every other patch touches no schema and regenerates nothing. Each one's commit is
+worth keeping clear of this file: PATCHES.md is the fork's own register and has no
+place in what gets offered upstream, so a patch and the row that records it are
+separate commits, as `25ace43` and `21f91a8` already are.
 
 ## Removed: the agent-liveness fix (PR #4721, issue #4703)
 
@@ -82,10 +104,15 @@ city and its attention logic sees nothing to attend to. That was already true �
 the patch had never actually run in the supervisor (see below) — so nothing
 regressed by removing it.
 
-To bring it back: `git cherry-pick d5c4a1898`, which is the tip of the local
-`pr-4721` branch. (An earlier `backup/on-v1.4.1-with-liveness` held the same
-change as `ecf762c76`; `pr-4721` is the durable copy, so the backup is
-disposable.)
+**The change itself is gone, and there is no recipe to bring it back.** This
+section used to say `git cherry-pick d5c4a1898` off a local `pr-4721` branch,
+with `ecf762c76` on `backup/on-v1.4.1-with-liveness` as a disposable second
+copy. Neither branch exists in this clone and neither object resolves, on any
+ref or in either remote; nothing on `upstream/main` mentions #4721 or #4703
+either. Reconstructing it means reading the upstream PR, not cherry-picking.
+The description above is what remains, and it is enough to decide whether
+reconstruction is worth it — which, per the paragraph before it, it currently
+is not for the app, only for the built-in SPA.
 
 ## `gc version` on this branch lies, and says 1.4.2
 
@@ -96,19 +123,20 @@ version string is not.
 The chain, worth knowing before anyone treats it as evidence of a bad build:
 
 1. The Makefile stamps the version from `git describe --tags --exact-match`,
-   which fails on this branch (we are five commits past the tag), so it falls
-   back to `-X main.version=dev`. Correct so far.
+   which fails on this branch (no tag points at any commit past `v1.4.1`), so it
+   falls back to `-X main.version=dev`. Correct so far.
 2. `cmd/gc/cmd_version.go` then treats `dev` as "unknown" and falls back to Go's
    build info: `info.Main.Version`.
 3. Go stamps the main module with a **pseudo-version**, which by convention names
-   the NEXT patch after the last tag:
-   `v1.4.2-0.20260910144616-1a99c077eb81`.
+   the NEXT patch after the last tag, so it reads
+   `v1.4.2-0.<utc timestamp>-<12 hex of the commit>`.
 4. `normalizeVersion` strips the pseudo-version suffix with
    `^(.*)-0\.\d{14}-[0-9a-f]{12,}$`, leaving a bare `1.4.2`.
 
 So a pseudo-version meaning "somewhere after v1.4.1" is rewritten into a claim to
-be a release that does not exist. `git describe --tags` says the honest thing:
-`v1.4.1-5-g38b02e173`.
+be a release that does not exist. `git describe --tags` says the honest thing —
+`v1.4.1-17-g8dca11199` for the last code patch in the table — and it stays
+honest as the branch grows, which the version string does not.
 
 Verify provenance from the build info rather than the version string:
 
@@ -168,8 +196,11 @@ fails immediately instead of erroring after it has done half the work.
 
 The branch is published at
 <https://github.com/hiltonc/gascity/tree/patches/on-v1.4.1>. Pushing it is not
-ceremony: it is the staging ground for offering the two OURS patches upstream,
-and it means the stack survives this laptop.
+ceremony: it is the staging ground for offering these patches upstream, and it
+means the stack survives this laptop. The branch has already lost work to local
+churn twice — see the missing objects noted in the table and in the liveness
+section — so an unpushed commit here should be treated as one that does not
+exist yet.
 
 ## Rebasing onto a new release
 
