@@ -49,7 +49,9 @@ unbounded. The probe walks the active log until it fills `limit+1` rows, and a
 selective filter never does — the wasted leg this branch measured at 1.482s
 over the whole file, against 255ms inside an 8 MiB budget. Re-add the two lines
 in `fetchEventPageAscending` after that rebase; the reader side will already be
-there.
+there. Copy them from `4e7e9f71d` and `99563ee61` on
+`origin/gsc-qwy-events-tail-read`, the original re-land of this work with the
+budget intact, rather than reconstructing them.
 
 The pre-split stack, with `7b078cc83` and the dropped hunks intact, is tagged
 `backup/on-v1.4.1-presplit` on `origin`. That is the only copy of those hunks;

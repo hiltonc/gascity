@@ -26,7 +26,7 @@ func (c *countingReaderAt) ReadAt(p []byte, off int64) (int, error) {
 
 // writeTimedLog writes n events, seq 1..n, one second apart ending at base.
 // Every third event is type "rare" so a selective filter has something to
-// discriminate on that the recent window does not satisfy in bulk.
+// match.
 func writeTimedLog(t *testing.T, n int, base time.Time) string {
 	t.Helper()
 	dir := t.TempDir()
