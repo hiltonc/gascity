@@ -94,15 +94,39 @@ func withLogging(next http.Handler, audit requestAuditConfig) http.Handler {
 			source = "memory"
 		}
 		reqID := rw.Header().Get("X-GC-Request-Id")
+		// The client identity is what makes a hot endpoint attributable: the
+		// gc CLI names its subcommand in the User-Agent, so a request that
+		// costs the server seconds can be traced to the command that issued
+		// it. Sanitized and quoted — it is caller-supplied.
+		client := requestClientField(r)
 		if reqID != "" {
-			log.Printf("api: %s %s %d %s [%s] req_id=%s", r.Method, r.URL.Path, rw.status, dur.Round(time.Microsecond), source, reqID)
+			log.Printf("api: %s %s %d %s [%s] req_id=%s%s", r.Method, r.URL.Path, rw.status, dur.Round(time.Microsecond), source, reqID, client)
 		} else {
-			log.Printf("api: %s %s %d %s [%s]", r.Method, r.URL.Path, rw.status, dur.Round(time.Microsecond), source)
+			log.Printf("api: %s %s %d %s [%s]%s", r.Method, r.URL.Path, rw.status, dur.Round(time.Microsecond), source, client)
 		}
 		telemetry.RecordHTTPRequest(r.Context(), r.Method, r.URL.Path, rw.status, durMs, source)
 		recordSupervisorRequest(audit, r, rw.status, dur, supervisorRequestPhaseComplete, reqID)
 	})
 }
+
+// requestClientField renders the caller's User-Agent as a trailing
+// ` client="..."` field, or "" when the caller sent none. sanitizeAuditString
+// strips control characters and bounds the length, so a hostile User-Agent
+// cannot forge a second log line; the quote strip is this site's own — a value
+// containing a quote would otherwise close the field early — and the quoting
+// keeps a value containing spaces one field.
+func requestClientField(r *http.Request) string {
+	ua := sanitizeAuditString(strings.TrimSpace(r.Header.Get("User-Agent")), maxLoggedUserAgentRunes)
+	ua = strings.ReplaceAll(ua, `"`, "")
+	if ua == "" {
+		return ""
+	}
+	return ` client="` + ua + `"`
+}
+
+// maxLoggedUserAgentRunes bounds the logged client identity so a long
+// User-Agent cannot bloat every request line.
+const maxLoggedUserAgentRunes = 128
 
 func recordSupervisorRequest(audit requestAuditConfig, r *http.Request, status int, dur time.Duration, phase, requestID string) {
 	if audit.recorder == nil {

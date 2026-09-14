@@ -462,6 +462,7 @@ func (c *Client) waitForEventOnce(ctx context.Context, requestID, successType, f
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("X-GC-Request", "true")
+	SetClientUserAgentHeader(req)
 	// Attach a fresh bearer per (re)connect so a rotated/re-minted credential
 	// takes effect on reconnect. No-op for a local client (nil token source).
 	if tok, terr := c.bearerToken(); terr != nil {
@@ -629,6 +630,7 @@ func newClient(baseURL, cityName string) *Client {
 		genclient.WithHTTPClient(httpClient),
 		genclient.WithRequestEditorFn(func(_ context.Context, req *http.Request) error {
 			req.Header.Set("X-GC-Request", "true")
+			SetClientUserAgentHeader(req)
 			return nil
 		}),
 	)
