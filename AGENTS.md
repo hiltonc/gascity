@@ -396,6 +396,36 @@ becoming more useful as models improve — it becomes LESS useful instead.
   `make test-cmd-gc-process-parallel`, `make test-integration-shards-parallel`,
   `make test-local-full-parallel`) over raw `go test`.
 
+  **Run those broad sweeps on `the-forge`, not on this machine.** They compile
+  roughly 2.8 GiB of test binaries per shard, and this host is also running
+  agents and Apple builds:
+
+      ~/Developer/high-gas-city/tools/remote-run/remote-run.sh \
+          the-forge ~/Developer/gascity make check
+
+  The agent, its claim, its bead, its worktree and its commits all stay local;
+  only the compute moves. A narrow `go test ./internal/somepkg` is still faster
+  here than a full sync plus a remote compile, so this is for the broad sweeps
+  (`make check`, `make test`, `make test-fast-parallel`, the integration
+  shards), not for every invocation. `.githooks/pre-push` already offloads its
+  sweep this way.
+
+  Four rules, each of which is a mistake someone has already made:
+
+  1. **It is for VERIFICATION only; the sync is one way.** rsync copies local to
+     remote and nothing comes back, so anything the command WRITES is lost.
+     Never run `make generate`, `go mod tidy`, or a golden re-record remotely.
+     If a remote sweep says a generated file is stale, regenerate it HERE.
+  2. **Never pipe it.** `remote-run.sh ... make check | tail -50` exits 0 no
+     matter how the run went, because that is `tail`'s status, so a red sweep
+     reads as green. Redirect to a file, or read `${PIPESTATUS[0]}`. The script
+     prints the path of a complete log at the end; read that.
+  3. **PREFLIGHT, SYNC, CONNECTION LOST and GIT REBUILD FAILED are not test
+     failures.** The script names them deliberately. Do not answer an
+     unreachable box by editing code.
+  4. **It does not replace the local gate.** `.githooks/pre-commit` still runs
+     here on the staged change.
+
 ## Build Cache Conventions
 
 **Hard ban: never run `go clean -cache`** in any script, hook, or agent session.
@@ -441,7 +471,8 @@ concurrent builds.
 Before considering any task complete:
 
 - Fast unit baseline passes (`make test`, or `make test-fast-parallel` on
-  machines where sharding is useful)
+  machines where sharding is useful), run on `the-forge` rather than on this
+  machine - see the remote-run note under `TESTING.md` above
 - Broader process/integration coverage uses the sharded targets documented in
   `TESTING.md` instead of one monolithic `go test ./...` sweep
 - `go vet ./...` clean
