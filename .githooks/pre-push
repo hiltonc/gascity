@@ -67,6 +67,38 @@ if [ "$go_changed" -eq 0 ]; then
   exit 0
 fi
 
+# Where the sweep RUNS. This compiles ~2.8 GiB of test binaries per shard, and
+# on a laptop that is also running agents it is the single most expensive thing
+# the repo does; a push that looks hung is almost always this. So send it to the
+# Linux build host when one is configured, and keep the gate identical either
+# way: the same target, the same pass or fail, just not on this CPU.
+#
+# GC_REMOTE_RUN points at tools/remote-run/remote-run.sh; GC_REMOTE_HOST names
+# the box. Unset either and this falls through to running locally, so a checkout
+# without them behaves exactly as it always has.
+#
+# An unreachable or slow host must NOT fail a push: remote-run exits 69 for
+# PREFLIGHT and 75 for SYNC or CONNECTION LOST, which are explicitly not build
+# failures, so those fall back to local rather than rejecting good work.
+remote_run=${GC_REMOTE_RUN:-$HOME/Developer/high-gas-city/tools/remote-run/remote-run.sh}
+remote_host=${GC_REMOTE_HOST:-the-forge}
+
+if [ -x "$remote_run" ] && [ -n "$remote_host" ]; then
+  root=$(git rev-parse --show-toplevel)
+  printf 'pre-push: running the sweep on %s instead of this machine\n' "$remote_host" >&2
+  # No pipe here on purpose. Piping this would make $? the status of the pipe's
+  # LAST command, so a red sweep would read as a green push.
+  "$remote_run" "$remote_host" "$root" make test-fast-parallel
+  rc=$?
+  case $rc in
+    0) exit 0 ;;
+    69|75)
+      printf 'pre-push: %s unreachable (exit %d); running locally instead\n' "$remote_host" "$rc" >&2
+      ;;
+    *) exit $rc ;;
+  esac
+fi
+
 # The Makefile and direct sharded runner share scripts/test-local-job-count as
 # their default policy. Do not shadow it here; an explicit override still wins.
 exec make test-fast-parallel
