@@ -144,6 +144,11 @@ func (s eventsAPIScope) client() (*genclient.ClientWithResponses, error) {
 	return genclient.NewClientWithResponses(
 		s.apiURL,
 		genclient.WithHTTPClient(httpClient),
+		// This command builds its own client rather than reusing api.Client,
+		// so it must opt into the shared client identity explicitly. It is the
+		// hot caller of the event list, so an unattributed request here is
+		// exactly the gap that made the endpoint's caller unidentifiable.
+		genclient.WithRequestEditorFn(gcapi.ClientIdentityRequestEditor()),
 	)
 }
 
