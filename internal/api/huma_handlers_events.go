@@ -144,6 +144,25 @@ func parseEventBeforeSeq(cursor string) (uint64, error) {
 	return c.Seq, nil
 }
 
+// eventListTailScanBudgetBytes bounds the backward walk of the tail probe.
+//
+// The probe is speculative: its result is used only when it fills limit+1 rows,
+// and otherwise thrown away for the full read below. Without a budget a
+// selective filter that never fills the probe walks the entire active log to
+// discover that — on high-gas-city a 153 MiB events.jsonl, json.Unmarshal'd
+// line by line — and the handler then pays a second full pass in the fallback.
+// The budget caps that wasted leg. It cannot change any answer: a probe short
+// of limit+1 rows was already going to fall through, whatever stopped it.
+//
+// 8 MiB is ~6000 events at the ~1.4 KB average of a live log, comfortably more
+// than the 500-row maximum page, so an ordinary tail-shaped read still fills
+// its page inside the budget.
+const eventListTailScanBudgetBytes = 8 << 20
+
+// eventListFullScanLogPrefix tags the log line emitted whenever an event-list
+// request falls through to the archive-aware read.
+const eventListFullScanLogPrefix = "api: events list: full-history scan"
+
 // fetchEventPageAscending fetches up to limit+1 matching events at or below the
 // filter's BeforeSeq boundary in ascending seq order; the extra row is the
 // has-more signal. It returns the fetched events and scanned — the best-effort
@@ -156,14 +175,24 @@ func parseEventBeforeSeq(cursor string) (uint64, error) {
 // distinguish "log exhausted" from "active file exhausted, older matches in
 // archives/rotation" and MUST fall through to the full scan — otherwise a
 // rotation (or a selective filter) strands the older history behind an unminted
-// cursor. The scan uses the in-flight-aware read when the provider offers one
-// (listWithInFlight) so a just-rotated segment living only in a .rotating-* file
-// is not skipped; the BeforeSeq predicate keeps rotation/archive handling inside
-// the one battle-tested sequential reader instead of a bespoke reverse reader.
+// cursor. The probe carries eventListTailScanBudgetBytes so that speculative
+// leg stays bounded; a budget-truncated probe is short, and short already means
+// fall through. The scan uses the in-flight-aware read when the provider offers
+// one (listWithInFlight) so a just-rotated segment living only in a .rotating-*
+// file is not skipped; the BeforeSeq predicate keeps rotation/archive handling
+// inside the one battle-tested sequential reader instead of a bespoke reverse
+// reader.
+//
+// The fallback gunzips and decodes every retained archive, so it reports its
+// own cost rather than doing that silently: the log line names the query shape
+// that asked for it, which — paired with the client identity on the request log
+// line — is what ties an expensive read back to the subcommand that issued it.
 func fetchEventPageAscending(ep events.Provider, filter events.Filter, limit int) ([]events.Event, int, error) {
 	fetch := limit + 1
 	if tp, ok := ep.(events.TailProvider); ok {
-		tail, err := tp.ListTail(filter, fetch)
+		probe := filter
+		probe.MaxScanBytes = eventListTailScanBudgetBytes
+		tail, err := tp.ListTail(probe, fetch)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -171,15 +200,43 @@ func fetchEventPageAscending(ep events.Provider, filter events.Filter, limit int
 			return tail, limit, nil
 		}
 	}
+	start := time.Now()
 	all, err := listWithInFlight(ep, filter)
 	if err != nil {
 		return nil, 0, err
 	}
 	scanned := len(all)
+	logEventListFullScan(filter, limit, scanned, start, time.Since(start))
 	if len(all) > fetch {
 		all = all[len(all)-fetch:]
 	}
 	return all, scanned, nil
+}
+
+// logEventListFullScan reports an archive-aware event-list read and what it
+// cost. Every field is server-side query shape, never client-supplied free
+// text, so the line is safe to emit verbatim.
+func logEventListFullScan(filter events.Filter, limit, scanned int, at time.Time, took time.Duration) {
+	log.Printf("%s type=%s actor=%s subject=%s since=%s before_seq=%d after_seq=%d limit=%d scanned=%d took=%s",
+		eventListFullScanLogPrefix,
+		filter.Type, filter.Actor, filter.Subject,
+		eventFilterSinceField(filter.Since, at),
+		filter.BeforeSeq, filter.AfterSeq,
+		limit, scanned, took.Round(time.Millisecond))
+}
+
+// eventFilterSinceField renders the Since predicate as the window the caller
+// asked for, which is what identifies the query shape; a zero Since is "none".
+//
+// The window is measured from at — the instant the read began — not from the
+// moment the line is written. Measuring at log time would inflate it by the
+// scan's own duration, so the field would be least accurate on exactly the
+// slow reads this line exists to diagnose.
+func eventFilterSinceField(since, at time.Time) string {
+	if since.IsZero() {
+		return "none"
+	}
+	return at.Sub(since).Round(time.Second).String()
 }
 
 // listWithInFlight returns all events matching filter, folding in events still

@@ -32,6 +32,16 @@ type Filter struct {
 	// stable resume point regardless of concurrent appends.
 	BeforeSeq uint64
 	Limit     int // cap results at this count (0 or negative = unlimited)
+	// MaxScanBytes bounds how far a tail scan (ReadFilteredTail /
+	// TailProvider.ListTail) walks backward from EOF before giving up,
+	// even if Limit hasn't been reached (0 or negative = unbounded). It
+	// exists for callers where "no match within the recent window" is an
+	// acceptable, already-representable result — a rare or optional Type
+	// filter can otherwise force a full-file backward walk with the same
+	// cost as an unfiltered forward scan. It has no effect on
+	// ReadFiltered's forward scan or on List/ListTail implementations
+	// that are not byte-scanning a file (e.g. Fake, Multiplexer).
+	MaxScanBytes int64
 }
 
 // matchesFilter reports whether e satisfies all non-zero predicates in f.
@@ -373,25 +383,57 @@ func ReadFilteredTail(path string, filter Filter, limit int) ([]Event, error) {
 	if err != nil {
 		return nil, fmt.Errorf("stat events tail: %w", err)
 	}
-	return readFilteredTailFromFile(f, info.Size(), filter, limit)
+	return readFilteredTailFrom(f, info.Size(), filter, limit)
 }
 
-func readFilteredTailFromFile(f *os.File, size int64, filter Filter, limit int) ([]Event, error) {
+// belowFilterFloor reports whether e proves the walk has descended past the
+// filter's own lower bound, so every earlier event is excluded too.
+//
+// Only AfterSeq qualifies. FileRecorder assigns e.Seq = r.seq++ inside one
+// mutex-and-flock critical section, so the active log is append-only and
+// strictly increasing in seq; activeScanStart already skips the log's head on
+// exactly that basis, and this is the same skip applied to a backward walk.
+//
+// Filter.Since deliberately does NOT terminate the walk. writeRecordLocked
+// preserves a caller-supplied Ts and only defaults a zero one, so event
+// timestamps are not monotonic in the log and an event older than Since says
+// nothing about the events beneath it (TestReadFilteredTailScansBackwardsAcrossChunks
+// pins that tolerance). Bounding a time-windowed walk is MaxScanBytes' job.
+func belowFilterFloor(e Event, f Filter) bool {
+	return f.AfterSeq > 0 && e.Seq <= f.AfterSeq
+}
+
+func readFilteredTailFrom(r io.ReaderAt, size int64, filter Filter, limit int) ([]Event, error) {
 	if size <= 0 {
+		// An empty active file is the normal state immediately after a
+		// rotation. There is no tail to walk, and the caller still reaches the
+		// archive through its existing path.
 		return nil, nil
 	}
 	const chunkSize int64 = 64 * 1024
 	var reversed []Event
 	var pending []byte
+	atFloor := false
 	end := size
-	for end > 0 && len(reversed) < limit {
+	for end > 0 && len(reversed) < limit && (filter.MaxScanBytes <= 0 || size-end < filter.MaxScanBytes) {
 		n := chunkSize
 		if end < n {
 			n = end
 		}
+		// Clamp the read to what remains of the byte budget so a
+		// MaxScanBytes that is not a chunkSize multiple stops the walk
+		// mid-chunk rather than overscanning by up to one full chunk.
+		// The loop condition guarantees remaining > 0 on entry, and the
+		// chunk is read at start = end - n, so a smaller n simply moves
+		// the walk's stopping point without misaligning pending.
+		if filter.MaxScanBytes > 0 {
+			if remaining := filter.MaxScanBytes - (size - end); remaining < n {
+				n = remaining
+			}
+		}
 		start := end - n
 		chunk := make([]byte, n)
-		if _, err := f.ReadAt(chunk, start); err != nil && err != io.EOF {
+		if _, err := r.ReadAt(chunk, start); err != nil && err != io.EOF {
 			return nil, fmt.Errorf("reading events tail: %w", err)
 		}
 		data := make([]byte, 0, len(chunk)+len(pending))
@@ -414,9 +456,16 @@ func readFilteredTailFromFile(f *os.File, size int64, filter Filter, limit int) 
 			if err := json.Unmarshal(line, &e); err != nil {
 				continue
 			}
+			if belowFilterFloor(e, filter) {
+				atFloor = true
+				break
+			}
 			if matchesFilter(e, filter) {
 				reversed = append(reversed, e)
 			}
+		}
+		if atFloor {
+			break
 		}
 		end = start
 	}

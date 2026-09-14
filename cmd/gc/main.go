@@ -205,6 +205,7 @@ func runWithRootCommandOptionsAndLifecycle(args []string, stdout, stderr io.Writ
 	if options.discoverPackCommands {
 		materializePackCommandTreeForArgs(root, args, execStdout, stderr)
 	}
+	announceClientIdentity(root, args)
 	lifecycleBinding := bindProductMetricsInvocationLifecycle(root, args, lifecycle)
 	classification := lifecycleBinding.classification
 	lifecycle.prepareNotice(classification, stderr)
