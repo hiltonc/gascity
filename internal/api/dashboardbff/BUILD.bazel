@@ -52,6 +52,7 @@ go_test(
         "rundetail_session_push_test.go",
         "rundetail_stream_test.go",
         "rundetailtailer_test.go",
+        "runtailer_demand_test.go",
         "runtailer_test.go",
         "samplers_test.go",
         "testenv_import_test.go",
