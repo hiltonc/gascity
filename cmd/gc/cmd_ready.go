@@ -73,6 +73,14 @@ type readyBead struct {
 	NoHistory    bool              `json:"no_history,omitempty"`
 	DeferUntil   *time.Time        `json:"defer_until,omitempty"`
 	IsBlocked    *bool             `json:"is_blocked,omitempty"`
+	// ClosedAt, CloseReason, Owner and CreatedBy follow beads.Bead so a
+	// consumer can keep decoding this array into []beads.Bead. The two close
+	// properties are structurally absent on every arm that reports ready work
+	// and present on the --status arm that can report a closed row.
+	ClosedAt    *time.Time `json:"closed_at,omitempty"`
+	CloseReason string     `json:"close_reason,omitempty"`
+	Owner       string     `json:"owner,omitempty"`
+	CreatedBy   string     `json:"created_by,omitempty"`
 	// BlockedBy carries the row's OPEN-or-not blocking dependencies, in bd's
 	// `bd ready --json` shape. It is populated only on the --status in_progress
 	// arm, which is the crash-recovery read: a resumed holder must be told
@@ -141,6 +149,10 @@ func toReadyBead(b beads.Bead) readyBead {
 		NoHistory:    b.NoHistory,
 		DeferUntil:   b.DeferUntil,
 		IsBlocked:    b.IsBlocked,
+		ClosedAt:     b.ClosedAt,
+		CloseReason:  b.CloseReason,
+		Owner:        b.Owner,
+		CreatedBy:    b.CreatedBy,
 	}
 }
 

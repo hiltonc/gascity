@@ -538,6 +538,22 @@ func mergeCacheEventPatch(base, patch Bead, fields map[string]json.RawMessage) B
 	if hasCacheEventField(fields, "is_blocked") {
 		merged.IsBlocked = cloneBoolPtr(patch.IsBlocked)
 	}
+	// The close and attribution properties arrive on the same terms as every
+	// other field here: only a payload that actually carries one overwrites the
+	// cached value. A close event that carries closed_at is the only way a
+	// cached bead ever learns its completion time, since nothing recomputes it.
+	if hasCacheEventField(fields, "closed_at") {
+		merged.ClosedAt = cloneTimePtr(patch.ClosedAt)
+	}
+	if hasCacheEventField(fields, "close_reason") {
+		merged.CloseReason = patch.CloseReason
+	}
+	if hasCacheEventField(fields, "owner") {
+		merged.Owner = patch.Owner
+	}
+	if hasCacheEventField(fields, "created_by") {
+		merged.CreatedBy = patch.CreatedBy
+	}
 	return merged
 }
 
@@ -805,7 +821,18 @@ func beadChanged(old, fresh Bead, skipLabels bool) bool {
 		old.Ephemeral != fresh.Ephemeral ||
 		old.IndefinitelyDeferred != fresh.IndefinitelyDeferred ||
 		!timePtrEqual(old.DeferUntil, fresh.DeferUntil) ||
-		!boolPtrEqual(old.IsBlocked, fresh.IsBlocked) {
+		!boolPtrEqual(old.IsBlocked, fresh.IsBlocked) ||
+		// The close and attribution columns have to be compared here or they
+		// can never reach the cache. This is the gate on absorbing a fresh row:
+		// a row whose only difference is that it now carries a completion time
+		// reads as unchanged, the absorb is skipped, and the cached row keeps
+		// serving no closed_at however many events or reconcile passes carry
+		// one. Every read path populates all four, so comparing them cannot
+		// flap between an event payload and a backing read.
+		!timePtrEqual(old.ClosedAt, fresh.ClosedAt) ||
+		old.CloseReason != fresh.CloseReason ||
+		old.Owner != fresh.Owner ||
+		old.CreatedBy != fresh.CreatedBy {
 		return true
 	}
 	if !maps.Equal(old.Metadata, fresh.Metadata) {

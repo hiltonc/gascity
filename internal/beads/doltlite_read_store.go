@@ -1238,6 +1238,7 @@ func filterDoltliteMetadata(rows []Bead, filters map[string]string) []Bead {
 // truth and cannot drift.
 type doltliteTableQuery struct {
 	flags      doltliteStorageFlagExprs
+	closeCols  doltliteCloseColumnExprs
 	where      []string
 	args       []any
 	parentJoin string
@@ -1314,8 +1315,12 @@ func (s *DoltliteReadStore) buildDoltliteTableQuery(query ListQuery, tables dolt
 		where = append(where, extraWhere)
 		args = append(args, extraArgs...)
 	}
+	closeCols, err := s.closeColumnExprsFor(tables)
+	if err != nil {
+		return doltliteTableQuery{}, err
+	}
 	parentJoin := " LEFT JOIN " + tables.deps + " pc ON pc.issue_id = i.id AND pc.type = 'parent-child'"
-	return doltliteTableQuery{flags: flags, where: where, args: args, parentJoin: parentJoin}, nil
+	return doltliteTableQuery{flags: flags, closeCols: closeCols, where: where, args: args, parentJoin: parentJoin}, nil
 }
 
 func (s *DoltliteReadStore) queryIssueTable(query ListQuery, tables doltliteTableSet, extraWhere string, extraArgs []any, limit int, orderBy string) ([]Bead, error) {
@@ -1332,7 +1337,8 @@ func (s *DoltliteReadStore) queryIssueTable(query ListQuery, tables doltliteTabl
 	parentColumn := doltliteQualifiedDependsOnExpr("pc")
 	sqlText := `SELECT i.id, COALESCE(i.title, ''), COALESCE(i.status, ''), COALESCE(i.issue_type, ''), i.priority, i.created_at,
 		COALESCE(i.updated_at, ''), COALESCE(i.assignee, ''), COALESCE(i.description, ''), COALESCE(i.metadata, '{}'),
-		` + parentColumn + `, ` + tq.flags.ephemeral + `, ` + tq.flags.noHistory + `
+		` + parentColumn + `, ` + tq.flags.ephemeral + `, ` + tq.flags.noHistory + `,
+		` + tq.closeCols.closedAt + `, ` + tq.closeCols.closeReason + `, ` + tq.closeCols.owner + `, ` + tq.closeCols.createdBy + `
 		FROM ` + tables.issues + ` i` + tq.parentJoin
 	if len(tq.where) > 0 {
 		sqlText += " WHERE " + strings.Join(tq.where, " AND ")
@@ -1418,6 +1424,51 @@ func (s *DoltliteReadStore) storageFlagExprsFor(tables doltliteTableSet) (doltli
 	return flags, nil
 }
 
+// doltliteCloseColumnExprs holds the SQL expressions yielding bd's close and
+// attribution columns for one storage table. Each is either the qualified
+// column or the constant NULL, so a snapshot written before a column existed
+// reads as "no value" instead of failing the whole query.
+type doltliteCloseColumnExprs struct {
+	closedAt    string
+	closeReason string
+	owner       string
+	createdBy   string
+}
+
+// closeColumnExprsFor resolves the close and attribution expressions for
+// tables, probing each column the way storageFlagExprsFor probes the storage
+// flags. These columns are newer than the oldest snapshots this store reads --
+// the wisps table in particular has carried a narrower shape -- so their
+// presence is asked rather than assumed. A probe failure is propagated instead
+// of being read as an absent column, so a transient DB error cannot silently
+// blank a bead's close time.
+func (s *DoltliteReadStore) closeColumnExprsFor(tables doltliteTableSet) (doltliteCloseColumnExprs, error) {
+	exprs := doltliteCloseColumnExprs{
+		closedAt:    "NULL",
+		closeReason: "NULL",
+		owner:       "NULL",
+		createdBy:   "NULL",
+	}
+	for _, column := range []struct {
+		name string
+		expr *string
+	}{
+		{"closed_at", &exprs.closedAt},
+		{"close_reason", &exprs.closeReason},
+		{"owner", &exprs.owner},
+		{"created_by", &exprs.createdBy},
+	} {
+		present, err := s.tableHasColumn(tables.issues, column.name)
+		if err != nil {
+			return doltliteCloseColumnExprs{}, err
+		}
+		if present {
+			*column.expr = "i." + column.name
+		}
+	}
+	return exprs, nil
+}
+
 // doltliteTierPredicate translates query.go's TierMode row filter (Matches)
 // into a SQL predicate for one storage table. It returns skipTable=true when
 // the table cannot hold rows for the tier at all (a legacy wisps table is
@@ -1481,14 +1532,27 @@ func scanBead(rows interface{ Scan(...any) error }) (Bead, error) {
 		metadataRaw string
 		ephemeral   int64
 		noHistory   int64
+		closedRaw   any
+		closeReason sql.NullString
+		owner       sql.NullString
+		createdBy   sql.NullString
 	)
-	if err := rows.Scan(&b.ID, &b.Title, &b.Status, &b.Type, &priority, &createdRaw, &updatedRaw, &b.Assignee, &b.Description, &metadataRaw, &b.ParentID, &ephemeral, &noHistory); err != nil {
+	if err := rows.Scan(&b.ID, &b.Title, &b.Status, &b.Type, &priority, &createdRaw, &updatedRaw, &b.Assignee, &b.Description, &metadataRaw, &b.ParentID, &ephemeral, &noHistory, &closedRaw, &closeReason, &owner, &createdBy); err != nil {
 		return b, err
 	}
 	if priority.Valid {
 		p := int(priority.Int64)
 		b.Priority = &p
 	}
+	// A NULL closed_at -- an open bead, or a snapshot with no such column --
+	// leaves ClosedAt nil rather than stamping the zero time, which a client
+	// would read as 1970 instead of as "not closed".
+	if closedAt := parseDBTime(closedRaw).Truncate(time.Second); !closedAt.IsZero() {
+		b.ClosedAt = &closedAt
+	}
+	b.CloseReason = closeReason.String
+	b.Owner = owner.String
+	b.CreatedBy = createdBy.String
 	b.Status = mapBdStatus(b.Status)
 	b.CreatedAt = parseDBTime(createdRaw).Truncate(time.Second)
 	b.UpdatedAt = parseDBTime(updatedRaw).Truncate(time.Second)
