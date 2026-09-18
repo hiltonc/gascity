@@ -280,7 +280,10 @@ export type BackendCredentialResolvedPayload = {
 
 export type Bead = {
     assignee?: string;
+    close_reason?: string;
+    closed_at?: string;
     created_at: string;
+    created_by?: string;
     defer_until?: string;
     dependencies?: Array<Dep> | null;
     description?: string;
@@ -295,6 +298,7 @@ export type Bead = {
     };
     needs?: Array<string> | null;
     no_history?: boolean;
+    owner?: string;
     parent?: string;
     priority?: number;
     ref?: string;
