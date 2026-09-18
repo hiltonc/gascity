@@ -225,7 +225,7 @@ func TestPreflightReportsALiveControllerWithoutBlocking(t *testing.T) {
 		t.Fatalf("preflight blocked on a live controller, so it can only be run from inside the window it exists to plan: exit %d stdout=%q", code, stdout.String())
 	}
 	out := stdout.String()
-	if !strings.Contains(out, "4242") {
+	if !strings.Contains(out, "PID 4242") {
 		t.Errorf("preflight does not name the live controller's PID: %q", out)
 	}
 	if !strings.Contains(out, storageStopCommand) {
