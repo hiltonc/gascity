@@ -126,10 +126,10 @@ func TestBeadFromNativeIssueCarriesCloseAndAttribution(t *testing.T) {
 	}
 }
 
-// TestBeadFromNativeIssueAliasesTheClosedAtPointer guards against the store
+// TestBeadFromNativeIssueDoesNotAliasTheClosedAtPointer guards against the store
 // handing out a pointer into the caller's beadslib.Issue, where a later write
 // through that issue would mutate a bead already returned.
-func TestBeadFromNativeIssueAliasesTheClosedAtPointer(t *testing.T) {
+func TestBeadFromNativeIssueDoesNotAliasTheClosedAtPointer(t *testing.T) {
 	closedAt := time.Date(2026, 9, 17, 17, 47, 39, 0, time.UTC)
 	issue := &beadslib.Issue{
 		ID:        "gc-closed",

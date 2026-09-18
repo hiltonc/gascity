@@ -1238,7 +1238,6 @@ func filterDoltliteMetadata(rows []Bead, filters map[string]string) []Bead {
 // truth and cannot drift.
 type doltliteTableQuery struct {
 	flags      doltliteStorageFlagExprs
-	closeCols  doltliteCloseColumnExprs
 	where      []string
 	args       []any
 	parentJoin string
@@ -1315,12 +1314,8 @@ func (s *DoltliteReadStore) buildDoltliteTableQuery(query ListQuery, tables dolt
 		where = append(where, extraWhere)
 		args = append(args, extraArgs...)
 	}
-	closeCols, err := s.closeColumnExprsFor(tables)
-	if err != nil {
-		return doltliteTableQuery{}, err
-	}
 	parentJoin := " LEFT JOIN " + tables.deps + " pc ON pc.issue_id = i.id AND pc.type = 'parent-child'"
-	return doltliteTableQuery{flags: flags, closeCols: closeCols, where: where, args: args, parentJoin: parentJoin}, nil
+	return doltliteTableQuery{flags: flags, where: where, args: args, parentJoin: parentJoin}, nil
 }
 
 func (s *DoltliteReadStore) queryIssueTable(query ListQuery, tables doltliteTableSet, extraWhere string, extraArgs []any, limit int, orderBy string) ([]Bead, error) {
@@ -1334,11 +1329,20 @@ func (s *DoltliteReadStore) queryIssueTable(query ListQuery, tables doltliteTabl
 	if tq.skipTable {
 		return nil, nil
 	}
+	// Resolved here rather than in buildDoltliteTableQuery because this SELECT
+	// is the only consumer: tableHasColumn memoizes nothing, so resolving it in
+	// the shared builder made selectBoundedTopNIDs -- which selects ids alone --
+	// pay four live pragma_table_info probes per table set for expressions it
+	// discards.
+	closeCols, err := s.closeColumnExprsFor(tables)
+	if err != nil {
+		return nil, err
+	}
 	parentColumn := doltliteQualifiedDependsOnExpr("pc")
 	sqlText := `SELECT i.id, COALESCE(i.title, ''), COALESCE(i.status, ''), COALESCE(i.issue_type, ''), i.priority, i.created_at,
 		COALESCE(i.updated_at, ''), COALESCE(i.assignee, ''), COALESCE(i.description, ''), COALESCE(i.metadata, '{}'),
 		` + parentColumn + `, ` + tq.flags.ephemeral + `, ` + tq.flags.noHistory + `,
-		` + tq.closeCols.closedAt + `, ` + tq.closeCols.closeReason + `, ` + tq.closeCols.owner + `, ` + tq.closeCols.createdBy + `
+		` + closeCols.closedAt + `, ` + closeCols.closeReason + `, ` + closeCols.owner + `, ` + closeCols.createdBy + `
 		FROM ` + tables.issues + ` i` + tq.parentJoin
 	if len(tq.where) > 0 {
 		sqlText += " WHERE " + strings.Join(tq.where, " AND ")

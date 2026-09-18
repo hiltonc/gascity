@@ -120,6 +120,9 @@ func TestBeadGetOmitsClosedAtForAnOpenBead(t *testing.T) {
 	if reason, ok := got["close_reason"]; ok {
 		t.Errorf("close_reason = %#v, want omitted for an open bead", reason)
 	}
+	if got["owner"] != "me@heyhilton.com" {
+		t.Errorf("owner = %#v, want %q", got["owner"], "me@heyhilton.com")
+	}
 	if got["created_by"] != "gc-mayor" {
 		t.Errorf("created_by = %#v, want %q", got["created_by"], "gc-mayor")
 	}
