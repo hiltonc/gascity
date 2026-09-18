@@ -173,6 +173,7 @@ func TestGraphCacheDetachesEveryReferenceField(t *testing.T) {
 	priority := 2
 	deferUntil := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	blocked := true
+	closedAt := time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC)
 	original := beads.Bead{
 		ID:           "gcg-1",
 		Title:        "detached",
@@ -183,12 +184,14 @@ func TestGraphCacheDetachesEveryReferenceField(t *testing.T) {
 		Priority:     &priority,
 		DeferUntil:   &deferUntil,
 		IsBlocked:    &blocked,
+		ClosedAt:     &closedAt,
 	}
 	copied := deepCopyBead(original)
 
 	// The fixture's own variables are what the pointers point at, so the
 	// expected values are captured before anything is poisoned.
 	wantDeferUntil := deferUntil
+	wantClosedAt := closedAt
 
 	original.Needs[0] = "poisoned"
 	original.Labels[0] = "poisoned"
@@ -197,6 +200,7 @@ func TestGraphCacheDetachesEveryReferenceField(t *testing.T) {
 	*original.Priority = 99
 	*original.DeferUntil = deferUntil.Add(time.Hour)
 	*original.IsBlocked = false
+	*original.ClosedAt = closedAt.Add(time.Hour)
 
 	if copied.Needs[0] != "gcg-0" {
 		t.Errorf("Needs was shared: %q", copied.Needs[0])
@@ -219,6 +223,9 @@ func TestGraphCacheDetachesEveryReferenceField(t *testing.T) {
 	if !*copied.IsBlocked {
 		t.Errorf("IsBlocked was shared: %v", *copied.IsBlocked)
 	}
+	if !copied.ClosedAt.Equal(wantClosedAt) {
+		t.Errorf("ClosedAt was shared: %v", copied.ClosedAt)
+	}
 }
 
 // TestDeepCopyCoversEveryReferenceFieldOfABead is the completeness guard for
@@ -234,6 +241,7 @@ func TestDeepCopyCoversEveryReferenceFieldOfABead(t *testing.T) {
 		"Priority":     true,
 		"DeferUntil":   true,
 		"IsBlocked":    true,
+		"ClosedAt":     true,
 	}
 	beadType := reflect.TypeOf(beads.Bead{})
 	var reference []string

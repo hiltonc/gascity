@@ -56,6 +56,7 @@ var beadCopyExemptFields = map[string]string{
 func infraEqualityFixture() beads.Bead {
 	created := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 	deferred := created.Add(72 * time.Hour)
+	closed := created.Add(96 * time.Hour)
 	priority := 2
 	blocked := false
 	return beads.Bead{
@@ -79,6 +80,10 @@ func infraEqualityFixture() beads.Bead {
 		NoHistory:    true,
 		DeferUntil:   &deferred,
 		IsBlocked:    &blocked,
+		ClosedAt:     &closed,
+		CloseReason:  "shipped",
+		Owner:        "me@heyhilton.com",
+		CreatedBy:    "dispatcher",
 		Revision:     7,
 		ClaimFence:   3,
 		// Set so the exempt mutation below models the loss that actually
@@ -126,6 +131,13 @@ func beadCopyFieldMutations() map[string]func(beads.Bead) beads.Bead {
 			b.IsBlocked = &blocked
 			return b
 		},
+		"ClosedAt": func(b beads.Bead) beads.Bead {
+			b.ClosedAt = nil
+			return b
+		},
+		"CloseReason": func(b beads.Bead) beads.Bead { b.CloseReason = ""; return b },
+		"Owner":       func(b beads.Bead) beads.Bead { b.Owner = ""; return b },
+		"CreatedBy":   func(b beads.Bead) beads.Bead { b.CreatedBy = ""; return b },
 	}
 }
 

@@ -1998,6 +1998,18 @@ func beadCopyDifference(want, got beads.Bead) string {
 	// one that invented it hides ready work indefinitely.
 	case !beadCopyEqualInstant(want.DeferUntil, got.DeferUntil):
 		return fmt.Sprintf("defer_until %s != %s", beadCopyFormatInstant(want.DeferUntil), beadCopyFormatInstant(got.DeferUntil))
+	// The close and attribution columns are durable history, not a projection:
+	// a copy that dropped ClosedAt leaves the destination unable to report when
+	// the row finished, and nothing downstream can recover it -- UpdatedAt has
+	// already moved by then.
+	case !beadCopyEqualInstant(want.ClosedAt, got.ClosedAt):
+		return fmt.Sprintf("closed_at %s != %s", beadCopyFormatInstant(want.ClosedAt), beadCopyFormatInstant(got.ClosedAt))
+	case want.CloseReason != got.CloseReason:
+		return fmt.Sprintf("close_reason %q != %q", want.CloseReason, got.CloseReason)
+	case want.Owner != got.Owner:
+		return fmt.Sprintf("owner %q != %q", want.Owner, got.Owner)
+	case want.CreatedBy != got.CreatedBy:
+		return fmt.Sprintf("created_by %q != %q", want.CreatedBy, got.CreatedBy)
 	}
 	if diff := stringSetDifference("label", want.Labels, got.Labels); diff != "" {
 		return diff
