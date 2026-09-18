@@ -905,6 +905,13 @@ type bdIssue struct {
 	NoHistory       bool         `json:"no_history,omitempty"`
 	DeferUntil      *time.Time   `json:"defer_until,omitempty"`
 	IsBlocked       optionalBool `json:"is_blocked,omitempty"`
+	// ClosedAt, CloseReason, Owner and CreatedBy are bd's own close and
+	// attribution columns. bd omits the first two for a bead that is still
+	// open, so ClosedAt stays a pointer all the way to the wire.
+	ClosedAt    *time.Time `json:"closed_at,omitempty"`
+	CloseReason string     `json:"close_reason,omitempty"`
+	Owner       string     `json:"owner,omitempty"`
+	CreatedBy   string     `json:"created_by,omitempty"`
 	// Revision carries bd's optimistic-concurrency token for ConditionalWriter.
 	// Older bd versions omit it, so it decodes to 0; toBead stamps it onto the
 	// otherwise json:"-" Bead.Revision field.
@@ -1115,6 +1122,10 @@ func (b *bdIssue) toBead() Bead {
 		NoHistory:            b.NoHistory,
 		DeferUntil:           cloneTimePtr(b.DeferUntil),
 		IsBlocked:            b.IsBlocked.ptr(),
+		ClosedAt:             cloneTimePtr(b.ClosedAt),
+		CloseReason:          b.CloseReason,
+		Owner:                b.Owner,
+		CreatedBy:            b.CreatedBy,
 		IndefinitelyDeferred: indefinitelyDeferred,
 		Revision:             int64(b.Revision),
 	}

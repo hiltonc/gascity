@@ -108,6 +108,7 @@ func cloneBead(b Bead) Bead {
 	b.Priority = cloneIntPtr(b.Priority)
 	b.DeferUntil = cloneTimePtr(b.DeferUntil)
 	b.IsBlocked = cloneBoolPtr(b.IsBlocked)
+	b.ClosedAt = cloneTimePtr(b.ClosedAt)
 	b.Metadata = maps.Clone(b.Metadata)
 	b.Labels = slices.Clone(b.Labels)
 	b.Needs = slices.Clone(b.Needs)

@@ -378,12 +378,23 @@ func encodeWitnessDependency(stream *canonicalStream, edge graphWitnessEdge, pay
 
 // encodeWitnessBead writes one bead's logical projection.
 //
-// Two fields of beads.Bead are deliberately absent. Dependencies is the bead's
-// own copy of edges the dependency family already carries authoritatively, and
-// hashing both would let one store's decode choice change the digest.
-// IsBlocked is a denormalized readiness mirror recomputed from those same
-// edges — a projection, not state, and one backends legitimately populate
-// differently.
+// Three fields of beads.Bead are deliberately absent, each because hashing it
+// would make two stores holding the same logical data disagree. Dependencies is
+// the bead's own copy of edges the dependency family already carries
+// authoritatively, and hashing both would let one store's decode choice change
+// the digest. IsBlocked is a denormalized readiness mirror recomputed from those
+// same edges — a projection, not state, and one backends legitimately populate
+// differently. IndefinitelyDeferred is the same shape: the read-time
+// normalization of bd's richer status vocabulary, re-derived on every read by
+// the providers that have one and structurally absent from those that do not.
+//
+// witnessExemptFields records those three with their reasons and
+// TestEncodeWitnessBeadHashesEveryDurableField holds the list against the struct
+// by reflection, so a field added to beads.Bead is either hashed here or
+// exempted there — never silently unhashed. That guard exists because the
+// failure mode is the worst one a witness has available: a destination that
+// dropped an unhashed field hashes EQUAL to its source and passes the equality
+// proof.
 func encodeWitnessBead(stream *canonicalStream, bead beads.Bead) error {
 	labels, err := canonicalWitnessLabels(bead)
 	if err != nil {
@@ -396,8 +407,12 @@ func encodeWitnessBead(stream *canonicalStream, bead beads.Bead) error {
 	stream.optionalNumber(bead.Priority != nil, int64(intOrZero(bead.Priority)))
 	stream.optionalTime(bead.CreatedAt)
 	stream.optionalTime(bead.UpdatedAt)
+	stream.optionalTime(timeOrZero(bead.ClosedAt))
+	stream.text(bead.CloseReason)
 	stream.text(bead.Assignee)
 	stream.text(bead.From)
+	stream.text(bead.Owner)
+	stream.text(bead.CreatedBy)
 	stream.text(bead.ParentID)
 	stream.text(bead.Ref)
 	stream.text(bead.Description)
