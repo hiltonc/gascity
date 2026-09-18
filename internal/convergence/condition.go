@@ -188,16 +188,21 @@ func containedIn(absPath, root string) bool {
 //     behavior.
 //   - conditionPath: the path declared by the gate. May be absolute or
 //     relative to `base`.
+//   - trustedResolutionRoots: additional directories whose contents are
+//     trusted for post-symlink-resolution containment. Pack-cache symlinks
+//     resolve outside envelope and base but are trusted content (gsc-69x);
+//     passing the cache root here accepts them without weakening the
+//     pre-resolution traversal check.
 //
 // For relative paths, both the lexically-joined and the symlink-resolved
-// targets must land inside envelope OR base — defending against both
-// `../`-style traversal and symlinks that escape containment after
-// resolution. Absolute paths skip containment in this function because
-// imported and registry-installed packs can live outside the city/store roots.
-// Callers must only pass absolute paths from surfaces they trust. Returns the
-// canonical absolute path after symlink resolution and an exec-eligible file
-// check.
-func ResolveConditionPath(envelope, base, conditionPath string) (string, error) {
+// targets must land inside envelope OR base OR a trusted resolution root —
+// defending against both `../`-style traversal and symlinks that escape
+// containment after resolution. Absolute paths skip containment in this
+// function because imported and registry-installed packs can live outside the
+// city/store roots. Callers must only pass absolute paths from surfaces they
+// trust. Returns the canonical absolute path after symlink resolution and an
+// exec-eligible file check.
+func ResolveConditionPath(envelope, base, conditionPath string, trustedResolutionRoots ...string) (string, error) {
 	if conditionPath == "" {
 		return "", fmt.Errorf("resolving gate condition path: empty path")
 	}
@@ -259,8 +264,11 @@ func ResolveConditionPath(envelope, base, conditionPath string) (string, error) 
 
 	// Post-resolution containment: a symlink under envelope or base can
 	// point outside both trees (e.g. `base/scripts/check.sh -> /etc/passwd`).
-	// Re-validate the symlink-resolved path against the same envelope-OR-base
-	// rule to close the symlink-escape gap (gastownhall/gascity#2354 review).
+	// Re-validate the symlink-resolved path against envelope, base, or any
+	// trusted resolution root to close the symlink-escape gap
+	// (gastownhall/gascity#2354 review). Pack-cache symlinks legitimately
+	// resolve outside envelope and base (gsc-69x); trusted roots accept them
+	// without weakening the pre-resolution traversal check.
 	// Absolute paths still skip — same rationale as the pre-resolution check.
 	//
 	// Use pathutil.PathWithin rather than the lexical containedIn: resolved
@@ -271,7 +279,16 @@ func ResolveConditionPath(envelope, base, conditionPath string) (string, error) 
 	// absPath is derived from canonBase, so both sides already share a
 	// convention there.)
 	if !filepath.IsAbs(conditionPath) {
-		if !pathutil.PathWithin(canonEnvelope, resolved) && !pathutil.PathWithin(canonBase, resolved) {
+		contained := pathutil.PathWithin(canonEnvelope, resolved) || pathutil.PathWithin(canonBase, resolved)
+		if !contained {
+			for _, root := range trustedResolutionRoots {
+				if root != "" && pathutil.PathWithin(root, resolved) {
+					contained = true
+					break
+				}
+			}
+		}
+		if !contained {
 			return "", fmt.Errorf("resolving gate condition path: symlink target outside containment: %s", conditionPath)
 		}
 	}

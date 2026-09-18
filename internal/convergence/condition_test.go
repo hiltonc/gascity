@@ -454,6 +454,80 @@ func TestResolveConditionPath(t *testing.T) {
 		}
 	})
 
+	// Pins gsc-69x: pack-cache symlinks. A script under base is a symlink
+	// whose target lives in a pack cache directory outside both envelope and
+	// base. Without trusted resolution roots the post-resolution containment
+	// check rejects it. With the pack cache passed as a trusted root, it
+	// resolves successfully.
+	t.Run("symlink to pack cache accepted when cache is a trusted resolution root", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlink semantics differ on Windows")
+		}
+		parent := t.TempDir()
+		cityDir := filepath.Join(parent, "city")
+		packCache := filepath.Join(parent, "pack-cache", "assets", "scripts", "checks")
+		scriptsDir := filepath.Join(cityDir, ".gc", "scripts", "checks")
+		if err := os.MkdirAll(packCache, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		realScript := filepath.Join(packCache, "build-artifact-valid.sh")
+		if err := os.WriteFile(realScript, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(scriptsDir, "build-artifact-valid.sh")
+		if err := os.Symlink(realScript, link); err != nil {
+			t.Fatal(err)
+		}
+
+		// Without trusted roots: rejected.
+		_, err := ResolveConditionPath(cityDir, cityDir, ".gc/scripts/checks/build-artifact-valid.sh")
+		if err == nil {
+			t.Fatal("expected symlink-escape rejection without trusted roots, got nil")
+		}
+		if !strings.Contains(err.Error(), "symlink target outside containment") {
+			t.Fatalf("expected symlink-escape error, got: %v", err)
+		}
+
+		// With pack cache parent as trusted root: accepted.
+		got, err := ResolveConditionPath(cityDir, cityDir, ".gc/scripts/checks/build-artifact-valid.sh",
+			filepath.Join(parent, "pack-cache"))
+		if err != nil {
+			t.Fatalf("unexpected error with trusted root: %v", err)
+		}
+		testutil.AssertSamePath(t, got, realScript)
+	})
+
+	// Security contract: a trusted resolution root must not weaken
+	// pre-resolution containment. A path that traverses outside envelope and
+	// base is still rejected even when the traversal target happens to be
+	// inside a trusted root.
+	t.Run("trusted root does not bypass pre-resolution traversal check", func(t *testing.T) {
+		parent := t.TempDir()
+		cityDir := filepath.Join(parent, "city")
+		trustedDir := filepath.Join(parent, "trusted")
+		if err := os.MkdirAll(cityDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(trustedDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		script := filepath.Join(trustedDir, "check.sh")
+		if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err := ResolveConditionPath(cityDir, cityDir, "../trusted/check.sh", trustedDir)
+		if err == nil {
+			t.Fatal("expected traversal rejection even with trusted root, got nil")
+		}
+		if !strings.Contains(err.Error(), "traversal") {
+			t.Errorf("expected path traversal error, got: %v", err)
+		}
+	})
+
 	// Empty base falls back to envelope for backward compatibility with
 	// callers that have no rig/city distinction to make.
 	t.Run("empty base falls back to envelope", func(t *testing.T) {
