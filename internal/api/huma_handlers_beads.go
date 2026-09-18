@@ -3,11 +3,14 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/gastownhall/gascity/internal/api/apierr"
 	"github.com/gastownhall/gascity/internal/beads"
 )
+
+var beadListAllReadTimeout = 30 * time.Second
 
 // humaHandleBeadList is the Huma-typed handler for GET /v0/beads.
 //
@@ -78,6 +81,12 @@ func (s *Server) humaHandleBeadList(ctx context.Context, input *BeadListInput) (
 	}
 	legs := beadListFanOut(s.state, stores, rigNames, input.Rig != "")
 
+	if input.All {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, beadListAllReadTimeout)
+		defer cancel()
+	}
+
 	var all []beads.Bead
 
 	// all=true reads materialize closed history per rig, so the build is
@@ -117,6 +126,10 @@ func (s *Server) humaHandleBeadList(ctx context.Context, input *BeadListInput) (
 	seen := map[string]bool{}
 	var pa partialAggregator
 	for i, leg := range legs {
+		if err := ctx.Err(); err != nil {
+			return nil, apierr.ServiceUnavailable.Msg(
+				fmt.Sprintf("bead list timed out after %s; retry with a narrower filter or smaller limit", beadListAllReadTimeout))
+		}
 		for _, assignee := range assigneeTerms {
 			query := beads.ListQuery{
 				Status:        input.Status,
@@ -153,6 +166,16 @@ func (s *Server) humaHandleBeadList(ctx context.Context, input *BeadListInput) (
 				// tie-break identical to the in-memory sort.
 				query.Limit = boundedFetch
 				query.SeekAfter = seek
+			} else if input.All && seek == nil && limit > 0 && query.AllowScan {
+				// Non-bounded all=true first-page scan: push the page limit
+				// to the store so it returns O(limit) rows instead of scanning
+				// the full closed-bead history (gsc-wxgu). Total will be
+				// len(merged) rather than the exact historical count, but that
+				// is strictly better than a request that never returns.
+				// Filtered reads (HasFilter → AllowScan false) keep the full
+				// scan so their exact Total is preserved. Cursor pages still
+				// do the full scan because SeekAfter disables the native limit.
+				query.Limit = limit + 1
 			}
 			pa.attempt()
 			list, err := leg.store.List(query)
