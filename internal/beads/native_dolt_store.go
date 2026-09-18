@@ -2461,6 +2461,10 @@ func beadFromNativeIssue(issue *beadslib.Issue) (Bead, error) {
 		Ephemeral:            issue.Ephemeral,
 		NoHistory:            issue.NoHistory,
 		DeferUntil:           cloneTimePtr(issue.DeferUntil),
+		ClosedAt:             cloneTimePtr(issue.ClosedAt),
+		CloseReason:          issue.CloseReason,
+		Owner:                issue.Owner,
+		CreatedBy:            issue.CreatedBy,
 		IndefinitelyDeferred: indefinitelyDeferred,
 		Revision:             issue.RowVersion,
 	}

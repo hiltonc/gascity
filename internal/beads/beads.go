@@ -167,6 +167,31 @@ type Bead struct {
 	// means the store did not provide it and cached ready falls back to
 	// dependency-derived readiness for backward compatibility.
 	IsBlocked *bool `json:"is_blocked,omitempty"`
+	// ClosedAt is when the bead was closed, carried from the store's own
+	// column rather than derived. It is the only completion time on the wire:
+	// UpdatedAt is NOT a substitute, because it moves on any later write and
+	// merge bookkeeping routinely touches a bead after it closes, so a
+	// lifespan computed from it is silently wrong in the direction that makes
+	// the system look slower.
+	//
+	// A pointer, not a bare time.Time, so an open bead is distinguishable from
+	// one closed at the zero time: omitempty on a value would still be
+	// ambiguous to a client decoding into a non-pointer, and a served
+	// "0001-01-01T00:00:00Z" reads as a real date rather than as "not closed".
+	ClosedAt *time.Time `json:"closed_at,omitempty"`
+	// CloseReason is the reason recorded with the close. Stores that accept a
+	// reason through metadata["close_reason"] forward it to the backend on the
+	// way in; this carries the backend's own column back out, so the two are
+	// the same value seen from opposite ends and not a second source of truth.
+	CloseReason string `json:"close_reason,omitempty"`
+	// Owner is the store's human-owner column -- a git author email in bd --
+	// and is distinct from Assignee, which names whoever currently holds the
+	// bead. Gas City routes on Assignee and never reads this; it is carried
+	// for attribution in clients that report on the ledger.
+	Owner string `json:"owner,omitempty"`
+	// CreatedBy names whoever created the bead, the provenance half of the
+	// same attribution pair as Owner. Also read by nothing in Gas City.
+	CreatedBy string `json:"created_by,omitempty"`
 	// IndefinitelyDeferred preserves bd's status-based indefinite deferral
 	// after richer statuses normalize to Gas City's three-state model. Cache
 	// notifications restore status="deferred" on the event wire so another

@@ -47,6 +47,22 @@ func beadFromGen(g genclient.Bead) beads.Bead {
 		deferUntil := *g.DeferUntil
 		out.DeferUntil = &deferUntil
 	}
+	// A nil ClosedAt stays nil: the generated client omits it for an open
+	// bead, and collapsing that to a zero time would hand every caller a
+	// completion date of 1970.
+	if g.ClosedAt != nil {
+		closedAt := *g.ClosedAt
+		out.ClosedAt = &closedAt
+	}
+	if g.CloseReason != nil {
+		out.CloseReason = *g.CloseReason
+	}
+	if g.Owner != nil {
+		out.Owner = *g.Owner
+	}
+	if g.CreatedBy != nil {
+		out.CreatedBy = *g.CreatedBy
+	}
 	if g.Ephemeral != nil {
 		out.Ephemeral = *g.Ephemeral
 	}
