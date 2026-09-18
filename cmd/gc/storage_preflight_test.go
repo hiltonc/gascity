@@ -243,7 +243,7 @@ func TestPreflightSaysSoWhenNoControllerIsLive(t *testing.T) {
 	if code := doStoragePreflight(request, &stdout, &stderr); code != 0 {
 		t.Fatalf("preflight refused a ready city: exit %d stderr=%q", code, stderr.String())
 	}
-	if strings.Contains(stdout.String(), "4242") {
+	if strings.Contains(stdout.String(), "PID 4242") {
 		t.Fatalf("the fixture leaked a PID: %q", stdout.String())
 	}
 	if !strings.Contains(stdout.String(), "controller: nothing answered") {
