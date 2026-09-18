@@ -127,8 +127,11 @@ func (s *Server) humaHandleBeadList(ctx context.Context, input *BeadListInput) (
 	var pa partialAggregator
 	for i, leg := range legs {
 		if err := ctx.Err(); err != nil {
-			return nil, apierr.ServiceUnavailable.Msg(
-				fmt.Sprintf("bead list timed out after %s; retry with a narrower filter or smaller limit", beadListAllReadTimeout))
+			if errors.Is(err, context.DeadlineExceeded) {
+				return nil, apierr.ServiceUnavailable.Msg(
+					fmt.Sprintf("bead list timed out after %s; retry with a narrower filter or smaller limit", beadListAllReadTimeout))
+			}
+			return nil, apierr.ServiceUnavailable.Msg("bead list canceled by client disconnect")
 		}
 		for _, assignee := range assigneeTerms {
 			query := beads.ListQuery{
@@ -166,7 +169,7 @@ func (s *Server) humaHandleBeadList(ctx context.Context, input *BeadListInput) (
 				// tie-break identical to the in-memory sort.
 				query.Limit = boundedFetch
 				query.SeekAfter = seek
-			} else if input.All && seek == nil && limit > 0 && query.AllowScan {
+			} else if !boundedMode && input.All && seek == nil && limit > 0 && query.AllowScan {
 				// Non-bounded all=true first-page scan: push the page limit
 				// to the store so it returns O(limit) rows instead of scanning
 				// the full closed-bead history (gsc-wxgu). Total will be
