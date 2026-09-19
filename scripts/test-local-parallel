@@ -351,8 +351,9 @@ run_fan_out() {
     echo "[$label] ok"
   else
     status=$?
-    echo "[$label] failed with exit ${status}; log: ${log}" >&2
-    sed -n '"'"'1,240p'"'"' "$log" >&2
+    echo "[$label] FAILED (exit ${status})" >&2
+    : >"$LOCAL_TEST_LOG_DIR/${safe_label}.failed"
+    grep -A2 "^--- FAIL:" "$log" | head -40 >&2 || true
     exit "$status"
   fi
 ' _
@@ -369,7 +370,28 @@ if [[ "$status" -eq 0 ]]; then
   fi
   echo "All ${mode} jobs passed"
 else
-  echo "One or more ${mode} jobs failed; logs are in ${log_dir}" >&2
+  failed_jobs=()
+  for marker in "$log_dir"/*.failed; do
+    [[ -e "$marker" ]] || continue
+    base="$(basename "$marker" .failed)"
+    failed_jobs+=("$base")
+  done
+  echo "" >&2
+  echo "=== FAILED JOBS ===" >&2
+  if [[ ${#failed_jobs[@]} -gt 0 ]]; then
+    for job in "${failed_jobs[@]}"; do
+      echo "  $job" >&2
+      log_file="$log_dir/${job}.log"
+      if [[ -f "$log_file" ]]; then
+        echo "  --- failing tests ---" >&2
+        grep -A2 "^--- FAIL:" "$log_file" | head -40 | sed 's/^/    /' >&2 || true
+        echo "" >&2
+      fi
+    done
+  else
+    echo "  (no per-job markers found; check individual logs)" >&2
+  fi
+  echo "Logs: ${log_dir}" >&2
 fi
 
 exit "$status"
