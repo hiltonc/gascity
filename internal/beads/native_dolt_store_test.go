@@ -231,6 +231,29 @@ func TestNativeDoltStoreConvertsDefaultPriorityAsUnset(t *testing.T) {
 	}
 }
 
+func TestBeadFromNativeIssueCarriesUpdatedAt(t *testing.T) {
+	created := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	updated := created.Add(5 * time.Minute)
+	bead, err := beadFromNativeIssue(&beadslib.Issue{
+		ID:        "gc-updated",
+		Title:     "updated bead",
+		Status:    beadslib.StatusOpen,
+		IssueType: beadslib.TypeTask,
+		Priority:  2,
+		CreatedAt: created,
+		UpdatedAt: updated,
+	})
+	if err != nil {
+		t.Fatalf("beadFromNativeIssue: %v", err)
+	}
+	if !bead.UpdatedAt.Equal(updated) {
+		t.Fatalf("UpdatedAt = %v, want %v", bead.UpdatedAt, updated)
+	}
+	if bead.UpdatedAt.Equal(bead.CreatedAt) {
+		t.Fatal("UpdatedAt == CreatedAt; want distinct values when the issue was updated after creation")
+	}
+}
+
 func TestNativeDoltStoreMapsUpstreamStatusesToGasCityContract(t *testing.T) {
 	tests := []struct {
 		upstream           beadslib.Status

@@ -846,6 +846,82 @@ func TestBeadGetOmitsUpdatedAtWhenZero(t *testing.T) {
 	}
 }
 
+func TestBeadListIncludesUpdatedAt(t *testing.T) {
+	createdAt := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+	updatedAt := createdAt.Add(5 * time.Minute)
+	state := newFakeState(t)
+	state.stores["myrig"] = beads.NewMemStoreFrom(0, []beads.Bead{{
+		ID:        "gc-list-updated",
+		Title:     "Bead with update",
+		Status:    "open",
+		Type:      "task",
+		CreatedAt: createdAt,
+		UpdatedAt: updatedAt,
+	}}, nil)
+	h := newTestCityHandler(t, state)
+
+	req := httptest.NewRequest("GET", cityURL(state, "/beads"), nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("Decode(): %v", err)
+	}
+	if len(resp.Items) == 0 {
+		t.Fatal("no items returned")
+	}
+	got := resp.Items[0]
+	if got["updated_at"] != updatedAt.Format(time.RFC3339Nano) {
+		t.Fatalf("/beads updated_at = %v, want %q", got["updated_at"], updatedAt.Format(time.RFC3339Nano))
+	}
+}
+
+func TestBeadGetUpdatedAtDistinctFromCreatedAt(t *testing.T) {
+	createdAt := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+	updatedAt := createdAt.Add(5 * time.Minute)
+	state := newFakeState(t)
+	state.stores["myrig"] = beads.NewMemStoreFrom(0, []beads.Bead{{
+		ID:        "gc-both-times",
+		Title:     "Has both timestamps",
+		Status:    "open",
+		Type:      "task",
+		CreatedAt: createdAt,
+		UpdatedAt: updatedAt,
+	}}, nil)
+	h := newTestCityHandler(t, state)
+
+	req := httptest.NewRequest("GET", cityURL(state, "/bead/gc-both-times"), nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var got map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("Decode(): %v", err)
+	}
+	gotUpdated, _ := got["updated_at"].(string)
+	gotCreated, _ := got["created_at"].(string)
+	if gotUpdated == "" {
+		t.Fatal("updated_at absent")
+	}
+	if gotCreated == "" {
+		t.Fatal("created_at absent")
+	}
+	if gotUpdated == gotCreated {
+		t.Fatalf("updated_at == created_at (%s); the two must remain distinct when a bead has been updated since creation", gotUpdated)
+	}
+}
+
 func TestBeadReady(t *testing.T) {
 	state := newFakeState(t)
 	store := state.stores["myrig"]
