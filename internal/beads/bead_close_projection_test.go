@@ -126,6 +126,62 @@ func TestBeadFromNativeIssueCarriesCloseAndAttribution(t *testing.T) {
 	}
 }
 
+// TestBeadFromNativeIssueCarriesUpdatedAt pins updated_at on the native seam.
+// The bd and DoltLite seams already carried it; the native one dropped it, so
+// the API served no updated_at for any bead read through it (gsc-yncq).
+func TestBeadFromNativeIssueCarriesUpdatedAt(t *testing.T) {
+	created := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	updated := created.Add(5 * time.Minute)
+	bead, err := beadFromNativeIssue(&beadslib.Issue{
+		ID:        "gc-updated",
+		Title:     "updated bead",
+		Status:    beadslib.StatusOpen,
+		IssueType: beadslib.TypeTask,
+		Priority:  2,
+		CreatedAt: created,
+		UpdatedAt: updated,
+	})
+	if err != nil {
+		t.Fatalf("beadFromNativeIssue: %v", err)
+	}
+	if !bead.UpdatedAt.Equal(updated) {
+		t.Fatalf("UpdatedAt = %v, want %v", bead.UpdatedAt, updated)
+	}
+	if bead.UpdatedAt.Equal(bead.CreatedAt) {
+		t.Fatal("UpdatedAt == CreatedAt; want distinct values when the issue was updated after creation")
+	}
+}
+
+// TestBeadFromNativeIssueKeepsUpdatedAtDistinctFromClosedAt guards the pair a
+// future change is most tempted to collapse. Merge bookkeeping touches a bead
+// after it closes -- 25.7% of closed beads carry an updated_at later than their
+// closed_at -- so neither field is an alias for the other (gsc-yncq).
+func TestBeadFromNativeIssueKeepsUpdatedAtDistinctFromClosedAt(t *testing.T) {
+	closedAt := time.Date(2026, 9, 17, 17, 47, 39, 0, time.UTC)
+	updatedAt := time.Date(2026, 9, 17, 17, 50, 0, 0, time.UTC)
+	b, err := beadFromNativeIssue(&beadslib.Issue{
+		ID:        "gc-closed",
+		Title:     "Closed bead",
+		Status:    beadslib.StatusClosed,
+		IssueType: beadslib.IssueType("task"),
+		CreatedAt: time.Date(2026, 9, 17, 16, 0, 0, 0, time.UTC),
+		UpdatedAt: updatedAt,
+		ClosedAt:  &closedAt,
+	})
+	if err != nil {
+		t.Fatalf("beadFromNativeIssue(): %v", err)
+	}
+	if b.ClosedAt == nil || !b.ClosedAt.Equal(closedAt) {
+		t.Fatalf("ClosedAt = %v, want %s", b.ClosedAt, closedAt)
+	}
+	if !b.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("UpdatedAt = %s, want %s", b.UpdatedAt, updatedAt)
+	}
+	if b.ClosedAt.Equal(b.UpdatedAt) {
+		t.Fatal("closed_at == updated_at; want both served as the distinct values the issue recorded")
+	}
+}
+
 // TestBeadFromNativeIssueDoesNotAliasTheClosedAtPointer guards against the store
 // handing out a pointer into the caller's beadslib.Issue, where a later write
 // through that issue would mutate a bead already returned.

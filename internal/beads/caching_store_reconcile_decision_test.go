@@ -163,3 +163,28 @@ func assertDecisionInvariants(t *testing.T, in mergeRowInput, d mergeDecision) {
 		}
 	}
 }
+
+// TestReconcileMergeDecisionAbsorbsAnUpdatedAtOnlyChange pins why beadChanged
+// may leave UpdatedAt out: outside the recency and fence guards, reconcile
+// absorbs the fresh row whether or not beadChanged reports a change, so a
+// fresher updated_at reaches the cache on the next pass (gsc-yncq).
+func TestReconcileMergeDecisionAbsorbsAnUpdatedAtOnlyChange(t *testing.T) {
+	cached := beadWith("x", "open", func(b *Bead) { b.UpdatedAt = fxNow })
+	fresh := beadWith("x", "open", func(b *Bead) { b.UpdatedAt = fxNow.Add(time.Minute) })
+	if beadChanged(cached, fresh, true) {
+		t.Fatal("beadChanged reports an updated_at-only change; this test no longer isolates the absorb path")
+	}
+	got := reconcileMergeDecision(mergeRowInput{
+		freshExists:   true,
+		fresh:         fresh,
+		cachedExists:  true,
+		cached:        cached,
+		hasCachedDeps: true,
+		startSeq:      100,
+		now:           fxNow,
+		skipLabels:    true,
+	})
+	if got.action != mergeAbsorb {
+		t.Fatalf("action = %v, want mergeAbsorb so the fresher updated_at is installed", got.action)
+	}
+}
