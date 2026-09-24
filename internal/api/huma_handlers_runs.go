@@ -79,12 +79,26 @@ type RunProjectionGraceSource interface {
 	ForgetRunProjectionMiss(context.Context, string, string)
 }
 
-// runFold reads the warm incremental projection when the injected census source
+// runFold is the projected fold with every stale non-terminal workflow root
+// confirmed against its store (reconcileRunRoots). A failed confirmation marks
+// the fold partial and leaves the projected row standing.
+func (s *Server) runFold(ctx context.Context) (runFoldResult, error) {
+	res, err := s.projectedRunFold(ctx)
+	if err != nil || !res.ready {
+		return res, err
+	}
+	var failed bool
+	res.beads, failed = s.reconcileRunRoots(res.beads)
+	res.partial = res.partial || failed
+	return res, nil
+}
+
+// projectedRunFold reads the warm incremental projection when the injected census source
 // provides it. Direct Server users without that capability retain the legacy
 // on-disk fold, memoized by event-log modification time. A city with no event
 // log yet yields a ready empty projection (a fresh city has no runs), not an
 // error.
-func (s *Server) runFold(ctx context.Context) (runFoldResult, error) {
+func (s *Server) projectedRunFold(ctx context.Context) (runFoldResult, error) {
 	if source, ok := s.runCensusSource.(RunProjectionSource); ok {
 		snapshot, found := source.RunProjection(ctx, s.state.CityName())
 		if !found {

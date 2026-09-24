@@ -387,7 +387,7 @@ func (c *CachingStore) refreshCachedBeads(query ListQuery, startSeq uint64, item
 				continue
 			}
 		}
-		c.absorbFreshLocked(item.ID, item, now, absorbOpts{
+		c.absorbReadThroughLocked(item.ID, item, now, absorbOpts{
 			depsMode:   depsFromFieldsIfCarried,
 			seqMode:    seqClearGuarded,
 			clearDirty: true,
@@ -403,7 +403,7 @@ func (c *CachingStore) refreshCachedBeads(query ListQuery, startSeq uint64, item
 		if _, keep := c.recentLocalBeadConflictLocked(id, bead, now, false); keep {
 			continue
 		}
-		c.absorbFreshLocked(id, bead, now, absorbOpts{
+		c.absorbReadThroughLocked(id, bead, now, absorbOpts{
 			depsMode:   depsFromFieldsIfCarried,
 			seqMode:    seqClearGuarded,
 			clearDirty: true,
@@ -425,7 +425,7 @@ func (c *CachingStore) refreshCachedBeads(query ListQuery, startSeq uint64, item
 		if _, keep := c.recentLocalBeadConflictLocked(id, bead, now, false); keep {
 			continue
 		}
-		c.absorbFreshLocked(id, bead, now, absorbOpts{
+		c.absorbReadThroughLocked(id, bead, now, absorbOpts{
 			depsMode:   depsFromFieldsIfCarried,
 			seqMode:    seqClearGuarded,
 			clearDirty: true,
@@ -556,7 +556,7 @@ func (c *CachingStore) Get(id string) (Bead, error) {
 				c.mu.Unlock()
 				return Bead{}, ErrNotFound
 			}
-			c.absorbFreshLocked(id, fresh, time.Now(), absorbOpts{
+			c.absorbReadThroughLocked(id, fresh, time.Now(), absorbOpts{
 				depsMode:   depsFromFieldsIfCarried,
 				seqMode:    seqClearBeadSeqOnly,
 				clearDirty: true,

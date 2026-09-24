@@ -424,6 +424,9 @@ type mergeRowInput struct {
 	localAt       time.Time
 	now           time.Time // the single pass-level clock read
 	skipLabels    bool
+	// silentClose reports that a read path turned the cached row closed
+	// without announcing it, so its eviction still owes a bead.closed.
+	silentClose bool
 }
 
 // fencedAfterSnapshot reports whether a tombstone, mutation or local write
@@ -474,7 +477,7 @@ func reconcileMergeDecision(in mergeRowInput) mergeDecision {
 			return mergeDecision{action: mergeSkipRecentLocal}
 		}
 		n := ""
-		if in.cached.Status != "closed" {
+		if in.cached.Status != "closed" || in.silentClose {
 			n = "bead.closed"
 		}
 		return mergeDecision{action: mergeEvict, notification: n}
@@ -589,6 +592,7 @@ func (c *CachingStore) mergeSnapshotLocked(
 		if _, exists := freshByID[id]; exists {
 			continue
 		}
+		_, silentClose := c.silentCloses[id]
 		d := reconcileMergeDecision(mergeRowInput{
 			freshExists:  false,
 			cachedExists: true,
@@ -600,6 +604,7 @@ func (c *CachingStore) mergeSnapshotLocked(
 			localAt:      c.localBeadAt[id],
 			now:          now,
 			skipLabels:   true,
+			silentClose:  silentClose,
 		})
 		if d.action != mergeEvict {
 			continue

@@ -88,6 +88,7 @@ func TestMergeOracleFieldCoverage(t *testing.T) {
 		"beadSeq": true, "localBeadAt": true, "deletedSeq": true, "state": true,
 		"writeSeq":            true, // compared via expectedWriteSeq
 		"readyProjectionLost": true, // compared as mergeEndState.readyLost
+		"silentCloses":        true,
 		"lastFreshAt":         true, "mutationSeq": true, "primePartialErr": true,
 		"syncFailures": true, "circuitTripped": true,
 		"stats": true, // stats compared field-wise below

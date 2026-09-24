@@ -100,6 +100,9 @@ type mergeEndState struct {
 	statsUpdates         int64
 	statsLastReconcileAt time.Time
 	statsLastFreshAt     time.Time
+	// silentCloses is the set of rows a read path closed without announcing,
+	// which the eviction still owes a bead.closed. The merge only clears it.
+	silentCloses map[string]struct{}
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +288,9 @@ func ensureMaps(c *CachingStore) {
 	// lets buildExpectedNewEnd derive the expected set from the end beads map
 	// alone.
 	c.readyProjectionLost = make(map[string]struct{})
+	// Nor do they seed unannounced closes, and the merge only clears marks, so
+	// every captured end state's set is empty.
+	c.silentCloses = make(map[string]struct{})
 }
 
 func captureEndState(c *CachingStore) mergeEndState {
@@ -302,6 +308,7 @@ func captureEndState(c *CachingStore) mergeEndState {
 		deletedSeq:           cloneU64Map(c.deletedSeq),
 		writeSeq:             cloneU64Map(c.writeSeq),
 		readyLost:            cloneDirty(c.readyProjectionLost),
+		silentCloses:         cloneDirty(c.silentCloses),
 		state:                c.state,
 		lastFreshAt:          c.lastFreshAt,
 		mutationSeq:          c.mutationSeq,
