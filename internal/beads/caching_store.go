@@ -93,6 +93,10 @@ type CachingStore struct {
 	// once the rolling window has drained — see recomputeCadenceLocked.
 	latencyDriverActive bool
 
+	// silentCloses holds ids whose cached row a read path turned closed
+	// without announcing it; the reconcile eviction announces them.
+	silentCloses map[string]struct{}
+
 	applyEventBeforeCommitForTest func()
 }
 
@@ -486,6 +490,7 @@ type absorbOpts struct {
 // only by seqClearGuarded. Caller must hold c.mu in write mode.
 func (c *CachingStore) absorbFreshLocked(id string, bead Bead, now time.Time, opts absorbOpts) {
 	c.advanceObservationLocked()
+	delete(c.silentCloses, id)
 	bead = c.absorbReadyProjectionLocked(id, bead, opts)
 	c.beads[id] = cloneBead(bead)
 	switch opts.depsMode {
@@ -663,6 +668,22 @@ func (c *CachingStore) evictLocked(id string) {
 	delete(c.beadSeq, id)
 	delete(c.localBeadAt, id)
 	delete(c.readyProjectionLost, id)
+	delete(c.silentCloses, id)
+}
+
+// absorbReadThroughLocked is absorbFreshLocked for a read path, which announces
+// nothing. When the read turns a cached open row closed, it records the close as
+// unannounced so the reconcile eviction announces it instead of taking the
+// closed row as already reported. Caller must hold c.mu in write mode.
+func (c *CachingStore) absorbReadThroughLocked(id string, bead Bead, now time.Time, opts absorbOpts) {
+	prior, cached := c.beads[id]
+	c.absorbFreshLocked(id, bead, now, opts)
+	if cached && prior.Status != "closed" && bead.Status == "closed" {
+		if c.silentCloses == nil {
+			c.silentCloses = make(map[string]struct{})
+		}
+		c.silentCloses[id] = struct{}{}
+	}
 }
 
 // tombstoneLocked evicts id and installs a deletion fence at seq. seq must be a
@@ -786,7 +807,7 @@ func (c *CachingStore) readCacheWithOverlay(gate func() bool, collect func(suppr
 				opts.depsMode = depsExplicit
 				opts.deps = f.deps
 			}
-			c.absorbFreshLocked(f.id, f.bead, now, opts)
+			c.absorbReadThroughLocked(f.id, f.bead, now, opts)
 			absorbed++
 		}
 		if absorbed > 0 {
