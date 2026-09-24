@@ -219,6 +219,7 @@ func buildExpectedNewEnd(st storeState, in snapshotInputs, postPreserveFresh map
 	// deps under depsComplete=true.
 	exp.depsComplete = expectedNextDepsComplete(st, in, postPreserveFresh)
 	exp.readyLost = expectedReadyLost(st, exp.beads)
+	exp.silentCloses = map[string]struct{}{}
 	return exp
 }
 
