@@ -427,6 +427,13 @@ type BdStore struct {
 
 	listSkipLabelsEnabled bool // whether bd list may receive --skip-labels
 
+	// versionMu guards version, the bd version this store has read, and
+	// versionMemo, an optional memo shared with other stores. See
+	// bdstore_version_memo.go.
+	versionMu   sync.Mutex
+	version     string
+	versionMemo *BdVersionMemo
+
 	// relocatedClasses names the coordination classes this ledger does not
 	// serve. Empty on every city that keeps all classes on one store, which is
 	// what makes the SQL guard inert there. See bdsql_relocation.go.
@@ -2840,6 +2847,9 @@ func (s *BdStore) listViaBDList(query ListQuery) ([]Bead, error) {
 	}
 	if query.SkipLabels && serverQuery.Label == "" && s.listSkipLabelsEnabled {
 		args = append(args, "--skip-labels")
+	}
+	if query.Brief && s.listBriefSupported() {
+		args = append(args, "--brief")
 	}
 
 	out, err := s.runBDTransientRead(args...)

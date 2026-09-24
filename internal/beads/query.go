@@ -131,6 +131,11 @@ type ListQuery struct {
 	// caller does not need labels for change detection. Stores that cannot
 	// omit labels may ignore it.
 	SkipLabels bool
+	// Brief tells backing stores the caller does not need the free-form text
+	// fields (description, design, acceptance criteria, notes). Stores that
+	// cannot omit them may ignore it. A bead read this way must not be served
+	// to a caller that did not ask for Brief.
+	Brief bool
 	// Live bypasses CachingStore and reads from the backing store. Other Store
 	// implementations ignore it. Use it only for lifecycle gates that must
 	// observe external mutations immediately.

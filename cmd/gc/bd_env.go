@@ -401,7 +401,7 @@ func controlBdStoreForCity(dir, cityPath string, cfg *config.City) *beads.BdStor
 		dir,
 		controlBdCommandRunnerForCity(cityPath),
 		issuePrefixForScope(dir, cityPath, cfg),
-		bdStoreOptionsForConfig(cfg)...,
+		controlBdStoreOptions(cfg)...,
 	)
 }
 
@@ -420,7 +420,7 @@ func controlBdStoreForRig(rigDir, cityPath string, cfg *config.City, knownPrefix
 		rigDir,
 		controlBdCommandRunnerForRig(cityPath, cfg, rigDir),
 		prefix,
-		bdStoreOptionsForConfig(cfg)...,
+		controlBdStoreOptions(cfg)...,
 	)
 }
 

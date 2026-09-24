@@ -119,6 +119,7 @@ const (
 	cachePartial                  // PrimeActive loaded active beads; active queries can use the cache immediately.
 	cacheLive
 	cacheDegraded
+	cacheReadyOnly // PrimeActiveReadiness loaded brief issue-tier rows; only CachedReady reads them.
 )
 
 var partialPrimeStatuses = []string{"open", "in_progress"}
@@ -949,6 +950,45 @@ func (c *CachingStore) PrimeActive() error {
 		}
 		all = append(all, beads...)
 	}
+	c.absorbActivePrime(startSeq, all, partialErr, cachePartial)
+	return nil
+}
+
+// PrimeActiveReadiness loads the smallest snapshot CachedReady can answer
+// from: every non-closed issue-tier bead, read in one list as brief rows
+// (ListQuery.Brief), plus the ready projection and dependencies. It exists
+// for callers that rebuild a store per readiness scan, where PrimeActive's
+// full-text rows and ephemeral-tier reads were most of the cost (gsc-dtay).
+//
+// The rows omit free-form text and ephemeral beads, so the store afterwards
+// serves CachedReady from the snapshot and sends every other read to the
+// backing store, as an unprimed store would. It must be called on a store no
+// other prime has touched.
+func (c *CachingStore) PrimeActiveReadiness() error {
+	c.mu.RLock()
+	startSeq := c.mutationSeq
+	state := c.state
+	c.mu.RUnlock()
+	if state != cacheUninitialized {
+		return errors.New("prime active readiness: store is already primed")
+	}
+
+	var partialErr error
+	all, err := c.backing.List(ListQuery{AllowScan: true, Brief: true, TierMode: TierIssues})
+	if err != nil {
+		if !IsPartialResult(err) {
+			return fmt.Errorf("prime active readiness: %w", err)
+		}
+		partialErr = err
+		c.recordProblem("prime active readiness", err)
+	}
+	c.absorbActivePrime(startSeq, all, partialErr, cacheReadyOnly)
+	return nil
+}
+
+// absorbActivePrime enriches the rows an active prime listed and installs
+// them, moving an uninitialized store to state.
+func (c *CachingStore) absorbActivePrime(startSeq uint64, all []Bead, partialErr error, state cacheState) {
 	enriched, enrichErr := c.applyReadyProjection("prime active ready projection", all)
 	all = enriched
 	if enrichErr != nil {
@@ -990,13 +1030,12 @@ func (c *CachingStore) PrimeActive() error {
 		c.absorbFreshLocked(b.ID, b, now, opts)
 	}
 	if c.state == cacheUninitialized {
-		c.state = cachePartial
+		c.state = state
 	}
 	c.primePartialErr = partialErr
 	c.advanceObservationLocked()
 	c.markFreshLocked(now)
 	c.updateStatsLocked()
-	return nil
 }
 
 // Prime loads all active beads and deps from the backing store into memory.
@@ -1374,6 +1413,8 @@ func (c *CachingStore) Stats() CacheStats {
 		s.State = "live"
 	case cacheDegraded:
 		s.State = "degraded"
+	case cacheReadyOnly:
+		s.State = "ready-only"
 	default:
 		s.State = "uninitialized"
 	}
