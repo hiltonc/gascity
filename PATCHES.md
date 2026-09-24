@@ -51,6 +51,7 @@ upstream takes it. As of 2026-09-18, rebased onto upstream/main:
 | `5866e0335` | The bead API serves a close time and attribution (gsc-88ni, PR #9). |
 | `dfe5e301e` | Rebuilds the dashboard bundle and re-baselines the census for the new upstream. |
 | `3d32f6ce4` | `perf(dispatch)`: the control-dispatcher follower skips its control-ready re-list while the scope's Dolt database hash is unchanged (gsc-dtay). |
+| `11ef202a3` | `perf(dispatch)`: the control-ready re-prime reads one brief issue-tier list (`ListQuery.Brief`, `CachingStore.PrimeActiveReadiness`) and shares one `bd version` probe across control stores (`BdVersionMemo`). Touches upstream-owned `internal/beads` (`query.go`, `bdstore.go`, `bdstore_ready_projection.go`, `caching_store.go`, `caching_store_reads.go`) and `cmd/gc/bd_env.go`, all additive (gsc-dtay). |
 
 **`e789fd70a` carries committed conflict markers, and `38efa4272` removes them
 again.** That is not tidy and it is deliberate for now: the markers are inside
