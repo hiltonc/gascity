@@ -50,6 +50,7 @@ upstream takes it. As of 2026-09-18, rebased onto upstream/main:
 | `38efa4272` | `fix(api)`: resolves a committed conflict in `client_remote.go` that broke every repository scan. See the warning below. |
 | `5866e0335` | The bead API serves a close time and attribution (gsc-88ni, PR #9). |
 | `dfe5e301e` | Rebuilds the dashboard bundle and re-baselines the census for the new upstream. |
+| `3d32f6ce4` | `perf(dispatch)`: the control-dispatcher follower skips its control-ready re-list while the scope's Dolt database hash is unchanged (gsc-dtay). |
 
 **`e789fd70a` carries committed conflict markers, and `38efa4272` removes them
 again.** That is not tidy and it is deliberate for now: the markers are inside
