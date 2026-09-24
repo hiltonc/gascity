@@ -396,7 +396,7 @@ func (c *CachingStore) refreshCachedBeads(query ListQuery, startSeq, startScan u
 		}
 		// A list never reads DepList: a row that omits its edges leaves any
 		// mark on the cached ones, as do the refreshes below.
-		c.absorbFreshLocked(item.ID, item, now, absorbOpts{
+		c.absorbReadThroughLocked(item.ID, item, now, absorbOpts{
 			depsMode:   depsFromFieldsIfCarried,
 			seqMode:    seqClearGuarded,
 			clearDirty: c.rowAnswersEdges(item),
@@ -412,7 +412,7 @@ func (c *CachingStore) refreshCachedBeads(query ListQuery, startSeq, startScan u
 		if _, keep := c.recentLocalBeadConflictLocked(id, bead, now, false); keep {
 			continue
 		}
-		c.absorbFreshLocked(id, bead, now, absorbOpts{
+		c.absorbReadThroughLocked(id, bead, now, absorbOpts{
 			depsMode:   depsFromFieldsIfCarried,
 			seqMode:    seqClearGuarded,
 			clearDirty: c.rowAnswersEdges(bead),
@@ -434,7 +434,7 @@ func (c *CachingStore) refreshCachedBeads(query ListQuery, startSeq, startScan u
 		if _, keep := c.recentLocalBeadConflictLocked(id, bead, now, false); keep {
 			continue
 		}
-		c.absorbFreshLocked(id, bead, now, absorbOpts{
+		c.absorbReadThroughLocked(id, bead, now, absorbOpts{
 			depsMode:   depsFromFieldsIfCarried,
 			seqMode:    seqClearGuarded,
 			clearDirty: c.rowAnswersEdges(bead),
@@ -603,7 +603,7 @@ func (c *CachingStore) Get(id string) (Bead, error) {
 			if depsFromBacking {
 				opts.depsMode, opts.deps = depsExplicit, freshDeps
 			}
-			c.absorbFreshLocked(id, fresh, time.Now(), opts)
+			c.absorbReadThroughLocked(id, fresh, time.Now(), opts)
 			c.markFreshLocked(time.Now())
 			c.updateStatsLocked()
 			c.mu.Unlock()

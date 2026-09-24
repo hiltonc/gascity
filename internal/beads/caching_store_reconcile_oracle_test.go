@@ -237,6 +237,7 @@ func buildExpectedNewEnd(st storeState, in snapshotInputs, postPreserveFresh map
 	exp.writeAtIDs = keySet(exp.writeSeq)
 	exp.deletedSeq = expectedDeletedSeq(st, in, exp)
 	exp.retainedIDs = expectedRetainedIDs(in, exp)
+	exp.silentCloses = map[string]struct{}{}
 	return exp
 }
 

@@ -27,6 +27,7 @@ func diffEndStates(want, got mergeEndState) string {
 	if want.fenceFloor != got.fenceFloor {
 		fmt.Fprintf(&b, "  fenceFloor: want=%v got=%v\n", want.fenceFloor, got.fenceFloor)
 	}
+	diffStructSet(&b, "silentCloses", want.silentCloses, got.silentCloses)
 	if want.depsComplete != got.depsComplete {
 		fmt.Fprintf(&b, "  depsComplete: want=%v got=%v\n", want.depsComplete, got.depsComplete)
 	}
