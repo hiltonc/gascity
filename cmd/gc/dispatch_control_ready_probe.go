@@ -10,7 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/beads/contract"
+	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/doltauth"
 	"github.com/gastownhall/gascity/internal/doltpool"
 	"github.com/gastownhall/gascity/internal/fsys"
@@ -20,11 +22,11 @@ import (
 // not changed (gsc-dtay).
 //
 // Without it, every sweep past controlReadyCacheTTL re-primed the scope's
-// snapshot: `bd list` open + in_progress with full descriptions, the ready
-// projection's `bd sql`, and the ephemeral-tier queries. The follow loop's idle
-// sleep (workflowServeMaxIdleSleep, 5s) is longer than that TTL (3s), so the
-// snapshot was never reused across sweeps and a quiet rig paid a full re-list
-// every sweep.
+// snapshot. The follow loop's idle sleep (workflowServeMaxIdleSleep, 5s) is
+// longer than that TTL (3s), so the snapshot was never reused across sweeps and
+// a quiet rig paid a full re-list every sweep. A re-prime is one brief `bd
+// list` plus the ready projection's `bd sql` (CachingStore.PrimeActiveReadiness,
+// controlBdVersionMemo).
 //
 // The sweep cannot simply stop polling. Workers close step beads with plain bd
 // writes that publish no city event, so the timer sweep is what notices a newly
@@ -103,6 +105,17 @@ func controlReadyChangeToken(dir, cityPath string) (string, error) {
 	return token, nil
 }
 
+// controlBdVersionMemo shares one `bd version` answer across the control
+// stores this process opens. The control-ready scan builds a fresh scope store
+// on every re-prime, and without the memo each one re-spawned `bd version` for
+// its ready-projection and --brief gates.
+var controlBdVersionMemo = beads.NewBdVersionMemo()
+
+// controlBdStoreOptions is bdStoreOptionsForConfig plus the shared version memo.
+func controlBdStoreOptions(cfg *config.City) []beads.BdStoreOption {
+	return append(bdStoreOptionsForConfig(cfg), beads.WithBdStoreVersionMemo(controlBdVersionMemo))
+}
+
 // controlReadyProbeWarned keeps the "probe unavailable" notice to one line per
 // scope per process: the sweep asks every few seconds and the answer is usually
 // a standing property of the scope.
@@ -125,14 +138,19 @@ func probeControlReadyChangeToken(dir, cityPath string) (string, bool) {
 // controlReadyEntryReusable reports whether entry may answer another sweep:
 // inside the TTL unconditionally (the pre-probe rule), and past it only while
 // the scope's change token still matches the one taken before the prime.
-func controlReadyEntryReusable(entry *controlReadyCacheEntry, dir, cityPath string) bool {
+//
+// observed is the token the check read, or "" when it read none. A moved token
+// is returned so the re-prime can adopt it as its own pre-prime token rather
+// than probing a second time: it was read before that prime, which is all the
+// ordering rule on controlReadyCacheEntry.changeToken asks.
+func controlReadyEntryReusable(entry *controlReadyCacheEntry, dir, cityPath string) (reusable bool, observed string) {
 	age := time.Since(entry.primedAt)
 	if age < controlReadyCacheTTL {
-		return true
+		return true, ""
 	}
 	if entry.changeToken == "" || age >= controlReadyCacheMaxAge {
-		return false
+		return false, ""
 	}
 	token, ok := probeControlReadyChangeToken(dir, cityPath)
-	return ok && token == entry.changeToken
+	return ok && token == entry.changeToken, token
 }

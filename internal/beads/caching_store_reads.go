@@ -648,7 +648,7 @@ func (c *CachingStore) ReadyContext(ctx context.Context, query ...ReadyQuery) ([
 func (c *CachingStore) CachedReady() ([]Bead, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if c.state != cacheLive && c.state != cachePartial {
+	if c.state != cacheLive && c.state != cachePartial && c.state != cacheReadyOnly {
 		return nil, false
 	}
 	if c.primePartialErr != nil || len(c.dirty) > 0 || c.readyReadsMustGoLive() {
@@ -680,7 +680,7 @@ func (c *CachingStore) CachedReady() ([]Bead, bool) {
 		default:
 			return nil, false
 		}
-		if c.state == cachePartial && !cachedReadyDependencyStatusesKnown(b, statusByID, deps) {
+		if c.state != cacheLive && !cachedReadyDependencyStatusesKnown(b, statusByID, deps) {
 			return nil, false
 		}
 		if cachedBeadReady(b, statusByID, workOutcomeByID, deps) {

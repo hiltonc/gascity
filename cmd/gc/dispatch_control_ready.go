@@ -434,13 +434,13 @@ type controlReadyCacheEntry struct {
 // controlReadyCachesFor returns a short-lived, best-effort in-process ready
 // snapshot per leg for dir, reusing a set primed within controlReadyCacheTTL,
 // or older while the scope's change token is unchanged
-// (controlReadyEntryReusable), instead of re-priming on every drain-loop tick. Returns nil whenever the
-// caches cannot be built or trusted; callers must treat nil as "fall back to a
-// live bd query", not as an error -- an unopenable store here is possible in
-// scopes this readiness scan does not normally run against (e.g. test fixtures
-// with no rig configured) and the sibling control-bead-processing path
-// (runControlDispatcherInStore) would already be failing loudly if it were a
-// real production gap.
+// (controlReadyEntryReusable), instead of re-priming on every drain-loop tick.
+// Returns nil whenever the caches cannot be built or trusted; callers must
+// treat nil as "fall back to a live bd query", not as an error -- an
+// unopenable store here is possible in scopes this readiness scan does not
+// normally run against (e.g. test fixtures with no rig configured) and the
+// sibling control-bead-processing path (runControlDispatcherInStore) would
+// already be failing loudly if it were a real production gap.
 //
 // The snapshots are taken over the SAME ledgers
 // runControlDispatcherWithStoreAndConfig dispatches against —
@@ -475,8 +475,13 @@ func controlReadyCachesFor(dir, cityPath string, cfg *config.City) []*beads.Cach
 	controlReadyCacheRegistry.mu.Lock()
 	entry, ok := controlReadyCacheRegistry.byDir[dir]
 	controlReadyCacheRegistry.mu.Unlock()
-	if ok && controlReadyEntryReusable(entry, dir, cityPath) {
-		return entry.caches
+	observedToken := ""
+	if ok {
+		reusable, observed := controlReadyEntryReusable(entry, dir, cityPath)
+		if reusable {
+			return entry.caches
+		}
+		observedToken = observed
 	}
 
 	sources, owned, err := controlReadyCacheSourcesFn(dir, cityPath, cfg)
@@ -508,12 +513,15 @@ func controlReadyCachesFor(dir, cityPath string, cfg *config.City) []*beads.Cach
 	// reuse.
 	changeToken := ""
 	if len(sources) == 1 && len(owned) == 1 {
-		changeToken, _ = probeControlReadyChangeToken(dir, cityPath)
+		changeToken = observedToken
+		if changeToken == "" {
+			changeToken, _ = probeControlReadyChangeToken(dir, cityPath)
+		}
 	}
 	caches := make([]*beads.CachingStore, 0, len(sources))
 	for _, source := range sources {
 		cs := beads.NewCachingStore(source, nil)
-		if err := cs.PrimeActive(); err != nil {
+		if err := cs.PrimeActiveReadiness(); err != nil {
 			log.Printf("control-ready cache: pre-prime failed for %s: %v (falling back to a live bd query)", dir, err)
 			return nil
 		}

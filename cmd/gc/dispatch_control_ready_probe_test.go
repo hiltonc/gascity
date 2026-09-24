@@ -239,8 +239,9 @@ func TestControlReadyChangeTokenRefusesNonBdProvider(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("GC_BEADS", "file")
 
-	if _, err := controlReadyChangeToken(dir, dir); err == nil {
-		t.Fatal("expected an error for a file-backed scope, which has no Dolt database to hash")
+	_, err := controlReadyChangeToken(dir, dir)
+	if !errors.Is(err, errControlReadyProbeUnsupported) {
+		t.Fatalf("err = %v, want errControlReadyProbeUnsupported for a file-backed scope, which has no Dolt database to hash", err)
 	}
 }
 
@@ -248,7 +249,86 @@ func TestControlReadyChangeTokenFailsWithoutConnectionContract(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("GC_BEADS", "bd")
 
-	if _, err := controlReadyChangeToken(dir, dir); err == nil {
+	_, err := controlReadyChangeToken(dir, dir)
+	if err == nil {
 		t.Fatal("expected an error for a scope with no resolvable Dolt endpoint")
+	}
+	if errors.Is(err, errControlReadyProbeUnsupported) {
+		t.Fatalf("err = %v, want the endpoint-resolution failure, not the provider refusal", err)
+	}
+}
+
+// TestControlReadyCachesForAdoptsTheMovedTokenInsteadOfProbingTwice pins that a
+// re-prime triggered by a moved token reuses that token as its own pre-prime
+// token: one probe per re-priming sweep, not two.
+func TestControlReadyCachesForAdoptsTheMovedTokenInsteadOfProbingTwice(t *testing.T) {
+	dir := t.TempDir()
+	primes := countPrimes(t, dir)
+	probe := &scriptedChangeToken{script: []changeTokenAnswer{{token: "h1"}, {token: "h2"}}}
+	installControlReadyChangeTokenFn(t, probe.fn)
+
+	controlReadyCachesFor(dir, dir, nil)
+	forceControlReadyCacheStale(t, dir)
+	controlReadyCachesFor(dir, dir, nil)
+
+	if got := probe.callCount(); got != 2 {
+		t.Fatalf("probe calls = %d, want 2: the initial prime and one reuse check whose moved token the re-prime adopts", got)
+	}
+	controlReadyCacheRegistry.mu.Lock()
+	token := controlReadyCacheRegistry.byDir[dir].changeToken
+	controlReadyCacheRegistry.mu.Unlock()
+	if token != "h2" {
+		t.Fatalf("re-primed entry token = %q, want the moved token h2", token)
+	}
+
+	forceControlReadyCacheStale(t, dir)
+	controlReadyCachesFor(dir, dir, nil)
+	if got := primes(); got != 2 {
+		t.Fatalf("primes = %d, want 2: the adopted token must vouch for the re-primed snapshot", got)
+	}
+}
+
+// listRecordingStore records every List query a prime issues.
+type listRecordingStore struct {
+	*closeCountingStore
+	mu      sync.Mutex
+	queries []beads.ListQuery
+}
+
+func (s *listRecordingStore) List(q beads.ListQuery) ([]beads.Bead, error) {
+	s.mu.Lock()
+	s.queries = append(s.queries, q)
+	s.mu.Unlock()
+	return s.closeCountingStore.List(q)
+}
+
+// TestControlReadyCachesForPrimesBriefIssueTierRowsInOneList pins the per-prime
+// cost cut (gsc-dtay review F1/F2): the snapshot is primed with one brief,
+// issue-tier list rather than PrimeActive's full-text list per status plus the
+// ephemeral-tier reads.
+func TestControlReadyCachesForPrimesBriefIssueTierRowsInOneList(t *testing.T) {
+	dir := t.TempDir()
+	rec := &listRecordingStore{closeCountingStore: newCloseCountingStore(t, true)}
+	installControlReadyCacheSourcesFn(t, dir, func(_, _ string, _ *config.City) ([]beads.Store, []beads.Store, error) {
+		return []beads.Store{rec}, []beads.Store{rec}, nil
+	})
+	installControlReadyChangeTokenFn(t, func(_, _ string) (string, error) { return "", errors.New("no probe") })
+
+	caches := controlReadyCachesFor(dir, dir, nil)
+	if len(caches) != 1 {
+		t.Fatalf("caches = %d, want 1", len(caches))
+	}
+	rec.mu.Lock()
+	queries := append([]beads.ListQuery(nil), rec.queries...)
+	rec.mu.Unlock()
+	if len(queries) != 1 {
+		t.Fatalf("prime issued %d List queries (%+v), want 1", len(queries), queries)
+	}
+	q := queries[0]
+	if !q.Brief || q.TierMode != beads.TierIssues || q.Status != "" || q.IncludeClosed {
+		t.Fatalf("prime query = %+v, want Brief, TierIssues, every non-closed status", q)
+	}
+	if ready, ok := cachedControlReadyUnion(caches); !ok || len(ready) != 1 {
+		t.Fatalf("readiness snapshot must answer: ok=%t ready=%d", ok, len(ready))
 	}
 }
