@@ -62,6 +62,8 @@ type Server struct {
 	bootFlags rollout.Flags
 
 	runCensusSource RunCensusSource
+	// runRoots confirms stale non-terminal run roots against their stores.
+	runRoots runRootReconciler
 
 	backgroundTasks sync.WaitGroup
 

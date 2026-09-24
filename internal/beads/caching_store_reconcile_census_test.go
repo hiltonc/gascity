@@ -91,6 +91,7 @@ func TestMergeOracleFieldCoverage(t *testing.T) {
 		"readyProjectionLost": true, // compared as mergeEndState.readyLost
 		"retainedAt":          true, // compared as mergeEndState.retainedIDs
 		"fenceFloor":          true, // compared; only a pruned retention raises it
+		"silentCloses":        true,
 		"lastFreshAt":         true, "mutationSeq": true, "primePartialErr": true,
 		"syncFailures": true, "circuitTripped": true,
 		"stats": true, // stats compared field-wise below
