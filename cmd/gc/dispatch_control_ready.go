@@ -423,11 +423,18 @@ var controlReadyCacheRegistry = struct {
 type controlReadyCacheEntry struct {
 	caches   []*beads.CachingStore
 	primedAt time.Time
+	// changeToken is the scope's change token read immediately BEFORE the
+	// prime, or "" when the probe could not vouch for this snapshot (probe
+	// unavailable, or a leg the probe does not hash). Taken before the reads,
+	// a write racing the prime moves the live token away from this one, so the
+	// next sweep re-primes instead of reusing a snapshot that missed it.
+	changeToken string
 }
 
 // controlReadyCachesFor returns a short-lived, best-effort in-process ready
-// snapshot per leg for dir, reusing a set primed within controlReadyCacheTTL
-// instead of re-priming on every drain-loop tick. Returns nil whenever the
+// snapshot per leg for dir, reusing a set primed within controlReadyCacheTTL,
+// or older while the scope's change token is unchanged
+// (controlReadyEntryReusable), instead of re-priming on every drain-loop tick. Returns nil whenever the
 // caches cannot be built or trusted; callers must treat nil as "fall back to a
 // live bd query", not as an error -- an unopenable store here is possible in
 // scopes this readiness scan does not normally run against (e.g. test fixtures
@@ -467,9 +474,8 @@ type controlReadyCacheEntry struct {
 func controlReadyCachesFor(dir, cityPath string, cfg *config.City) []*beads.CachingStore {
 	controlReadyCacheRegistry.mu.Lock()
 	entry, ok := controlReadyCacheRegistry.byDir[dir]
-	fresh := ok && time.Since(entry.primedAt) < controlReadyCacheTTL
 	controlReadyCacheRegistry.mu.Unlock()
-	if fresh {
+	if ok && controlReadyEntryReusable(entry, dir, cityPath) {
 		return entry.caches
 	}
 
@@ -496,6 +502,14 @@ func controlReadyCachesFor(dir, cityPath string, cfg *config.City) []*beads.Cach
 			}
 		}
 	}()
+	// The probe hashes only the scope's own database, so it can vouch for a
+	// snapshot only when that database is the snapshot's single ledger. A
+	// snapshot that also read the process-shared graph binding keeps TTL-only
+	// reuse.
+	changeToken := ""
+	if len(sources) == 1 && len(owned) == 1 {
+		changeToken, _ = probeControlReadyChangeToken(dir, cityPath)
+	}
 	caches := make([]*beads.CachingStore, 0, len(sources))
 	for _, source := range sources {
 		cs := beads.NewCachingStore(source, nil)
@@ -507,7 +521,7 @@ func controlReadyCachesFor(dir, cityPath string, cfg *config.City) []*beads.Cach
 	}
 
 	controlReadyCacheRegistry.mu.Lock()
-	controlReadyCacheRegistry.byDir[dir] = &controlReadyCacheEntry{caches: caches, primedAt: time.Now()}
+	controlReadyCacheRegistry.byDir[dir] = &controlReadyCacheEntry{caches: caches, primedAt: time.Now(), changeToken: changeToken}
 	controlReadyCacheRegistry.mu.Unlock()
 	return caches
 }
