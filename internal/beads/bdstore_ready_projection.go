@@ -235,11 +235,7 @@ func (s *BdStore) bdReadyProjectionEnabled() (readyProjectionDoor, bool, error) 
 		door = readyProjectionDoorBlocked
 	}
 	s.readyProjectionDoorValue = door
-	out, err := s.runner(s.dir, "bd", "version")
-	if err != nil {
-		return door, false, fmt.Errorf("bd ready projection version gate: %w", err)
-	}
-	version, err := parseBDVersion(string(out))
+	version, err := s.bdCLIVersion()
 	if err != nil {
 		return door, false, fmt.Errorf("bd ready projection version gate: %w", err)
 	}
