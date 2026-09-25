@@ -307,8 +307,15 @@ func (sm *SupervisorMux) WithAPIPlane(h http.Handler) *SupervisorMux {
 // implements RunProjectionSource and RunProjectionGraceSource supplies the
 // warm list/detail/steps snapshots and point-read warming grace. It must be
 // called before Serve.
+//
+// A source that also implements RunRootReconcilerSink is handed the per-city
+// run-root reconcile, so the views it serves itself confirm stale roots
+// against the same memo /runs uses.
 func (sm *SupervisorMux) WithRunCensusSource(source RunCensusSource) *SupervisorMux {
 	sm.runCensusSource = source
+	if sink, ok := source.(RunRootReconcilerSink); ok {
+		sink.SetRunRootReconciler(sm.reconcileCityRunRoots)
+	}
 	return sm
 }
 

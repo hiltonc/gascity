@@ -51,6 +51,7 @@ upstream takes it. As of 2026-09-18, rebased onto upstream/main:
 | `5866e0335` | The bead API serves a close time and attribution (gsc-88ni, PR #9). |
 | `dfe5e301e` | Rebuilds the dashboard bundle and re-baselines the census for the new upstream. |
 | `e171f2a3e` | `fix(runs)`: the beads cache announces a close a read path absorbed silently, and `/runs` confirms a stale non-terminal workflow root against its store, so a root whose close never reached the event log stops reading active (gsc-bilu). |
+| `0ccec177c` | `fix(runs)`: the dashboard's `runs/summary` and run census apply the same per-city run-root reconcile `/runs` uses (handed to the plane by `WithRunCensusSource`), so a root the store reports closed leaves `lanes` and the counts agree (gsc-vw6t). |
 | `3d32f6ce4` | `perf(dispatch)`: the control-dispatcher follower skips its control-ready re-list while the scope's Dolt database hash is unchanged (gsc-dtay). |
 | `11ef202a3` | `perf(dispatch)`: the control-ready re-prime reads one brief issue-tier list (`ListQuery.Brief`, `CachingStore.PrimeActiveReadiness`) and shares one `bd version` probe across control stores (`BdVersionMemo`). Touches upstream-owned `internal/beads` (`query.go`, `bdstore.go`, `bdstore_ready_projection.go`, `caching_store.go`, `caching_store_reads.go`) and `cmd/gc/bd_env.go`, all additive (gsc-dtay). |
 

@@ -17,11 +17,10 @@ func (t *cityRunTailer) runCensus(ctx context.Context) runproj.CanonicalRunCensu
 	}
 	t.awaitProjection(ctx)
 
-	t.mu.RLock()
-	counts := t.census
-	ready := t.ready
-	incomplete := t.summary.LanesPartial
-	t.mu.RUnlock()
+	view := t.reconciledView()
+	counts := view.census
+	ready := view.ready
+	incomplete := view.summary.LanesPartial
 
 	response := runproj.CanonicalRunCensus{
 		Ready:        ready,
