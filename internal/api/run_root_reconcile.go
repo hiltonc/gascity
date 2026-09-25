@@ -122,6 +122,26 @@ func (s *Server) reconcileRunRoots(projected []beads.Bead) (reconciled []beads.B
 	return reconciled, failed
 }
 
+// RunRootReconcilerSink is an optional RunCensusSource extension for a source
+// that serves its own views of the run projection (the dashboard plane's
+// runs/summary and census). WithRunCensusSource installs the mux's per-city
+// run-root reconcile on it, so a root whose close the log missed leaves those
+// views exactly when it leaves /runs.
+type RunRootReconcilerSink interface {
+	SetRunRootReconciler(func(cityName string, projected []beads.Bead) ([]beads.Bead, bool))
+}
+
+// reconcileCityRunRoots applies the named city's run-root reconcile to
+// projected. A city that is not running has no store to ask, so its projection
+// stands unconfirmed.
+func (sm *SupervisorMux) reconcileCityRunRoots(cityName string, projected []beads.Bead) ([]beads.Bead, bool) {
+	srv := sm.resolveCityServer(cityName)
+	if srv == nil {
+		return projected, false
+	}
+	return srv.reconcileRunRoots(projected)
+}
+
 // runRootStore returns the store that owns a workflow root: the one its
 // gc.root_store_ref names, else the one its id prefix routes to. Nil when
 // neither resolves.

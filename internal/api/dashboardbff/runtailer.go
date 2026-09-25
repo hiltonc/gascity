@@ -101,6 +101,10 @@ type runTailerManager struct {
 	// convention.
 	sessionsTTL time.Duration
 
+	// runRoots holds the RunRootReconciler the supervisor installed through
+	// SetRunRootReconciler, or nothing.
+	runRoots atomic.Value
+
 	mu      sync.Mutex
 	cities  map[string]*cityRunTailer
 	ctx     context.Context
@@ -203,6 +207,9 @@ type cityRunTailer struct {
 	// CPU (no re-scan, no re-projection, no re-marshal). See rundetail_memo.go.
 	snapshotCache *runSnapshotCache
 	detailMemo    *runDetailMemo
+	// reconciledProjection memoizes the summary and census rebuilt when the
+	// run-root reconcile replaced a root. See runtailer_reconcile.go.
+	reconciledProjection reconciledProjectionMemo
 
 	// unknownRuns grants a truly-unknown runId (a run slung but not yet folded
 	// into this projection) a warming-grace window on point-read endpoints
@@ -923,15 +930,11 @@ func (t *cityRunTailer) enrichedSummary(ctx context.Context) runproj.RunSummary 
 	}
 	t.awaitProjection(ctx)
 
-	t.mu.RLock()
-	base := t.summary
-	marks := t.marks
-	ready := t.ready
-	t.mu.RUnlock()
+	view := t.reconciledView()
 
 	sessions, sessionsAvailable := t.mgr.fetchSessions(ctx, t.name)
-	enriched := runproj.EnrichRunSummary(base, sessions, sessionsAvailable, time.Now().UnixMilli(), marks)
-	if !ready {
+	enriched := runproj.EnrichRunSummary(view.summary, sessions, sessionsAvailable, time.Now().UnixMilli(), view.marks)
+	if !view.ready {
 		enriched.LanesPartial = true
 	}
 	return enriched
