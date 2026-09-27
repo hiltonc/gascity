@@ -178,6 +178,7 @@ function mail(overrides: Partial<SupervisorMailItem>): SupervisorMailItem {
     body: 'body',
     created_at: '2026-06-01T10:00:00Z',
     read: false,
+    status: 'open',
     ...overrides,
   };
 }

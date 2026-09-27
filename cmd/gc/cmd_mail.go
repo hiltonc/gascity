@@ -168,11 +168,13 @@ func newMailArchiveCmd(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "archive <id>...",
 		Short: "Archive one or more messages without reading them",
-		Long: `Remove one or more message beads without displaying their contents.
+		Long: `Archive one or more messages without displaying their contents.
 
-Use this to dismiss messages without reading them. Each message is removed
-and will no longer appear in mail check or inbox results. When multiple IDs
-are passed, they are archived in input order.
+Use this to dismiss messages without reading them. Each message is closed: it
+no longer appears in mail check or inbox results, but it stays readable by ID
+and the API lists it under status=closed. Use gc mail delete to remove a
+message permanently. When multiple IDs are passed, they are archived in input
+order.
 
 For large advisory backlogs, use --to or --all-recipients with
 --subject-prefix, --subject-contains, or --from to archive a bounded matching
@@ -1756,10 +1758,10 @@ func newMailDeleteCmd(stdout, stderr io.Writer) *cobra.Command {
 	var jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "delete <id>...",
-		Short: "Delete one or more messages (closes the beads)",
-		Long: `Delete one or more messages by closing the beads. Same effect as archive
-but with different user intent. When multiple IDs are passed, they are
-deleted in a single batch round-trip.`,
+		Short: "Delete one or more messages permanently",
+		Long: `Delete one or more messages permanently. Unlike archive, a deleted message
+is gone: it can no longer be read by ID or listed. When multiple IDs are
+passed, they are deleted in input order.`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, args []string) error {
 			code := 0
@@ -2542,10 +2544,9 @@ func cmdMailDeleteJSON(args []string, jsonOut bool, stdout, stderr io.Writer) in
 	return doMailDeleteJSON(mp, rec, args, jsonOut, stdout, stderr)
 }
 
-// doMailDelete deletes one or more message beads (same as archive but
-// different intent). Single-id behavior matches the pre-batch CLI
-// byte-for-byte; multi-id uses mp.DeleteMany to preserve provider delete
-// semantics.
+// doMailDelete permanently deletes one or more messages. Single-id behavior
+// matches the pre-batch CLI byte-for-byte; multi-id uses mp.DeleteMany to
+// preserve provider delete semantics.
 func doMailDelete(mp mail.Provider, rec events.Recorder, args []string, stdout, stderr io.Writer) int {
 	return doMailDeleteJSON(mp, rec, args, false, stdout, stderr)
 }

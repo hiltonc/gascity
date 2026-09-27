@@ -2187,7 +2187,7 @@ func cmdOrderSweepNudgeMail(nudgeTTL, mailTTL time.Duration, mailTTLExplicit, dr
 	if dryRun {
 		return cmdOrderSweepNudgeMailDryRun(nudges, mail, statePtr, now, nudgeTTL, mailTTL, quiet, stdout, stderr)
 	}
-	return cmdOrderSweepNudgeMailRun(nudges, mail, statePtr, now, nudgeTTL, mailTTL, quiet, stdout, stderr)
+	return cmdOrderSweepNudgeMailRun(nudges, mail, statePtr, now, nudgeTTL, mailTTL, quiet, openCityRecorder(stderr), stdout, stderr)
 }
 
 func cmdOrderSweepNudgeMailDryRun(nudges beads.NudgesStore, mail beads.MailStore, nudgeState *nudgequeue.State, now time.Time, nudgeTTL, mailTTL time.Duration, quiet bool, stdout, stderr io.Writer) int {
@@ -2208,8 +2208,9 @@ func cmdOrderSweepNudgeMailDryRun(nudges beads.NudgesStore, mail beads.MailStore
 	return 0
 }
 
-func cmdOrderSweepNudgeMailRun(nudges beads.NudgesStore, mail beads.MailStore, nudgeState *nudgequeue.State, now time.Time, nudgeTTL, mailTTL time.Duration, quiet bool, stdout, stderr io.Writer) int {
+func cmdOrderSweepNudgeMailRun(nudges beads.NudgesStore, mail beads.MailStore, nudgeState *nudgequeue.State, now time.Time, nudgeTTL, mailTTL time.Duration, quiet bool, rec events.Recorder, stdout, stderr io.Writer) int {
 	result, sweepErr := sweepStaleNudgeMail(nudges, mail, nudgeState, now, nudgeTTL, mailTTL, nudgeMailSweepCloseBudget)
+	recordMailLifecycleEvents(rec, events.MailArchived, eventActor(), result.MailClosedIDs)
 
 	if sweepErr != nil {
 		// Per-bead errors are joined via errors.Join (Unwrap() []error): print each

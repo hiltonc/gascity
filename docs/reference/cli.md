@@ -2424,7 +2424,7 @@ gc mail
 | [gc mail archive](#gc-mail-archive) | Archive one or more messages without reading them |
 | [gc mail check](#gc-mail-check) | Check for unread mail (use --inject for hook output) |
 | [gc mail count](#gc-mail-count) | Show total/unread message count |
-| [gc mail delete](#gc-mail-delete) | Delete one or more messages (closes the beads) |
+| [gc mail delete](#gc-mail-delete) | Delete one or more messages permanently |
 | [gc mail inbox](#gc-mail-inbox) | List unread messages (defaults to your inbox) |
 | [gc mail mark-read](#gc-mail-mark-read) | Mark a message as read |
 | [gc mail mark-unread](#gc-mail-mark-unread) | Mark a message as unread |
@@ -2436,11 +2436,13 @@ gc mail
 
 ## gc mail archive
 
-Remove one or more message beads without displaying their contents.
+Archive one or more messages without displaying their contents.
 
-Use this to dismiss messages without reading them. Each message is removed
-and will no longer appear in mail check or inbox results. When multiple IDs
-are passed, they are archived in input order.
+Use this to dismiss messages without reading them. Each message is closed: it
+no longer appears in mail check or inbox results, but it stays readable by ID
+and the API lists it under status=closed. Use gc mail delete to remove a
+message permanently. When multiple IDs are passed, they are archived in input
+order.
 
 For large advisory backlogs, use --to or --all-recipients with
 --subject-prefix, --subject-contains, or --from to archive a bounded matching
@@ -2504,9 +2506,9 @@ gc mail count [session] [flags]
 
 ## gc mail delete
 
-Delete one or more messages by closing the beads. Same effect as archive
-but with different user intent. When multiple IDs are passed, they are
-deleted in a single batch round-trip.
+Delete one or more messages permanently. Unlike archive, a deleted message
+is gone: it can no longer be read by ID or listed. When multiple IDs are
+passed, they are deleted in input order.
 
 ```
 gc mail delete <id>... [flags]

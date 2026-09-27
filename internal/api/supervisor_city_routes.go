@@ -235,6 +235,7 @@ func (sm *SupervisorMux) registerCityRoutes() {
 	cityPost(sm, "/mail/{id}/read", (*Server).humaHandleMailRead, errorStatuses(http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound))
 	cityPost(sm, "/mail/{id}/mark-unread", (*Server).humaHandleMailMarkUnread, errorStatuses(http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound))
 	cityPost(sm, "/mail/{id}/archive", (*Server).humaHandleMailArchive, errorStatuses(http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound))
+	cityPost(sm, "/mail/{id}/unarchive", (*Server).humaHandleMailUnarchive, errorStatuses(http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound))
 	cityRegister(sm, huma.Operation{
 		OperationID:   "reply-mail",
 		Method:        http.MethodPost,

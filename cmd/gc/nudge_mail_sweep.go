@@ -35,9 +35,12 @@ const (
 )
 
 // nudgeMailSweepResult holds per-category close counts from sweepStaleNudgeMail.
+// MailClosedIDs names the mail beads the sweep archived so the caller can
+// announce each one; the dry-run count leaves it empty.
 type nudgeMailSweepResult struct {
-	NudgeClosed int
-	MailClosed  int
+	NudgeClosed   int
+	MailClosed    int
+	MailClosedIDs []string
 }
 
 // nudgeMailSweepMailTTLForConfig resolves the mail-close TTL for the
@@ -147,7 +150,8 @@ func sweepStaleNudgeMail(nudgeStore beads.NudgesStore, mailStore beads.MailStore
 			if mailListErr != nil {
 				return result, fmt.Errorf("nudge-mail-sweep: listing read mail beads: %w", mailListErr)
 			}
-			result.MailClosed += mailClosed
+			result.MailClosed += len(mailClosed)
+			result.MailClosedIDs = append(result.MailClosedIDs, mailClosed...)
 			beadErrs = append(beadErrs, mailCloseErrs...)
 		}
 	}

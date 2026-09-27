@@ -15,6 +15,7 @@ import (
 	"github.com/gastownhall/gascity/internal/config"
 	convoycore "github.com/gastownhall/gascity/internal/convoy"
 	"github.com/gastownhall/gascity/internal/coordclass"
+	"github.com/gastownhall/gascity/internal/events"
 	"github.com/gastownhall/gascity/internal/mail/beadmail"
 	"github.com/gastownhall/gascity/internal/molecule"
 	"github.com/gastownhall/gascity/internal/sling"
@@ -179,6 +180,9 @@ type memoryWispGC struct {
 	// nil starts from the oldest candidate; a sweep that reaches the end of the
 	// candidate list resets it so the next pass starts over.
 	sessionPurgeCursor *beads.SeekBoundary
+	// rec announces each read message the retention arm purges; nil records
+	// nothing.
+	rec events.Recorder
 }
 
 // newWispGC creates a wisp GC tracker. Returns nil if disabled. The tracker
@@ -195,7 +199,10 @@ func newWispGC(interval, ttl, mailRetentionTTL time.Duration) wispGC {
 	}
 }
 
-func newWispGCForConfig(cfg *config.City) wispGC {
+// newWispGCForConfig builds the wisp GC tracker from city config. rec
+// receives a mail.deleted event for every read message the retention arm
+// purges.
+func newWispGCForConfig(cfg *config.City, rec events.Recorder) wispGC {
 	if cfg == nil {
 		return nil
 	}
@@ -203,7 +210,11 @@ func newWispGCForConfig(cfg *config.City) wispGC {
 	if err != nil {
 		mailRetentionTTL = 0
 	}
-	return newWispGC(cfg.Daemon.WispGCIntervalDuration(), cfg.Daemon.WispTTLDuration(), mailRetentionTTL)
+	wg := newWispGC(cfg.Daemon.WispGCIntervalDuration(), cfg.Daemon.WispTTLDuration(), mailRetentionTTL)
+	if mwg, ok := wg.(*memoryWispGC); ok {
+		mwg.rec = rec
+	}
+	return wg
 }
 
 func (m *memoryWispGC) shouldRun(now time.Time) bool {
@@ -293,12 +304,13 @@ func (m *memoryWispGC) runGC(graphStore beads.GraphStore, sessionLedger beads.Se
 		// and wisp-tier delete loop live inside the messaging edge (beadmail),
 		// against the messaging store — disjoint from the graph-class purge above.
 		mailPurged, mailErr := beadmail.PurgeReadMessageWisps(mailStore, now.Add(-m.mailRetentionTTL))
-		purged += mailPurged
+		purged += len(mailPurged)
+		recordMailLifecycleEvents(m.rec, events.MailDeleted, mailSystemActor, mailPurged)
 		if mailErr != nil {
 			deleteErr = errors.Join(deleteErr, mailErr)
 		}
-		if mailPurged > 0 {
-			log.Printf("wisp gc: purged %d read message wisps (retention_ttl=%s)", mailPurged, gcRetentionTTLString(m.mailRetentionTTL))
+		if len(mailPurged) > 0 {
+			log.Printf("wisp gc: purged %d read message wisps (retention_ttl=%s)", len(mailPurged), gcRetentionTTLString(m.mailRetentionTTL))
 		}
 	}
 

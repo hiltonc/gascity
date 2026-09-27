@@ -11,9 +11,11 @@ import (
 var _ mail.Provider = (*mail.Fake)(nil)
 
 func TestFakeConformance(t *testing.T) {
-	mailtest.RunProviderTests(t, func(_ *testing.T) mail.Provider {
+	newProvider := func(_ *testing.T) mail.Provider {
 		return mail.NewFake()
-	})
+	}
+	mailtest.RunProviderTests(t, newProvider)
+	mailtest.RunArchiveRetentionTests(t, newProvider)
 }
 
 func TestFakeUsesSuppliedClockAndThreadIDs(t *testing.T) {

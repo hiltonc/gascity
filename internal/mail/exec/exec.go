@@ -107,7 +107,36 @@ func (p *Provider) Archive(id string) error {
 	return err
 }
 
+// Unarchive delegates to: script unarchive <id>
+// A missing message maps to [mail.ErrNotFound] through the not-found marker;
+// a script that writes "not archived" to stderr and exits non-zero maps to
+// [mail.ErrNotArchived].
+func (p *Provider) Unarchive(id string) error {
+	p.ensureRunning()
+	_, err := p.run(nil, "unarchive", id)
+	if err != nil && strings.Contains(err.Error(), "not archived") {
+		return fmt.Errorf("exec mail unarchive: %w", mail.ErrNotArchived)
+	}
+	return normalizeMessageError("unarchive", err)
+}
+
+// Archived delegates to: script archived <recipient>
+// Messages the script returns without a status are reported closed.
+func (p *Provider) Archived(recipient string) ([]mail.Message, error) {
+	p.ensureRunning()
+	out, err := p.run(nil, "archived", recipient)
+	if err != nil {
+		return nil, err
+	}
+	if out == "" {
+		return nil, nil
+	}
+	return unmarshalMessagesWithStatus(out, mail.StatusClosed)
+}
+
 // Delete delegates to: script delete <id>
+// The script must remove the message permanently; archive is the
+// non-destructive operation.
 func (p *Provider) Delete(id string) error {
 	p.ensureRunning()
 	_, err := p.run(nil, "delete", id)
