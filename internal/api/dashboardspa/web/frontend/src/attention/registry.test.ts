@@ -1015,6 +1015,7 @@ function message(overrides: Partial<Message>): Message {
     from: 'sam',
     id: 'M-0',
     read: true,
+    status: 'open',
     subject: 'Message',
     to: 'stephanie',
     ...overrides,

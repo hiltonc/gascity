@@ -117,6 +117,24 @@ func (e EventRotateArchiveCompressionStatus) Valid() bool {
 	}
 }
 
+// Defines values for MessageStatus.
+const (
+	Closed MessageStatus = "closed"
+	Open   MessageStatus = "open"
+)
+
+// Valid indicates whether the value is a known member of the MessageStatus enum.
+func (e MessageStatus) Valid() bool {
+	switch e {
+	case Closed:
+		return true
+	case Open:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for RequestFailedPayloadOperation.
 const (
 	CityCreate     RequestFailedPayloadOperation = "city.create"
@@ -2605,19 +2623,28 @@ type MaintenanceTriggerBody struct {
 
 // Message defines model for Message.
 type Message struct {
-	Body      string    `json:"body"`
-	Cc        *[]string `json:"cc,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	From      string    `json:"from"`
-	Id        string    `json:"id"`
-	Priority  *int64    `json:"priority,omitempty"`
-	Read      bool      `json:"read"`
-	ReplyTo   *string   `json:"reply_to,omitempty"`
-	Rig       *string   `json:"rig,omitempty"`
-	Subject   string    `json:"subject"`
-	ThreadId  *string   `json:"thread_id,omitempty"`
-	To        string    `json:"to"`
+	Body string    `json:"body"`
+	Cc   *[]string `json:"cc,omitempty"`
+
+	// ClosedAt When the message was closed. Absent while open.
+	ClosedAt  *time.Time `json:"closed_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	From      string     `json:"from"`
+	Id        string     `json:"id"`
+	Priority  *int64     `json:"priority,omitempty"`
+	Read      bool       `json:"read"`
+	ReplyTo   *string    `json:"reply_to,omitempty"`
+	Rig       *string    `json:"rig,omitempty"`
+
+	// Status Message state: open, or closed once archived.
+	Status   MessageStatus `json:"status"`
+	Subject  string        `json:"subject"`
+	ThreadId *string       `json:"thread_id,omitempty"`
+	To       string        `json:"to"`
 }
+
+// MessageStatus Message state: open, or closed once archived.
+type MessageStatus string
 
 // MoleculeResolvedPayload defines model for MoleculeResolvedPayload.
 type MoleculeResolvedPayload struct {
@@ -6198,6 +6225,22 @@ type TypedEventStreamEnvelopeMailSent struct {
 	Workflow         *WorkflowEventProjection `json:"workflow,omitempty"`
 }
 
+// TypedEventStreamEnvelopeMailUnarchived defines model for TypedEventStreamEnvelopeMailUnarchived.
+type TypedEventStreamEnvelopeMailUnarchived struct {
+	Actor            string                   `json:"actor"`
+	DependsOnStepIds *[]string                `json:"depends_on_step_ids,omitempty"`
+	Message          *string                  `json:"message,omitempty"`
+	Payload          MailEventPayload         `json:"payload"`
+	RunId            *string                  `json:"run_id,omitempty"`
+	Seq              int64                    `json:"seq"`
+	SessionId        *string                  `json:"session_id,omitempty"`
+	StepId           *string                  `json:"step_id,omitempty"`
+	Subject          *string                  `json:"subject,omitempty"`
+	Ts               time.Time                `json:"ts"`
+	Type             string                   `json:"type"`
+	Workflow         *WorkflowEventProjection `json:"workflow,omitempty"`
+}
+
 // TypedEventStreamEnvelopeMoleculeResolved defines model for TypedEventStreamEnvelopeMoleculeResolved.
 type TypedEventStreamEnvelopeMoleculeResolved struct {
 	Actor            string                   `json:"actor"`
@@ -7825,6 +7868,23 @@ type TypedTaggedEventStreamEnvelopeMailReplied struct {
 
 // TypedTaggedEventStreamEnvelopeMailSent defines model for TypedTaggedEventStreamEnvelopeMailSent.
 type TypedTaggedEventStreamEnvelopeMailSent struct {
+	Actor            string                   `json:"actor"`
+	City             string                   `json:"city"`
+	DependsOnStepIds *[]string                `json:"depends_on_step_ids,omitempty"`
+	Message          *string                  `json:"message,omitempty"`
+	Payload          MailEventPayload         `json:"payload"`
+	RunId            *string                  `json:"run_id,omitempty"`
+	Seq              int64                    `json:"seq"`
+	SessionId        *string                  `json:"session_id,omitempty"`
+	StepId           *string                  `json:"step_id,omitempty"`
+	Subject          *string                  `json:"subject,omitempty"`
+	Ts               time.Time                `json:"ts"`
+	Type             string                   `json:"type"`
+	Workflow         *WorkflowEventProjection `json:"workflow,omitempty"`
+}
+
+// TypedTaggedEventStreamEnvelopeMailUnarchived defines model for TypedTaggedEventStreamEnvelopeMailUnarchived.
+type TypedTaggedEventStreamEnvelopeMailUnarchived struct {
 	Actor            string                   `json:"actor"`
 	City             string                   `json:"city"`
 	DependsOnStepIds *[]string                `json:"depends_on_step_ids,omitempty"`
@@ -9515,7 +9575,7 @@ type GetV0CityByCityNameMailParams struct {
 	// Agent Filter by agent name.
 	Agent *string `form:"agent,omitempty" json:"agent,omitempty"`
 
-	// Status Filter by status (unread, all).
+	// Status Filter by status: unread (default; open and unread), all (open, read and unread), closed (archived only), or any (open and archived).
 	Status *string `form:"status,omitempty" json:"status,omitempty"`
 
 	// Rig Filter by rig name.
@@ -9598,6 +9658,15 @@ type ReplyMailParams struct {
 
 	// IdempotencyKey Idempotency key for safe retries.
 	IdempotencyKey *string `json:"Idempotency-Key,omitempty"`
+}
+
+// PostV0CityByCityNameMailByIdUnarchiveParams defines parameters for PostV0CityByCityNameMailByIdUnarchive.
+type PostV0CityByCityNameMailByIdUnarchiveParams struct {
+	// Rig Rig hint.
+	Rig *string `form:"rig,omitempty" json:"rig,omitempty"`
+
+	// XGCRequest Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks.
+	XGCRequest string `json:"X-GC-Request"`
 }
 
 // TriggerMaintenanceDoltGcParams defines parameters for TriggerMaintenanceDoltGc.
@@ -14790,6 +14859,34 @@ func (t *TypedEventStreamEnvelope) MergeTypedEventStreamEnvelopeMailSent(v Typed
 	return err
 }
 
+// AsTypedEventStreamEnvelopeMailUnarchived returns the union data inside the TypedEventStreamEnvelope as a TypedEventStreamEnvelopeMailUnarchived
+func (t TypedEventStreamEnvelope) AsTypedEventStreamEnvelopeMailUnarchived() (TypedEventStreamEnvelopeMailUnarchived, error) {
+	var body TypedEventStreamEnvelopeMailUnarchived
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTypedEventStreamEnvelopeMailUnarchived overwrites any union data inside the TypedEventStreamEnvelope as the provided TypedEventStreamEnvelopeMailUnarchived
+func (t *TypedEventStreamEnvelope) FromTypedEventStreamEnvelopeMailUnarchived(v TypedEventStreamEnvelopeMailUnarchived) error {
+	v.Type = "mail.unarchived"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTypedEventStreamEnvelopeMailUnarchived performs a merge with any union data inside the TypedEventStreamEnvelope, using the provided TypedEventStreamEnvelopeMailUnarchived
+func (t *TypedEventStreamEnvelope) MergeTypedEventStreamEnvelopeMailUnarchived(v TypedEventStreamEnvelopeMailUnarchived) error {
+	v.Type = "mail.unarchived"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
 // AsTypedEventStreamEnvelopeMoleculeResolved returns the union data inside the TypedEventStreamEnvelope as a TypedEventStreamEnvelopeMoleculeResolved
 func (t TypedEventStreamEnvelope) AsTypedEventStreamEnvelopeMoleculeResolved() (TypedEventStreamEnvelopeMoleculeResolved, error) {
 	var body TypedEventStreamEnvelopeMoleculeResolved
@@ -16226,6 +16323,8 @@ func (t TypedEventStreamEnvelope) ValueByDiscriminator() (interface{}, error) {
 		return t.AsTypedEventStreamEnvelopeMailReplied()
 	case "mail.sent":
 		return t.AsTypedEventStreamEnvelopeMailSent()
+	case "mail.unarchived":
+		return t.AsTypedEventStreamEnvelopeMailUnarchived()
 	case "molecule.resolved":
 		return t.AsTypedEventStreamEnvelopeMoleculeResolved()
 	case "order.completed":
@@ -17789,6 +17888,34 @@ func (t *TypedTaggedEventStreamEnvelope) MergeTypedTaggedEventStreamEnvelopeMail
 	return err
 }
 
+// AsTypedTaggedEventStreamEnvelopeMailUnarchived returns the union data inside the TypedTaggedEventStreamEnvelope as a TypedTaggedEventStreamEnvelopeMailUnarchived
+func (t TypedTaggedEventStreamEnvelope) AsTypedTaggedEventStreamEnvelopeMailUnarchived() (TypedTaggedEventStreamEnvelopeMailUnarchived, error) {
+	var body TypedTaggedEventStreamEnvelopeMailUnarchived
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTypedTaggedEventStreamEnvelopeMailUnarchived overwrites any union data inside the TypedTaggedEventStreamEnvelope as the provided TypedTaggedEventStreamEnvelopeMailUnarchived
+func (t *TypedTaggedEventStreamEnvelope) FromTypedTaggedEventStreamEnvelopeMailUnarchived(v TypedTaggedEventStreamEnvelopeMailUnarchived) error {
+	v.Type = "mail.unarchived"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTypedTaggedEventStreamEnvelopeMailUnarchived performs a merge with any union data inside the TypedTaggedEventStreamEnvelope, using the provided TypedTaggedEventStreamEnvelopeMailUnarchived
+func (t *TypedTaggedEventStreamEnvelope) MergeTypedTaggedEventStreamEnvelopeMailUnarchived(v TypedTaggedEventStreamEnvelopeMailUnarchived) error {
+	v.Type = "mail.unarchived"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
 // AsTypedTaggedEventStreamEnvelopeMoleculeResolved returns the union data inside the TypedTaggedEventStreamEnvelope as a TypedTaggedEventStreamEnvelopeMoleculeResolved
 func (t TypedTaggedEventStreamEnvelope) AsTypedTaggedEventStreamEnvelopeMoleculeResolved() (TypedTaggedEventStreamEnvelopeMoleculeResolved, error) {
 	var body TypedTaggedEventStreamEnvelopeMoleculeResolved
@@ -19225,6 +19352,8 @@ func (t TypedTaggedEventStreamEnvelope) ValueByDiscriminator() (interface{}, err
 		return t.AsTypedTaggedEventStreamEnvelopeMailReplied()
 	case "mail.sent":
 		return t.AsTypedTaggedEventStreamEnvelopeMailSent()
+	case "mail.unarchived":
+		return t.AsTypedTaggedEventStreamEnvelopeMailUnarchived()
 	case "molecule.resolved":
 		return t.AsTypedTaggedEventStreamEnvelopeMoleculeResolved()
 	case "order.completed":
@@ -19702,6 +19831,9 @@ type ClientInterface interface {
 	ReplyMailWithBody(ctx context.Context, cityName string, id string, params *ReplyMailParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	ReplyMail(ctx context.Context, cityName string, id string, params *ReplyMailParams, body ReplyMailJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostV0CityByCityNameMailByIdUnarchive request
+	PostV0CityByCityNameMailByIdUnarchive(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameMailByIdUnarchiveParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// TriggerMaintenanceDoltGc request
 	TriggerMaintenanceDoltGc(ctx context.Context, cityName string, params *TriggerMaintenanceDoltGcParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -21270,6 +21402,18 @@ func (c *Client) ReplyMailWithBody(ctx context.Context, cityName string, id stri
 
 func (c *Client) ReplyMail(ctx context.Context, cityName string, id string, params *ReplyMailParams, body ReplyMailJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewReplyMailRequest(c.Server, cityName, id, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostV0CityByCityNameMailByIdUnarchive(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameMailByIdUnarchiveParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostV0CityByCityNameMailByIdUnarchiveRequest(c.Server, cityName, id, params)
 	if err != nil {
 		return nil, err
 	}
@@ -28017,6 +28161,82 @@ func NewReplyMailRequestWithBody(server string, cityName string, id string, para
 	return req, nil
 }
 
+// NewPostV0CityByCityNameMailByIdUnarchiveRequest generates requests for PostV0CityByCityNameMailByIdUnarchive
+func NewPostV0CityByCityNameMailByIdUnarchiveRequest(server string, cityName string, id string, params *PostV0CityByCityNameMailByIdUnarchiveParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "cityName", cityName, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v0/city/%s/mail/%s/unarchive", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Rig != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", false, "rig", *params.Rig, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "X-GC-Request", params.XGCRequest, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-GC-Request", headerParam0)
+
+	}
+
+	return req, nil
+}
+
 // NewTriggerMaintenanceDoltGcRequest generates requests for TriggerMaintenanceDoltGc
 func NewTriggerMaintenanceDoltGcRequest(server string, cityName string, params *TriggerMaintenanceDoltGcParams) (*http.Request, error) {
 	var err error
@@ -33253,6 +33473,9 @@ type ClientWithResponsesInterface interface {
 
 	ReplyMailWithResponse(ctx context.Context, cityName string, id string, params *ReplyMailParams, body ReplyMailJSONRequestBody, reqEditors ...RequestEditorFn) (*ReplyMailResponse, error)
 
+	// PostV0CityByCityNameMailByIdUnarchiveWithResponse request
+	PostV0CityByCityNameMailByIdUnarchiveWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameMailByIdUnarchiveParams, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameMailByIdUnarchiveResponse, error)
+
 	// TriggerMaintenanceDoltGcWithResponse request
 	TriggerMaintenanceDoltGcWithResponse(ctx context.Context, cityName string, params *TriggerMaintenanceDoltGcParams, reqEditors ...RequestEditorFn) (*TriggerMaintenanceDoltGcResponse, error)
 
@@ -35753,6 +35976,33 @@ func (r ReplyMailResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r ReplyMailResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type PostV0CityByCityNameMailByIdUnarchiveResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *OKResponseBody
+	ApplicationproblemJSON401 *ErrorModel
+	ApplicationproblemJSON403 *ErrorModel
+	ApplicationproblemJSON404 *ErrorModel
+	ApplicationproblemJSON422 *ErrorModel
+	ApplicationproblemJSON500 *ErrorModel
+}
+
+// Status returns HTTPResponse.Status
+func (r PostV0CityByCityNameMailByIdUnarchiveResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostV0CityByCityNameMailByIdUnarchiveResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -38914,6 +39164,15 @@ func (c *ClientWithResponses) ReplyMailWithResponse(ctx context.Context, cityNam
 		return nil, err
 	}
 	return ParseReplyMailResponse(rsp)
+}
+
+// PostV0CityByCityNameMailByIdUnarchiveWithResponse request returning *PostV0CityByCityNameMailByIdUnarchiveResponse
+func (c *ClientWithResponses) PostV0CityByCityNameMailByIdUnarchiveWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameMailByIdUnarchiveParams, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameMailByIdUnarchiveResponse, error) {
+	rsp, err := c.PostV0CityByCityNameMailByIdUnarchive(ctx, cityName, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostV0CityByCityNameMailByIdUnarchiveResponse(rsp)
 }
 
 // TriggerMaintenanceDoltGcWithResponse request returning *TriggerMaintenanceDoltGcResponse
@@ -44849,6 +45108,67 @@ func ParseReplyMailResponse(rsp *http.Response) (*ReplyMailResponse, error) {
 			return nil, err
 		}
 		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostV0CityByCityNameMailByIdUnarchiveResponse parses an HTTP response from a PostV0CityByCityNameMailByIdUnarchiveWithResponse call
+func ParsePostV0CityByCityNameMailByIdUnarchiveResponse(rsp *http.Response) (*PostV0CityByCityNameMailByIdUnarchiveResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostV0CityByCityNameMailByIdUnarchiveResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest OKResponseBody
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
 		var dest ErrorModel

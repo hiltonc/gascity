@@ -6,10 +6,10 @@ import (
 	"github.com/gastownhall/gascity/internal/beads"
 )
 
-// BenchmarkArchiveMany measures the cost of an N-message eager-delete path
+// BenchmarkArchiveMany measures the cost of an N-message archive (close) path
 // relative to N single-id Archive calls. Both paths run on a memstore, so
 // the bench isolates the bookkeeping cost of per-id Archive (Get + type
-// check + Delete). This bench exists primarily as a regression guard; the
+// check + Close). This bench exists primarily as a regression guard; the
 // real acceptance target is measured against BdStore, not memstore.
 func BenchmarkArchiveMany(b *testing.B) {
 	for _, n := range []int{20, 200} {

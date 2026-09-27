@@ -30,9 +30,9 @@ import (
 // variant before emitting on the typed /v0/events/stream wire schema.
 
 // MailEventPayload is the shape of every mail.* event payload
-// (MailSent, MailRead, MailArchived, MailMarkedRead, MailMarkedUnread,
-// MailReplied, MailDeleted). Message is nil for mark/archive/delete
-// events; present for send/reply events.
+// (MailSent, MailRead, MailArchived, MailUnarchived, MailMarkedRead,
+// MailMarkedUnread, MailReplied, MailDeleted). Message is nil for
+// mark/archive/unarchive/delete events; present for send/reply events.
 type MailEventPayload struct {
 	Rig     string        `json:"rig"`
 	Message *mail.Message `json:"message,omitempty"`
@@ -632,6 +632,7 @@ func init() {
 	events.RegisterPayload(events.MailSent, MailEventPayload{})
 	events.RegisterPayload(events.MailRead, MailEventPayload{})
 	events.RegisterPayload(events.MailArchived, MailEventPayload{})
+	events.RegisterPayload(events.MailUnarchived, MailEventPayload{})
 	events.RegisterPayload(events.MailMarkedRead, MailEventPayload{})
 	events.RegisterPayload(events.MailMarkedUnread, MailEventPayload{})
 	events.RegisterPayload(events.MailReplied, MailEventPayload{})
