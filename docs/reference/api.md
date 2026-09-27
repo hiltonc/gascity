@@ -44,7 +44,9 @@ The spec is the full reference. A brief summary of the surfaces:
   opens a long-lived SSE reply stream for that conversation.
   See [Connect an external LLM client](/guides/connected-clients) for
   the full integration guide including the SSE error catalog.
-- **Mail, convoys, orders, formulas, participants,
+- **Mail.** Send, read, archive, unarchive, and delete under
+  `/v0/city/{cityName}/mail`; see [Mail](#mail) below.
+- **Convoys, orders, formulas, participants,
   transcripts, adapters.** External messaging and orchestration
   surfaces; see the spec for per-operation shapes.
 - **Events.** `GET /v0/events` + `GET /v0/events/stream` at
@@ -52,6 +54,44 @@ The spec is the full reference. A brief summary of the surfaces:
   `GET /v0/city/{cityName}/events/stream` at city scope.
 - **Config & packs.** Per-city config and pack metadata under
   `/v0/city/{cityName}/config` and `/v0/city/{cityName}/packs`.
+
+## Mail
+
+A message is **open** while it sits in a mailbox and **closed** once it is
+archived. Archiving never destroys a message: it stays readable by ID and is
+listed under the closed filters. Deleting is the destructive operation.
+
+Every message the mail endpoints return carries its state:
+
+| Field | Value |
+|---|---|
+| `status` | `"open"` or `"closed"` |
+| `closed_at` | When the message was closed. Absent while it is open. |
+
+`GET /v0/city/{cityName}/mail` takes a `status` filter:
+
+| `status` | Lists |
+|---|---|
+| `unread` (default) | Open messages not yet read |
+| `all` | Open messages, read and unread |
+| `closed` | Archived messages only |
+| `any` | Open and archived messages |
+
+Paging (`cursor`, `limit`, `total`) and the blocking `index`/`wait` query work
+the same under every filter.
+
+| Operation | Effect | Event |
+|---|---|---|
+| `POST /mail/{id}/archive` | Closes the message. A repeat archive succeeds. | `mail.archived` |
+| `POST /mail/{id}/unarchive` | Reopens a closed message. `404` if it no longer exists. | `mail.unarchived` |
+| `DELETE /mail/{id}` | Removes the message permanently; a later `GET` is `404`. | `mail.deleted` |
+
+The system changes mail on its own too. The read-mail retention sweep archives
+read messages past their retention window (`mail.archived`), and when
+`[mail] retention_ttl` is set the purge deletes old read messages
+(`mail.deleted`). Each change advances the city event index, so a client that
+syncs mail by asking what changed since index `N` sees every archive, reopen,
+and deletion, including the ones no user asked for.
 
 ## Request and response headers
 

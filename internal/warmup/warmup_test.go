@@ -91,6 +91,14 @@ func (m *recordingWarmupMailer) ArchiveMany([]string) ([]mail.ArchiveResult, err
 	return nil, errWarmupMailerNotImplemented
 }
 func (m *recordingWarmupMailer) Delete(string) error { return errWarmupMailerNotImplemented }
+func (m *recordingWarmupMailer) Unarchive(string) error {
+	return errWarmupMailerNotImplemented
+}
+
+func (m *recordingWarmupMailer) Archived(string) ([]mail.Message, error) {
+	return nil, errWarmupMailerNotImplemented
+}
+
 func (m *recordingWarmupMailer) DeleteMany([]string) ([]mail.ArchiveResult, error) {
 	return nil, errWarmupMailerNotImplemented
 }

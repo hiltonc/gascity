@@ -141,6 +141,7 @@ function specToMessage(spec: MailSpec, iso: (offsetMs: number) => string): Messa
     subject: spec.subject,
     body: spec.body,
     read: spec.read,
+    status: 'open',
     created_at: iso(spec.agedMin * MIN),
   };
   if (spec.threadId !== undefined) msg.thread_id = spec.threadId;

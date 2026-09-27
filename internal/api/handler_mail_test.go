@@ -54,6 +54,10 @@ func (p *exactRecipientMailProvider) ArchiveMany(ids []string) ([]mail.ArchiveRe
 
 func (p *exactRecipientMailProvider) Delete(string) error { return nil }
 
+func (p *exactRecipientMailProvider) Unarchive(string) error { return mail.ErrNotArchived }
+
+func (p *exactRecipientMailProvider) Archived(string) ([]mail.Message, error) { return nil, nil }
+
 func (p *exactRecipientMailProvider) DeleteMany(ids []string) ([]mail.ArchiveResult, error) {
 	return make([]mail.ArchiveResult, len(ids)), nil
 }

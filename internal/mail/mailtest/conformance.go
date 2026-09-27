@@ -484,10 +484,18 @@ func RunProviderTests(t *testing.T, newProvider func(t *testing.T) mail.Provider
 
 	// --- Group 11: Archive ---
 
-	t.Run("Archive_RemovesMessageFromEveryView", func(t *testing.T) {
-		runRemovalVisibilityContract(t, newProvider(t), func(p mail.Provider, id string) error {
-			return p.Archive(id)
-		})
+	t.Run("Send_ReturnsOpenMessage", func(t *testing.T) {
+		p := newProvider(t)
+		sent, err := p.Send("alice", "bob", "", "fresh")
+		if err != nil {
+			t.Fatalf("Send: %v", err)
+		}
+		assertOpen(t, "Send", sent)
+		got, err := p.Get(sent.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		assertOpen(t, "Get", got)
 	})
 
 	t.Run("Archive_AlreadyArchivedReturnsError", func(t *testing.T) {
@@ -879,6 +887,180 @@ func runRemovalVisibilityContract(t *testing.T, p mail.Provider, remove func(mai
 		if msg.ID == target.ID {
 			t.Errorf("Thread(removed message ID) returned removed message %q", target.ID)
 		}
+	}
+}
+
+// RunArchiveRetentionTests runs the archive-retention contract against a
+// Provider that keeps archived mail: Archive closes a message without losing
+// it, Archived lists it, Unarchive reopens it, and Delete removes it for good.
+// Every built-in provider must pass it; an exec script that cannot retain
+// archived mail (the contrib MCP bridge) runs only [RunProviderTests].
+func RunArchiveRetentionTests(t *testing.T, newProvider func(t *testing.T) mail.Provider) {
+	t.Helper()
+
+	t.Run("Archive_ClosesMessageAndKeepsItReadable", func(t *testing.T) {
+		runArchiveContract(t, newProvider(t))
+	})
+
+	t.Run("Unarchive_ReopensMessage", func(t *testing.T) {
+		p := newProvider(t)
+		sent, err := p.Send("alice", "bob", "", "archive then unarchive")
+		if err != nil {
+			t.Fatalf("Send: %v", err)
+		}
+		if err := p.Archive(sent.ID); err != nil {
+			t.Fatalf("Archive: %v", err)
+		}
+		if err := p.Unarchive(sent.ID); err != nil {
+			t.Fatalf("Unarchive: %v", err)
+		}
+		got, err := p.Get(sent.ID)
+		if err != nil {
+			t.Fatalf("Get after Unarchive: %v", err)
+		}
+		assertOpen(t, "Get after Unarchive", got)
+		all, err := p.All("bob")
+		if err != nil {
+			t.Fatalf("All: %v", err)
+		}
+		assertOnlyMessage(t, "All after Unarchive", all, sent.ID)
+		archived, err := p.Archived("bob")
+		if err != nil {
+			t.Fatalf("Archived: %v", err)
+		}
+		if len(archived) != 0 {
+			t.Errorf("Archived after Unarchive returned IDs %v, want none", messageIDs(archived))
+		}
+	})
+
+	t.Run("Unarchive_OpenMessageReturnsNotArchived", func(t *testing.T) {
+		p := newProvider(t)
+		sent, err := p.Send("alice", "bob", "", "never archived")
+		if err != nil {
+			t.Fatalf("Send: %v", err)
+		}
+		if err := p.Unarchive(sent.ID); !errors.Is(err, mail.ErrNotArchived) {
+			t.Errorf("Unarchive(open) error = %v, want ErrNotArchived", err)
+		}
+	})
+
+	t.Run("Unarchive_UnknownIDReturnsNotFound", func(t *testing.T) {
+		p := newProvider(t)
+		if err := p.Unarchive("nonexistent"); !errors.Is(err, mail.ErrNotFound) {
+			t.Errorf("Unarchive(nonexistent) error = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("Unarchive_DeletedMessageReturnsNotFound", func(t *testing.T) {
+		p := newProvider(t)
+		sent, err := p.Send("alice", "bob", "", "deleted")
+		if err != nil {
+			t.Fatalf("Send: %v", err)
+		}
+		if err := p.Delete(sent.ID); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+		if err := p.Unarchive(sent.ID); !errors.Is(err, mail.ErrNotFound) {
+			t.Errorf("Unarchive(deleted) error = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("Delete_RemovesArchivedMessage", func(t *testing.T) {
+		p := newProvider(t)
+		sent, err := p.Send("alice", "bob", "", "archive then delete")
+		if err != nil {
+			t.Fatalf("Send: %v", err)
+		}
+		if err := p.Archive(sent.ID); err != nil {
+			t.Fatalf("Archive: %v", err)
+		}
+		if err := p.Delete(sent.ID); err != nil {
+			t.Fatalf("Delete(archived): %v", err)
+		}
+		if _, err := p.Get(sent.ID); !errors.Is(err, mail.ErrNotFound) {
+			t.Errorf("Get(deleted) error = %v, want ErrNotFound", err)
+		}
+		archived, err := p.Archived("bob")
+		if err != nil {
+			t.Fatalf("Archived: %v", err)
+		}
+		if len(archived) != 0 {
+			t.Errorf("Archived after Delete returned IDs %v, want none", messageIDs(archived))
+		}
+	})
+}
+
+func runArchiveContract(t *testing.T, p mail.Provider) {
+	t.Helper()
+
+	target, err := p.Send("alice", "bob", "archive target", "keep this body")
+	if err != nil {
+		t.Fatalf("Send target: %v", err)
+	}
+	survivor, err := p.Send("alice", "bob", "survivor", "keep this message")
+	if err != nil {
+		t.Fatalf("Send survivor: %v", err)
+	}
+	if err := p.Archive(target.ID); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	got, err := p.Get(target.ID)
+	if err != nil {
+		t.Fatalf("Get(archived): %v", err)
+	}
+	if got.Body != "keep this body" {
+		t.Errorf("Get(archived).Body = %q, want the original body", got.Body)
+	}
+	if got.Status != mail.StatusClosed {
+		t.Errorf("Get(archived).Status = %q, want %q", got.Status, mail.StatusClosed)
+	}
+	if got.ClosedAt == nil || got.ClosedAt.IsZero() {
+		t.Errorf("Get(archived).ClosedAt = %v, want a close time", got.ClosedAt)
+	}
+
+	inbox, err := p.Inbox("bob")
+	if err != nil {
+		t.Fatalf("Inbox: %v", err)
+	}
+	assertOnlyMessage(t, "Inbox after Archive", inbox, survivor.ID)
+	all, err := p.All("bob")
+	if err != nil {
+		t.Fatalf("All: %v", err)
+	}
+	assertOnlyMessage(t, "All after Archive", all, survivor.ID)
+	total, unread, err := p.Count("bob")
+	if err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if total != 1 || unread != 1 {
+		t.Errorf("Count after Archive = (%d, %d), want (1, 1)", total, unread)
+	}
+
+	archived, err := p.Archived("bob")
+	if err != nil {
+		t.Fatalf("Archived: %v", err)
+	}
+	assertOnlyMessage(t, "Archived", archived, target.ID)
+	if archived[0].Status != mail.StatusClosed {
+		t.Errorf("Archived()[0].Status = %q, want %q", archived[0].Status, mail.StatusClosed)
+	}
+	others, err := p.Archived("carol")
+	if err != nil {
+		t.Fatalf("Archived(other recipient): %v", err)
+	}
+	if len(others) != 0 {
+		t.Errorf("Archived(carol) returned IDs %v, want none", messageIDs(others))
+	}
+}
+
+func assertOpen(t *testing.T, operation string, msg mail.Message) {
+	t.Helper()
+	if msg.Status != mail.StatusOpen {
+		t.Errorf("%s Status = %q, want %q", operation, msg.Status, mail.StatusOpen)
+	}
+	if msg.ClosedAt != nil {
+		t.Errorf("%s ClosedAt = %v, want nil", operation, msg.ClosedAt)
 	}
 }
 

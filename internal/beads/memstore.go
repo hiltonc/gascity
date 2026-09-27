@@ -329,8 +329,10 @@ func (m *MemStore) Close(id string) error {
 			if m.beads[i].Status == "closed" {
 				return nil
 			}
+			now := time.Now()
 			setBeadStatus(&m.beads[i], "closed")
-			m.beads[i].UpdatedAt = time.Now()
+			m.beads[i].UpdatedAt = now
+			m.beads[i].ClosedAt = &now
 			m.beads[i].Revision++
 			return nil
 		}
@@ -351,6 +353,7 @@ func (m *MemStore) Reopen(id string) error {
 			wasClosed := m.beads[i].Status == "closed"
 			setBeadStatus(&m.beads[i], "open")
 			m.beads[i].UpdatedAt = time.Now()
+			m.beads[i].ClosedAt = nil
 			m.beads[i].Revision++
 			if wasClosed {
 				// closed→open starts a new ownership generation; an
@@ -377,8 +380,10 @@ func (m *MemStore) CloseAll(ids []string, metadata map[string]string) (int, erro
 		if !idSet[m.beads[i].ID] || m.beads[i].Status == "closed" {
 			continue
 		}
+		now := time.Now()
 		setBeadStatus(&m.beads[i], "closed")
-		m.beads[i].UpdatedAt = time.Now()
+		m.beads[i].UpdatedAt = now
+		m.beads[i].ClosedAt = &now
 		m.beads[i].Revision++
 		if m.beads[i].Metadata == nil {
 			m.beads[i].Metadata = make(map[string]string, len(metadata))

@@ -71,6 +71,7 @@ var exemptFromIdempotency = map[string]bool{
 	"post-v0-city-by-city-name-formulas-by-name-preview":       true,
 	"post-v0-city-by-city-name-formulas-by-name-validate":      true,
 	"post-v0-city-by-city-name-mail-by-id-archive":             true,
+	"post-v0-city-by-city-name-mail-by-id-unarchive":           true,
 	"post-v0-city-by-city-name-mail-by-id-mark-unread":         true,
 	"post-v0-city-by-city-name-mail-by-id-read":                true,
 	"post-v0-city-by-city-name-order-by-name-disable":          true,

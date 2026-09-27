@@ -214,123 +214,92 @@ func (s *Server) humaHandleMailList(ctx context.Context, input *MailListInput) (
 		return nil, err
 	}
 
+	fetch, err := mailListFetcher(input.Status)
+	if err != nil {
+		return nil, err
+	}
 	agents := s.resolveMailQueryRecipientsWithContext(ctx, input.Agent)
-	status := input.Status
 	rig := input.Rig
 	index := s.latestIndex()
 	cacheAge := cacheAgeSeconds(cityStore)
 
+	if rig != "" {
+		mp := s.state.MailProvider(rig)
+		if mp == nil {
+			return &MailListOutput{
+				Index:     index,
+				CacheAgeS: cacheAge,
+				Body:      MailListBody{Items: []mail.Message{}, Total: 0},
+			}, nil
+		}
+		msgs, err := withMailReadDeadline(ctx, func() ([]mail.Message, error) {
+			return fetch(mp, agents)
+		})
+		if err != nil {
+			return nil, mailReadAPIError(err)
+		}
+		if msgs == nil {
+			msgs = []mail.Message{}
+		}
+		msgs = tagRig(msgs, rig)
+		return &MailListOutput{
+			Index:     index,
+			CacheAgeS: cacheAge,
+			Body:      mailKeysetBody(msgs, seek, limit, false, nil),
+		}, nil
+	}
+
+	providers := s.state.MailProviders()
+	var allMsgs []mail.Message
+	var partialErrs []string
+	partialStoreSlow := false
+	for _, res := range withMailProviderReadDeadline(ctx, providers, func(provider mail.Provider) ([]mail.Message, error) {
+		return fetch(provider, agents)
+	}) {
+		if res.err != nil {
+			var timeoutErr *mailReadTimeoutError
+			partialStoreSlow = partialStoreSlow || errors.As(res.err, &timeoutErr)
+			partialErrs = append(partialErrs, "mail provider "+res.name+": "+res.err.Error())
+			continue
+		}
+		allMsgs = append(allMsgs, tagRig(res.value, res.name)...)
+	}
+	if len(partialErrs) == len(providers) && len(providers) > 0 {
+		return nil, allMailProvidersFailedError(partialErrs, partialStoreSlow)
+	}
+	if allMsgs == nil {
+		allMsgs = []mail.Message{}
+	}
+	return &MailListOutput{
+		Index:     index,
+		CacheAgeS: cacheAge,
+		Body:      mailKeysetBody(allMsgs, seek, limit, len(partialErrs) > 0, partialErrs),
+	}, nil
+}
+
+// Mail list status filters accepted by GET /mail.
+const (
+	mailListStatusUnread = "unread"
+	mailListStatusAll    = "all"
+	mailListStatusClosed = "closed"
+	mailListStatusAny    = "any"
+)
+
+// mailListFetcher returns the provider read behind a GET /mail status
+// filter: unread (the default) and all read open mail, closed reads archived
+// mail, and any reads both.
+func mailListFetcher(status string) (func(mail.Provider, []string) ([]mail.Message, error), error) {
 	switch status {
-	case "", "unread":
-		if rig != "" {
-			mp := s.state.MailProvider(rig)
-			if mp == nil {
-				return &MailListOutput{
-					Index:     index,
-					CacheAgeS: cacheAge,
-					Body:      MailListBody{Items: []mail.Message{}, Total: 0},
-				}, nil
-			}
-			msgs, err := withMailReadDeadline(ctx, func() ([]mail.Message, error) {
-				return mailInboxForRecipients(mp, agents)
-			})
-			if err != nil {
-				return nil, mailReadAPIError(err)
-			}
-			if msgs == nil {
-				msgs = []mail.Message{}
-			}
-			msgs = tagRig(msgs, rig)
-			return &MailListOutput{
-				Index:     index,
-				CacheAgeS: cacheAge,
-				Body:      mailKeysetBody(msgs, seek, limit, false, nil),
-			}, nil
-		}
-
-		providers := s.state.MailProviders()
-		var allMsgs []mail.Message
-		var partialErrs []string
-		partialStoreSlow := false
-		for _, res := range withMailProviderReadDeadline(ctx, providers, func(provider mail.Provider) ([]mail.Message, error) {
-			return mailInboxForRecipients(provider, agents)
-		}) {
-			if res.err != nil {
-				var timeoutErr *mailReadTimeoutError
-				partialStoreSlow = partialStoreSlow || errors.As(res.err, &timeoutErr)
-				partialErrs = append(partialErrs, "mail provider "+res.name+": "+res.err.Error())
-				continue
-			}
-			allMsgs = append(allMsgs, tagRig(res.value, res.name)...)
-		}
-		if len(partialErrs) == len(providers) && len(providers) > 0 {
-			return nil, allMailProvidersFailedError(partialErrs, partialStoreSlow)
-		}
-		if allMsgs == nil {
-			allMsgs = []mail.Message{}
-		}
-		return &MailListOutput{
-			Index:     index,
-			CacheAgeS: cacheAge,
-			Body:      mailKeysetBody(allMsgs, seek, limit, len(partialErrs) > 0, partialErrs),
-		}, nil
-
-	case "all":
-		if rig != "" {
-			mp := s.state.MailProvider(rig)
-			if mp == nil {
-				return &MailListOutput{
-					Index:     index,
-					CacheAgeS: cacheAge,
-					Body:      MailListBody{Items: []mail.Message{}, Total: 0},
-				}, nil
-			}
-			msgs, err := withMailReadDeadline(ctx, func() ([]mail.Message, error) {
-				return mailAllForRecipients(mp, agents)
-			})
-			if err != nil {
-				return nil, mailReadAPIError(err)
-			}
-			if msgs == nil {
-				msgs = []mail.Message{}
-			}
-			msgs = tagRig(msgs, rig)
-			return &MailListOutput{
-				Index:     index,
-				CacheAgeS: cacheAge,
-				Body:      mailKeysetBody(msgs, seek, limit, false, nil),
-			}, nil
-		}
-
-		providers := s.state.MailProviders()
-		var allMsgs []mail.Message
-		var partialErrs []string
-		partialStoreSlow := false
-		for _, res := range withMailProviderReadDeadline(ctx, providers, func(provider mail.Provider) ([]mail.Message, error) {
-			return mailAllForRecipients(provider, agents)
-		}) {
-			if res.err != nil {
-				var timeoutErr *mailReadTimeoutError
-				partialStoreSlow = partialStoreSlow || errors.As(res.err, &timeoutErr)
-				partialErrs = append(partialErrs, "mail provider "+res.name+": "+res.err.Error())
-				continue
-			}
-			allMsgs = append(allMsgs, tagRig(res.value, res.name)...)
-		}
-		if len(partialErrs) == len(providers) && len(providers) > 0 {
-			return nil, allMailProvidersFailedError(partialErrs, partialStoreSlow)
-		}
-		if allMsgs == nil {
-			allMsgs = []mail.Message{}
-		}
-		return &MailListOutput{
-			Index:     index,
-			CacheAgeS: cacheAge,
-			Body:      mailKeysetBody(allMsgs, seek, limit, len(partialErrs) > 0, partialErrs),
-		}, nil
-
+	case "", mailListStatusUnread:
+		return mailInboxForRecipients, nil
+	case mailListStatusAll:
+		return mailAllForRecipients, nil
+	case mailListStatusClosed:
+		return mailArchivedForRecipients, nil
+	case mailListStatusAny:
+		return mailAnyForRecipients, nil
 	default:
-		return nil, apierr.InvalidRequest.Msg("unsupported status filter: " + status + "; supported: unread, all")
+		return nil, apierr.InvalidRequest.Msg("unsupported status filter: " + status + "; supported: unread, all, closed, any")
 	}
 }
 
@@ -616,8 +585,9 @@ func (s *Server) humaHandleMailArchive(ctx context.Context, input *MailArchiveIn
 		return nil, apierr.Internal.Msg(err.Error())
 	}
 	if mp == nil {
-		// Idempotent: archive removes the bead, so a repeat call finds no
-		// owning provider. Matches mail.ErrAlreadyArchived at the CLI/provider layer.
+		// Idempotent: a message deleted since has nothing left to archive.
+		// A repeat archive of a retained message reaches mp.Archive and is
+		// answered by mail.ErrAlreadyArchived below.
 		resp := &OKResponse{}
 		resp.Body.Status = "archived"
 		return resp, nil
@@ -635,6 +605,35 @@ func (s *Server) humaHandleMailArchive(ctx context.Context, input *MailArchiveIn
 	s.recordMailEvent(events.MailArchived, "api", id, resolvedRig, nil)
 	resp := &OKResponse{}
 	resp.Body.Status = "archived"
+	return resp, nil
+}
+
+// humaHandleMailUnarchive is the Huma-typed handler for
+// POST /v0/mail/{id}/unarchive. It reopens an archived message; reopening an
+// open message succeeds without announcing a change.
+func (s *Server) humaHandleMailUnarchive(ctx context.Context, input *MailUnarchiveInput) (*OKResponse, error) {
+	id := input.ID
+	mp, resolvedRig, err := s.findMailProviderForMessage(id, input.Rig)
+	if err != nil {
+		return nil, apierr.Internal.Msg(err.Error())
+	}
+	if mp == nil {
+		return nil, apierr.MailNotFound.Msg("message " + id + " not found")
+	}
+	resp := &OKResponse{}
+	resp.Body.Status = "unarchived"
+	if err := mp.Unarchive(id); err != nil {
+		switch {
+		case errors.Is(err, mail.ErrNotArchived):
+			return resp, nil
+		case errors.Is(err, mail.ErrNotFound):
+			return nil, apierr.MailNotFound.Msg(err.Error())
+		}
+		telemetry.RecordMailOp(ctx, "unarchive", err)
+		return nil, apierr.Internal.Msg(err.Error())
+	}
+	telemetry.RecordMailOp(ctx, "unarchive", nil)
+	s.recordMailEvent(events.MailUnarchived, "api", id, resolvedRig, nil)
 	return resp, nil
 }
 
@@ -688,7 +687,7 @@ func (s *Server) humaHandleMailDelete(ctx context.Context, input *MailDeleteInpu
 		return nil, apierr.Internal.Msg(err.Error())
 	}
 	if mp == nil {
-		// Idempotent: delete removes the bead, so a repeat call finds no
+		// Idempotent: delete removes the message, so a repeat call finds no
 		// owning provider. Matches mail.ErrAlreadyArchived at the CLI/provider layer.
 		resp := &OKResponse{}
 		resp.Body.Status = "deleted"

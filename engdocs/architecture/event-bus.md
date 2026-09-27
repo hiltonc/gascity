@@ -275,11 +275,12 @@ API/SSE projection:
 | `BeadUpdated` | `bead.updated` | Bead update hooks |
 | `MailSent` | `mail.sent` | Mail send/API handlers and handoff command |
 | `MailRead` | `mail.read` | Mail read command |
-| `MailArchived` | `mail.archived` | Mail archive command and API handler |
+| `MailArchived` | `mail.archived` | Mail archive command, API handler, and the read-mail retention sweep |
+| `MailUnarchived` | `mail.unarchived` | Mail unarchive API handler |
 | `MailMarkedRead` | `mail.marked_read` | Mail mark-read command and API handler |
 | `MailMarkedUnread` | `mail.marked_unread` | Mail mark-unread command and API handler |
 | `MailReplied` | `mail.replied` | Mail reply command and API handler |
-| `MailDeleted` | `mail.deleted` | Mail delete command and API handler |
+| `MailDeleted` | `mail.deleted` | Mail delete command, API handler, and the read-mail wisp purge |
 | `ConvoyCreated` | `convoy.created` | Convoy creation |
 | `ConvoyClosed` | `convoy.closed` | Convoy close |
 | `ControllerStarted` | `controller.started` | Per-city controller startup |

@@ -125,8 +125,8 @@ func TestArchiveInjectedAutoHandoffReclaimedByReadGatedTTLSweep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PurgeReadMessageWisps: %v", err)
 	}
-	if purged != 1 {
-		t.Fatalf("purged = %d, want 1 (only the read injected handoff)", purged)
+	if len(purged) != 1 {
+		t.Fatalf("purged = %d, want 1 (only the read injected handoff)", len(purged))
 	}
 
 	// The injected+read handoff is reclaimed by the TTL sweep (its recoverable

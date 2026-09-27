@@ -312,6 +312,26 @@ func mailAllForRecipients(mp mail.Provider, recipients []string) ([]mail.Message
 	return mailMessagesForRecipients(mp.All, recipients)
 }
 
+func mailArchivedForRecipients(mp mail.Provider, recipients []string) ([]mail.Message, error) {
+	return mailMessagesForRecipients(mp.Archived, recipients)
+}
+
+// mailAnyForRecipients returns open and archived mail together, deduplicated
+// by ID so a message archived between the two reads is reported once.
+func mailAnyForRecipients(mp mail.Provider, recipients []string) ([]mail.Message, error) {
+	return mailMessagesForRecipients(func(recipient string) ([]mail.Message, error) {
+		open, err := mp.All(recipient)
+		if err != nil {
+			return nil, err
+		}
+		archived, err := mp.Archived(recipient)
+		if err != nil {
+			return nil, err
+		}
+		return append(open, archived...), nil
+	}, recipients)
+}
+
 func mailMessagesForRecipients(fetch func(string) ([]mail.Message, error), recipients []string) ([]mail.Message, error) {
 	recipients = uniqueMailRecipients(recipients)
 	var all []mail.Message
