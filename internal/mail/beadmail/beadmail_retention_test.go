@@ -110,8 +110,8 @@ func TestSweepReadMessagesBefore_ClosesAgedReadMailWithReason(t *testing.T) {
 	if len(closeErrs) != 0 {
 		t.Fatalf("unexpected per-bead errors: %v", closeErrs)
 	}
-	if closed != 2 {
-		t.Fatalf("closed = %d, want 2", closed)
+	if len(closed) != 2 {
+		t.Fatalf("closed = %d, want 2", len(closed))
 	}
 
 	for _, id := range []string{"old-1", "old-2"} {
@@ -157,8 +157,8 @@ func TestSweepReadMessagesBefore_LimitCapsCloses(t *testing.T) {
 	if listErr != nil || len(closeErrs) != 0 {
 		t.Fatalf("unexpected errors: list=%v perBead=%v", listErr, closeErrs)
 	}
-	if closed != 2 {
-		t.Fatalf("closed = %d, want 2 (limit)", closed)
+	if len(closed) != 2 {
+		t.Fatalf("closed = %d, want 2 (limit)", len(closed))
 	}
 
 	openCount := 0
@@ -193,8 +193,8 @@ func TestSweepReadMessagesBefore_PerBeadCloseErrorIsCollected(t *testing.T) {
 	if listErr != nil {
 		t.Fatalf("unexpected list error: %v", listErr)
 	}
-	if closed != 1 {
-		t.Fatalf("closed = %d, want 1 (good only)", closed)
+	if len(closed) != 1 {
+		t.Fatalf("closed = %d, want 1 (good only)", len(closed))
 	}
 	if len(closeErrs) != 1 {
 		t.Fatalf("closeErrs = %v, want exactly one", closeErrs)
@@ -213,8 +213,8 @@ func TestSweepReadMessagesBefore_ListErrorIsFatal(t *testing.T) {
 	if listErr == nil {
 		t.Fatal("expected fatal list error")
 	}
-	if closed != 0 || len(closeErrs) != 0 {
-		t.Fatalf("closed=%d closeErrs=%v, want zero on list failure", closed, closeErrs)
+	if len(closed) != 0 || len(closeErrs) != 0 {
+		t.Fatalf("closed=%d closeErrs=%v, want zero on list failure", len(closed), closeErrs)
 	}
 }
 
@@ -298,8 +298,8 @@ func TestPurgeReadMessageWisps_DeletesAgedReadWisps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if purged != 1 {
-		t.Fatalf("purged = %d, want 1", purged)
+	if len(purged) != 1 {
+		t.Fatalf("purged = %d, want 1", len(purged))
 	}
 	if len(store.deleted) != 1 || store.deleted[0] != "read-old" {
 		t.Fatalf("deleted = %v, want [read-old]", store.deleted)
@@ -355,8 +355,8 @@ func TestPurgeReadMessageWisps_SkipsMessageUnreadAfterSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if purged != 0 {
-		t.Fatalf("purged = %d, want 0 (message was un-read after the snapshot)", purged)
+	if len(purged) != 0 {
+		t.Fatalf("purged = %d, want 0 (message was un-read after the snapshot)", len(purged))
 	}
 	if len(underlying.deleted) != 0 {
 		t.Fatalf("deleted = %v, want none", underlying.deleted)
@@ -391,8 +391,8 @@ func TestPurgeReadMessageWisps_SkipsMessageGoneAfterSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if purged != 0 {
-		t.Fatalf("purged = %d, want 0 (message already gone)", purged)
+	if len(purged) != 0 {
+		t.Fatalf("purged = %d, want 0 (message already gone)", len(purged))
 	}
 	if len(underlying.deleted) != 0 {
 		t.Fatalf("deleted = %v, want none", underlying.deleted)
@@ -422,8 +422,8 @@ func TestPurgeReadMessageWisps_SurfacesLiveRecheckError(t *testing.T) {
 	if err == nil {
 		t.Fatal("PurgeReadMessageWisps: want error, got nil (a live-read failure must not be swallowed)")
 	}
-	if purged != 0 {
-		t.Fatalf("purged = %d, want 0 (live re-verify failed)", purged)
+	if len(purged) != 0 {
+		t.Fatalf("purged = %d, want 0 (live re-verify failed)", len(purged))
 	}
 	if len(underlying.deleted) != 0 {
 		t.Fatalf("deleted = %v, want none", underlying.deleted)
@@ -448,8 +448,8 @@ func TestPurgeReadMessageWisps_DeleteErrorSurfacedAndContinues(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected delete error to be surfaced")
 	}
-	if purged != 1 {
-		t.Fatalf("purged = %d, want 1 (good deleted)", purged)
+	if len(purged) != 1 {
+		t.Fatalf("purged = %d, want 1 (good deleted)", len(purged))
 	}
 	if !contains(store.deleted, "good") {
 		t.Fatalf("deleted = %v, want to include good", store.deleted)
@@ -463,8 +463,8 @@ func TestPurgeReadMessageWisps_ListErrorSurfaced(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected list error to be surfaced")
 	}
-	if purged != 0 {
-		t.Fatalf("purged = %d, want 0", purged)
+	if len(purged) != 0 {
+		t.Fatalf("purged = %d, want 0", len(purged))
 	}
 }
 
@@ -493,16 +493,13 @@ func TestIsMessageBead(t *testing.T) {
 	}
 }
 
-// TestRetentionSweptReadMailStaysAddressableUntilPurge pins the boundary between
-// system-aged mail and user-removed mail through the Provider surface. The
-// always-on nudge-mail watchdog closes read mail past its TTL (stamping
-// RetentionSweepCloseReason) and PurgeReadMessageWisps deletes it later; during
-// that closed-but-not-purged window the message must stay addressable by direct
-// ID, matching pre-sweep behavior, so a caller holding the message ID still
-// resolves it. Only a message bead closed for a non-retention reason (a legacy
-// close-on-archive user removal) is not-found. This ties SweepReadMessagesBefore
-// to Provider.Get/Read/Reply so a future edit to isRemovedMessageBead cannot
-// silently diverge the retention path from the read path.
+// TestRetentionSweptReadMailStaysAddressableUntilPurge ties the retention sweep
+// to the Provider surface. The always-on nudge-mail watchdog closes read mail
+// past its TTL (stamping RetentionSweepCloseReason) and PurgeReadMessageWisps
+// deletes it later; during that closed-but-not-purged window the message is
+// archived: addressable by direct ID, listed by Archived, and absent from the
+// inbox views. Every closed message bead reads the same way, whatever closed
+// it.
 func TestRetentionSweptReadMailStaysAddressableUntilPurge(t *testing.T) {
 	store := beads.NewMemStore()
 	p := New(store)
@@ -526,8 +523,8 @@ func TestRetentionSweptReadMailStaysAddressableUntilPurge(t *testing.T) {
 	if len(closeErrs) != 0 {
 		t.Fatalf("sweep per-bead errors: %v", closeErrs)
 	}
-	if closed != 1 {
-		t.Fatalf("swept %d beads, want 1", closed)
+	if len(closed) != 1 || closed[0] != sent.ID {
+		t.Fatalf("swept IDs = %v, want [%s]", closed, sent.ID)
 	}
 
 	// Precondition: the bead is closed and carries the retention marker.
@@ -567,23 +564,31 @@ func TestRetentionSweptReadMailStaysAddressableUntilPurge(t *testing.T) {
 		}
 	}
 
-	// Contrast: a message bead closed for a non-retention reason is a user
-	// removal and must be not-found through the same direct-ID operations.
-	removed, err := p.Send("alice", "bob", "removed", "closed by a non-retention path")
+	archived, err := p.Archived("bob")
 	if err != nil {
-		t.Fatalf("Send removed: %v", err)
+		t.Fatalf("Archived after sweep: %v", err)
 	}
-	if err := store.SetMetadata(removed.ID, "close_reason", "manual removal: legacy close-on-archive path"); err != nil {
-		t.Fatalf("SetMetadata removed: %v", err)
+	if len(archived) != 1 || archived[0].ID != sent.ID || archived[0].Status != mail.StatusClosed {
+		t.Errorf("Archived after sweep = %+v, want the swept message, closed", archived)
 	}
-	if err := store.Close(removed.ID); err != nil {
-		t.Fatalf("Close removed: %v", err)
+
+	// A message closed for any other reason is archived the same way.
+	other, err := p.Send("alice", "bob", "closed elsewhere", "closed by a non-retention path")
+	if err != nil {
+		t.Fatalf("Send other: %v", err)
 	}
-	if _, err := p.Get(removed.ID); !errors.Is(err, mail.ErrNotFound) {
-		t.Errorf("Get(non-retention closed) = %v, want ErrNotFound", err)
+	if err := store.SetMetadata(other.ID, "close_reason", "manual close through bd, not the mail API"); err != nil {
+		t.Fatalf("SetMetadata other: %v", err)
 	}
-	if _, err := p.Reply(removed.ID, "bob", "too late", "must not create"); !errors.Is(err, mail.ErrNotFound) {
-		t.Errorf("Reply(non-retention closed) = %v, want ErrNotFound", err)
+	if err := store.Close(other.ID); err != nil {
+		t.Fatalf("Close other: %v", err)
+	}
+	got, err := p.Get(other.ID)
+	if err != nil {
+		t.Fatalf("Get(non-retention closed) = %v, want addressable", err)
+	}
+	if got.Status != mail.StatusClosed {
+		t.Errorf("Get(non-retention closed).Status = %q, want %q", got.Status, mail.StatusClosed)
 	}
 }
 

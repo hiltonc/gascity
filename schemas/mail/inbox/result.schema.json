@@ -66,6 +66,14 @@
         "read": {
           "type": "boolean"
         },
+        "status": {
+          "type": "string",
+          "enum": ["open", "closed"]
+        },
+        "closed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
         "thread_id": {
           "type": "string"
         },

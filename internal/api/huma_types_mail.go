@@ -41,7 +41,7 @@ type MailListInput struct {
 	BlockingParam
 	PaginationParam
 	Agent  string `query:"agent" required:"false" doc:"Filter by agent name."`
-	Status string `query:"status" required:"false" doc:"Filter by status (unread, all)."`
+	Status string `query:"status" required:"false" doc:"Filter by status: unread (default; open and unread), all (open, read and unread), closed (archived only), or any (open and archived)."`
 	Rig    string `query:"rig" required:"false" doc:"Filter by rig name."`
 }
 
@@ -81,6 +81,13 @@ type MailMarkUnreadInput struct {
 
 // MailArchiveInput is the Huma input for POST /v0/city/{cityName}/mail/{id}/archive.
 type MailArchiveInput struct {
+	CityScope
+	ID  string `path:"id" doc:"Message ID."`
+	Rig string `query:"rig" required:"false" doc:"Rig hint."`
+}
+
+// MailUnarchiveInput is the Huma input for POST /v0/city/{cityName}/mail/{id}/unarchive.
+type MailUnarchiveInput struct {
 	CityScope
 	ID  string `path:"id" doc:"Message ID."`
 	Rig string `query:"rig" required:"false" doc:"Rig hint."`

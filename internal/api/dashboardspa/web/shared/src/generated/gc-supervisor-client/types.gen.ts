@@ -1967,6 +1967,10 @@ export type MaintenanceTriggerBody = {
 export type Message = {
     body: string;
     cc?: Array<string> | null;
+    /**
+     * When the message was closed. Absent while open.
+     */
+    closed_at?: string;
     created_at: string;
     from: string;
     id: string;
@@ -1974,6 +1978,10 @@ export type Message = {
     read: boolean;
     reply_to?: string;
     rig?: string;
+    /**
+     * Message state: open, or closed once archived.
+     */
+    status: 'open' | 'closed';
     subject: string;
     thread_id?: string;
     to: string;
@@ -5410,6 +5418,8 @@ export type TypedEventStreamEnvelope = ({
 } & TypedEventStreamEnvelopeMailReplied) | ({
     type: 'mail.sent';
 } & TypedEventStreamEnvelopeMailSent) | ({
+    type: 'mail.unarchived';
+} & TypedEventStreamEnvelopeMailUnarchived) | ({
     type: 'molecule.resolved';
 } & TypedEventStreamEnvelopeMoleculeResolved) | ({
     type: 'order.completed';
@@ -6466,6 +6476,24 @@ export type TypedEventStreamEnvelopeMailSent = {
 };
 
 /**
+ * TypedEventStreamEnvelope mail.unarchived
+ */
+export type TypedEventStreamEnvelopeMailUnarchived = {
+    actor: string;
+    depends_on_step_ids?: Array<string>;
+    message?: string;
+    payload: MailEventPayload;
+    run_id?: string;
+    seq: number;
+    session_id?: string;
+    step_id?: string;
+    subject?: string;
+    ts: string;
+    type: 'mail.unarchived';
+    workflow?: WorkflowEventProjection;
+};
+
+/**
  * TypedEventStreamEnvelope molecule.resolved
  */
 export type TypedEventStreamEnvelopeMoleculeResolved = {
@@ -7457,6 +7485,8 @@ export type TypedTaggedEventStreamEnvelope = ({
 } & TypedTaggedEventStreamEnvelopeMailReplied) | ({
     type: 'mail.sent';
 } & TypedTaggedEventStreamEnvelopeMailSent) | ({
+    type: 'mail.unarchived';
+} & TypedTaggedEventStreamEnvelopeMailUnarchived) | ({
     type: 'molecule.resolved';
 } & TypedTaggedEventStreamEnvelopeMoleculeResolved) | ({
     type: 'order.completed';
@@ -8562,6 +8592,25 @@ export type TypedTaggedEventStreamEnvelopeMailSent = {
     subject?: string;
     ts: string;
     type: 'mail.sent';
+    workflow?: WorkflowEventProjection;
+};
+
+/**
+ * TypedTaggedEventStreamEnvelope mail.unarchived
+ */
+export type TypedTaggedEventStreamEnvelopeMailUnarchived = {
+    actor: string;
+    city: string;
+    depends_on_step_ids?: Array<string>;
+    message?: string;
+    payload: MailEventPayload;
+    run_id?: string;
+    seq: number;
+    session_id?: string;
+    step_id?: string;
+    subject?: string;
+    ts: string;
+    type: 'mail.unarchived';
     workflow?: WorkflowEventProjection;
 };
 
@@ -14133,7 +14182,7 @@ export type GetV0CityByCityNameMailData = {
          */
         agent?: string;
         /**
-         * Filter by status (unread, all).
+         * Filter by status: unread (default; open and unread), all (open, read and unread), closed (archived only), or any (open and archived).
          */
         status?: string;
         /**
@@ -14707,6 +14756,67 @@ export type ReplyMailResponses = {
 };
 
 export type ReplyMailResponse = ReplyMailResponses[keyof ReplyMailResponses];
+
+export type PostV0CityByCityNameMailByIdUnarchiveData = {
+    body?: never;
+    headers: {
+        /**
+         * Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks.
+         */
+        'X-GC-Request': string;
+    };
+    path: {
+        /**
+         * City name.
+         */
+        cityName: string;
+        /**
+         * Message ID.
+         */
+        id: string;
+    };
+    query?: {
+        /**
+         * Rig hint.
+         */
+        rig?: string;
+    };
+    url: '/v0/city/{cityName}/mail/{id}/unarchive';
+};
+
+export type PostV0CityByCityNameMailByIdUnarchiveErrors = {
+    /**
+     * Unauthorized
+     */
+    401: ErrorModel;
+    /**
+     * Forbidden
+     */
+    403: ErrorModel;
+    /**
+     * Not Found
+     */
+    404: ErrorModel;
+    /**
+     * Unprocessable Entity
+     */
+    422: ErrorModel;
+    /**
+     * Internal Server Error
+     */
+    500: ErrorModel;
+};
+
+export type PostV0CityByCityNameMailByIdUnarchiveError = PostV0CityByCityNameMailByIdUnarchiveErrors[keyof PostV0CityByCityNameMailByIdUnarchiveErrors];
+
+export type PostV0CityByCityNameMailByIdUnarchiveResponses = {
+    /**
+     * OK
+     */
+    200: OkResponseBody;
+};
+
+export type PostV0CityByCityNameMailByIdUnarchiveResponse = PostV0CityByCityNameMailByIdUnarchiveResponses[keyof PostV0CityByCityNameMailByIdUnarchiveResponses];
 
 export type TriggerMaintenanceDoltGcData = {
     body?: never;

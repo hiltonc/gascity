@@ -839,6 +839,7 @@ export const zMaintenanceTriggerBody = z.object({
 export const zMessage = z.object({
     body: z.string(),
     cc: z.array(z.string()).nullish(),
+    closed_at: z.iso.datetime().optional(),
     created_at: z.iso.datetime(),
     from: z.string(),
     id: z.string(),
@@ -846,6 +847,7 @@ export const zMessage = z.object({
     read: z.boolean(),
     reply_to: z.string().optional(),
     rig: z.string().optional(),
+    status: z.enum(['open', 'closed']),
     subject: z.string(),
     thread_id: z.string().optional(),
     to: z.string()
@@ -4460,6 +4462,24 @@ export const zTypedEventStreamEnvelopeMailSent = z.object({
 });
 
 /**
+ * TypedEventStreamEnvelope mail.unarchived
+ */
+export const zTypedEventStreamEnvelopeMailUnarchived = z.object({
+    actor: z.string(),
+    depends_on_step_ids: z.array(z.string()).optional(),
+    message: z.string().optional(),
+    payload: zMailEventPayload,
+    run_id: z.string().optional(),
+    seq: z.coerce.bigint().gte(BigInt(0)).max(BigInt('9223372036854775807'), { error: 'Invalid value: Expected int64 to be <= 9223372036854775807' }),
+    session_id: z.string().optional(),
+    step_id: z.string().optional(),
+    subject: z.string().optional(),
+    ts: z.iso.datetime(),
+    type: z.literal('mail.unarchived'),
+    workflow: zWorkflowEventProjection.optional()
+});
+
+/**
  * TypedEventStreamEnvelope molecule.resolved
  */
 export const zTypedEventStreamEnvelopeMoleculeResolved = z.object({
@@ -5399,6 +5419,7 @@ export const zTypedEventStreamEnvelope = z.discriminatedUnion('type', [
     zTypedEventStreamEnvelopeMailRead.extend({ type: z.literal('mail.read') }),
     zTypedEventStreamEnvelopeMailReplied.extend({ type: z.literal('mail.replied') }),
     zTypedEventStreamEnvelopeMailSent.extend({ type: z.literal('mail.sent') }),
+    zTypedEventStreamEnvelopeMailUnarchived.extend({ type: z.literal('mail.unarchived') }),
     zTypedEventStreamEnvelopeMoleculeResolved.extend({ type: z.literal('molecule.resolved') }),
     zTypedEventStreamEnvelopeOrderCompleted.extend({ type: z.literal('order.completed') }),
     zTypedEventStreamEnvelopeOrderFailed.extend({ type: z.literal('order.failed') }),
@@ -6467,6 +6488,25 @@ export const zTypedTaggedEventStreamEnvelopeMailSent = z.object({
 });
 
 /**
+ * TypedTaggedEventStreamEnvelope mail.unarchived
+ */
+export const zTypedTaggedEventStreamEnvelopeMailUnarchived = z.object({
+    actor: z.string(),
+    city: z.string(),
+    depends_on_step_ids: z.array(z.string()).optional(),
+    message: z.string().optional(),
+    payload: zMailEventPayload,
+    run_id: z.string().optional(),
+    seq: z.coerce.bigint().gte(BigInt(0)).max(BigInt('9223372036854775807'), { error: 'Invalid value: Expected int64 to be <= 9223372036854775807' }),
+    session_id: z.string().optional(),
+    step_id: z.string().optional(),
+    subject: z.string().optional(),
+    ts: z.iso.datetime(),
+    type: z.literal('mail.unarchived'),
+    workflow: zWorkflowEventProjection.optional()
+});
+
+/**
  * TypedTaggedEventStreamEnvelope molecule.resolved
  */
 export const zTypedTaggedEventStreamEnvelopeMoleculeResolved = z.object({
@@ -7455,6 +7495,7 @@ export const zTypedTaggedEventStreamEnvelope = z.discriminatedUnion('type', [
     zTypedTaggedEventStreamEnvelopeMailRead.extend({ type: z.literal('mail.read') }),
     zTypedTaggedEventStreamEnvelopeMailReplied.extend({ type: z.literal('mail.replied') }),
     zTypedTaggedEventStreamEnvelopeMailSent.extend({ type: z.literal('mail.sent') }),
+    zTypedTaggedEventStreamEnvelopeMailUnarchived.extend({ type: z.literal('mail.unarchived') }),
     zTypedTaggedEventStreamEnvelopeMoleculeResolved.extend({ type: z.literal('molecule.resolved') }),
     zTypedTaggedEventStreamEnvelopeOrderCompleted.extend({ type: z.literal('order.completed') }),
     zTypedTaggedEventStreamEnvelopeOrderFailed.extend({ type: z.literal('order.failed') }),
@@ -8760,6 +8801,24 @@ export const zReplyMailQuery = z.object({
  * Created
  */
 export const zReplyMailResponse = zMessage;
+
+export const zPostV0CityByCityNameMailByIdUnarchiveHeaders = z.object({
+    'X-GC-Request': z.string().min(1)
+});
+
+export const zPostV0CityByCityNameMailByIdUnarchivePath = z.object({
+    cityName: z.string().min(1).regex(/\S/),
+    id: z.string()
+});
+
+export const zPostV0CityByCityNameMailByIdUnarchiveQuery = z.object({
+    rig: z.string().optional()
+});
+
+/**
+ * OK
+ */
+export const zPostV0CityByCityNameMailByIdUnarchiveResponse = zOkResponseBody;
 
 export const zTriggerMaintenanceDoltGcHeaders = z.object({
     'X-GC-Request': z.string().min(1)

@@ -7,11 +7,28 @@ import (
 	"time"
 )
 
-// fakeMsg tracks a message with its read/archived status.
+// fakeMsg tracks a message with its read/archived status. closedAt is set
+// while the message is archived.
 type fakeMsg struct {
 	msg      Message
 	read     bool
 	archived bool
+	closedAt time.Time
+}
+
+// view returns the message as callers see it, with its current read and
+// open/closed state applied.
+func (fm fakeMsg) view() Message {
+	msg := fm.msg
+	msg.Read = fm.read
+	msg.Status = StatusOpen
+	msg.ClosedAt = nil
+	if fm.archived {
+		closedAt := fm.closedAt
+		msg.Status = StatusClosed
+		msg.ClosedAt = &closedAt
+	}
+	return msg
 }
 
 // FakeOptions controls nondeterministic values emitted by [Fake]. Nil
@@ -74,6 +91,7 @@ func (f *Fake) Send(from, to, subject, body string) (Message, error) {
 		Body:      body,
 		CreatedAt: f.now(),
 		ThreadID:  threadID,
+		Status:    StatusOpen,
 	}
 	f.messages = append(f.messages, fakeMsg{msg: m})
 	return m, nil
@@ -89,13 +107,13 @@ func (f *Fake) Inbox(recipient string) ([]Message, error) {
 	var result []Message
 	for _, fm := range f.messages {
 		if fm.msg.To == recipient && !fm.read && !fm.archived {
-			result = append(result, fm.msg)
+			result = append(result, fm.view())
 		}
 	}
 	return result, nil
 }
 
-// Get returns a message by ID without marking it as read.
+// Get returns a message by ID, open or archived, without marking it as read.
 func (f *Fake) Get(id string) (Message, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -103,10 +121,8 @@ func (f *Fake) Get(id string) (Message, error) {
 		return Message{}, fmt.Errorf("mail provider unavailable")
 	}
 	for _, fm := range f.messages {
-		if fm.msg.ID == id && !fm.archived {
-			msg := fm.msg
-			msg.Read = fm.read
-			return msg, nil
+		if fm.msg.ID == id {
+			return fm.view(), nil
 		}
 	}
 	return Message{}, fmt.Errorf("getting message %q: %w", id, ErrNotFound)
@@ -120,11 +136,9 @@ func (f *Fake) Read(id string) (Message, error) {
 		return Message{}, fmt.Errorf("mail provider unavailable")
 	}
 	for i := range f.messages {
-		if f.messages[i].msg.ID == id && !f.messages[i].archived {
+		if f.messages[i].msg.ID == id {
 			f.messages[i].read = true
-			msg := f.messages[i].msg
-			msg.Read = true
-			return msg, nil
+			return f.messages[i].view(), nil
 		}
 	}
 	return Message{}, fmt.Errorf("reading message %q: %w", id, ErrNotFound)
@@ -138,7 +152,7 @@ func (f *Fake) MarkRead(id string) error {
 		return fmt.Errorf("mail provider unavailable")
 	}
 	for i := range f.messages {
-		if f.messages[i].msg.ID == id && !f.messages[i].archived {
+		if f.messages[i].msg.ID == id {
 			f.messages[i].read = true
 			return nil
 		}
@@ -154,7 +168,7 @@ func (f *Fake) MarkUnread(id string) error {
 		return fmt.Errorf("mail provider unavailable")
 	}
 	for i := range f.messages {
-		if f.messages[i].msg.ID == id && !f.messages[i].archived {
+		if f.messages[i].msg.ID == id {
 			f.messages[i].read = false
 			return nil
 		}
@@ -162,7 +176,7 @@ func (f *Fake) MarkUnread(id string) error {
 	return fmt.Errorf("marking message %q unread: %w", id, ErrNotFound)
 }
 
-// Archive closes a message without reading it.
+// Archive closes a message without reading it. It stays readable by ID.
 func (f *Fake) Archive(id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -175,15 +189,64 @@ func (f *Fake) Archive(id string) error {
 				return ErrAlreadyArchived
 			}
 			f.messages[i].archived = true
+			f.messages[i].closedAt = f.now()
 			return nil
 		}
 	}
 	return fmt.Errorf("archiving message %q: %w", id, ErrNotFound)
 }
 
-// Delete is an alias for Archive.
+// Unarchive reopens an archived message.
+func (f *Fake) Unarchive(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.broken {
+		return fmt.Errorf("mail provider unavailable")
+	}
+	for i := range f.messages {
+		if f.messages[i].msg.ID == id {
+			if !f.messages[i].archived {
+				return ErrNotArchived
+			}
+			f.messages[i].archived = false
+			f.messages[i].closedAt = time.Time{}
+			return nil
+		}
+	}
+	return fmt.Errorf("unarchiving message %q: %w", id, ErrNotFound)
+}
+
+// Archived returns the archived messages for the recipient.
+func (f *Fake) Archived(recipient string) ([]Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.broken {
+		return nil, fmt.Errorf("mail provider unavailable")
+	}
+	var result []Message
+	for _, fm := range f.messages {
+		if fm.msg.To == recipient && fm.archived {
+			result = append(result, fm.view())
+		}
+	}
+	return result, nil
+}
+
+// Delete permanently removes a message, open or archived. Deleting a message
+// that no longer exists returns [ErrAlreadyArchived].
 func (f *Fake) Delete(id string) error {
-	return f.Archive(id)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.broken {
+		return fmt.Errorf("mail provider unavailable")
+	}
+	for i := range f.messages {
+		if f.messages[i].msg.ID == id {
+			f.messages = append(f.messages[:i], f.messages[i+1:]...)
+			return nil
+		}
+	}
+	return ErrAlreadyArchived
 }
 
 // ArchiveMany archives a batch of messages by looping over [Fake.Archive],
@@ -222,9 +285,7 @@ func (f *Fake) All(recipient string) ([]Message, error) {
 	var result []Message
 	for _, fm := range f.messages {
 		if fm.msg.To == recipient && !fm.archived {
-			msg := fm.msg
-			msg.Read = fm.read
-			result = append(result, msg)
+			result = append(result, fm.view())
 		}
 	}
 	return result, nil
@@ -245,7 +306,7 @@ func (f *Fake) Reply(id, from, subject, body string) (Message, error) {
 
 	var original *fakeMsg
 	for i := range f.messages {
-		if f.messages[i].msg.ID == id && !f.messages[i].archived {
+		if f.messages[i].msg.ID == id {
 			original = &f.messages[i]
 			break
 		}
@@ -269,6 +330,7 @@ func (f *Fake) Reply(id, from, subject, body string) (Message, error) {
 		CreatedAt: f.now(),
 		ThreadID:  threadID,
 		ReplyTo:   id,
+		Status:    StatusOpen,
 	}
 	f.messages = append(f.messages, fakeMsg{msg: m})
 	return m, nil
@@ -284,7 +346,7 @@ func (f *Fake) Thread(id string) ([]Message, error) {
 	}
 	threadID := id
 	for _, fm := range f.messages {
-		if fm.msg.ID == id && !fm.archived {
+		if fm.msg.ID == id {
 			threadID = fm.msg.ThreadID
 			break
 		}
@@ -292,9 +354,7 @@ func (f *Fake) Thread(id string) ([]Message, error) {
 	var result []Message
 	for _, fm := range f.messages {
 		if fm.msg.ThreadID == threadID && !fm.archived {
-			msg := fm.msg
-			msg.Read = fm.read
-			result = append(result, msg)
+			result = append(result, fm.view())
 		}
 	}
 	sort.Slice(result, func(i, j int) bool {
@@ -328,7 +388,7 @@ func (f *Fake) Messages() []Message {
 	defer f.mu.Unlock()
 	result := make([]Message, len(f.messages))
 	for i, fm := range f.messages {
-		result[i] = fm.msg
+		result[i] = fm.view()
 	}
 	return result
 }

@@ -9,7 +9,9 @@ import (
 )
 
 func TestBeadmailConformance(t *testing.T) {
-	mailtest.RunProviderTests(t, func(_ *testing.T) mail.Provider {
+	newProvider := func(_ *testing.T) mail.Provider {
 		return New(beads.NewMemStore())
-	})
+	}
+	mailtest.RunProviderTests(t, newProvider)
+	mailtest.RunArchiveRetentionTests(t, newProvider)
 }

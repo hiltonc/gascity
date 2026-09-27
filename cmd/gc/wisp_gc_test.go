@@ -16,6 +16,7 @@ import (
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/coordclass"
+	"github.com/gastownhall/gascity/internal/events"
 	"github.com/gastownhall/gascity/internal/mail"
 	"github.com/gastownhall/gascity/internal/sourceworkflow"
 )
@@ -62,7 +63,7 @@ func TestWispGCForConfigUsesMailRetentionTTL(t *testing.T) {
 	cfg.Daemon.WispGCInterval = "5m"
 	cfg.Mail.RetentionTTL = "1h"
 
-	wg := newWispGCForConfig(cfg)
+	wg := newWispGCForConfig(cfg, nil)
 	if wg == nil {
 		t.Fatal("newWispGCForConfig returned nil")
 	}
@@ -2607,5 +2608,33 @@ func TestWispGC_ReapResolvesRootsLive(t *testing.T) {
 	}
 	if reaped != 0 {
 		t.Fatalf("reaped %d; a step of a root the store has reopened was deleted on the cache's word", reaped)
+	}
+}
+
+// TestWispGC_ReadMessagePurgeRecordsMailDeleted pins that each read message the
+// retention arm purges is announced as mail.deleted, so a client syncing mail
+// by event index learns the message is gone.
+func TestWispGC_ReadMessagePurgeRecordsMailDeleted(t *testing.T) {
+	now := time.Now()
+	store := newGCStore([]beads.Bead{
+		makeGCMessageWisp("read-old", now.Add(-2*time.Hour), map[string]string{mail.ReadMetadataKey: "true"}),
+		makeGCMessageWisp("unread-old", now.Add(-2*time.Hour), map[string]string{mail.ReadMetadataKey: "false"}),
+	})
+	cfg := &config.City{}
+	cfg.Daemon.WispGCInterval = "5m"
+	cfg.Mail.RetentionTTL = "1h"
+	rec := events.NewFake()
+
+	wg := newWispGCForConfig(cfg, rec)
+	if _, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now); err != nil {
+		t.Fatalf("runGC: %v", err)
+	}
+	if len(rec.Events) != 1 {
+		t.Fatalf("recorded %d events, want 1: %+v", len(rec.Events), rec.Events)
+	}
+	got := rec.Events[0]
+	if got.Type != events.MailDeleted || got.Subject != "read-old" || got.Actor != mailSystemActor {
+		t.Errorf("event = {type %q subject %q actor %q}, want {%q %q %q}",
+			got.Type, got.Subject, got.Actor, events.MailDeleted, "read-old", mailSystemActor)
 	}
 }

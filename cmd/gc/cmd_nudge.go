@@ -2142,13 +2142,13 @@ func blockedQueuedWaitNudgeReason(sessFront *session.Store, item queuedNudge) (s
 }
 
 // blockedQueuedMailNudgeReason re-reads the mail message a queued mail nudge
-// announces. A message that has vanished (e.g. archived — gastownhall/gascity#4422
-// deletes the underlying bead) is withdrawn as "mail-missing" rather than
+// announces. A message that has left the mailbox — deleted, or archived (closed
+// but still readable by ID) — is withdrawn as "mail-missing" rather than
 // treated as an error, mirroring the wait path's not-found handling: the
 // obvious predicate "is this still unread" would otherwise never fire for an
-// archived message, since it's neither read nor unread. A message that has
-// been read since the nudge was queued is withdrawn as "mail-already-read",
-// which is #5321's primary target case.
+// archived message, which can still be unread. A message that has been read
+// since the nudge was queued is withdrawn as "mail-already-read", which is
+// #5321's primary target case.
 func blockedQueuedMailNudgeReason(mp mail.Provider, item queuedNudge) (string, bool, error) {
 	if mp == nil || item.Reference == nil || item.Reference.Kind != "mail" || item.Reference.ID == "" {
 		return "", false, nil
@@ -2159,6 +2159,9 @@ func blockedQueuedMailNudgeReason(mp mail.Provider, item queuedNudge) (string, b
 			return "mail-missing", true, nil
 		}
 		return "", false, err
+	}
+	if msg.Status == mail.StatusClosed {
+		return "mail-missing", true, nil
 	}
 	if msg.Read {
 		return "mail-already-read", true, nil

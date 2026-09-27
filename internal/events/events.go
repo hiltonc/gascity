@@ -110,6 +110,7 @@ const (
 	MailMarkedUnread         = "mail.marked_unread"
 	MailReplied              = "mail.replied"
 	MailDeleted              = "mail.deleted"
+	MailUnarchived           = "mail.unarchived"
 	SessionDraining          = "session.draining"
 	SessionUndrained         = "session.undrained"
 	SessionQuarantined       = "session.quarantined"
@@ -491,7 +492,7 @@ var KnownEventTypes = []string{
 	ExecutionClaimWindowExpired,
 	ExecutionStepStalled,
 	MailSent, MailRead, MailArchived, MailMarkedRead, MailMarkedUnread,
-	MailReplied, MailDeleted,
+	MailReplied, MailDeleted, MailUnarchived,
 	ConvoyCreated, ConvoyClosed,
 	ControllerStarted, ControllerStopped,
 	ControlStalled,

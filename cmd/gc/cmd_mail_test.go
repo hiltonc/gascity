@@ -55,7 +55,12 @@ func (countOnlyMailProvider) Archive(string) error                 { panic("unex
 func (countOnlyMailProvider) ArchiveMany([]string) ([]mail.ArchiveResult, error) {
 	panic("unexpected ArchiveMany")
 }
-func (countOnlyMailProvider) Delete(string) error { panic("unexpected Delete") }
+func (countOnlyMailProvider) Delete(string) error    { panic("unexpected Delete") }
+func (countOnlyMailProvider) Unarchive(string) error { panic("unexpected Unarchive") }
+func (countOnlyMailProvider) Archived(string) ([]mail.Message, error) {
+	panic("unexpected Archived")
+}
+
 func (countOnlyMailProvider) DeleteMany([]string) ([]mail.ArchiveResult, error) {
 	panic("unexpected DeleteMany")
 }
@@ -2498,23 +2503,40 @@ func TestMailDeleteMultiSuccess(t *testing.T) {
 		t.Errorf("recorded events = %d, want 3", n)
 	}
 	for _, id := range []string{"gc-1", "gc-2", "gc-3"} {
-		b, err := store.Get(id)
-		if err != nil {
-			t.Fatalf("Get(%s) after delete: %v (want bead retained)", id, err)
-		}
-		if b.Status != "closed" {
-			t.Errorf("bead %s status = %q, want \"closed\"", id, b.Status)
+		if _, err := store.Get(id); !errors.Is(err, beads.ErrNotFound) {
+			t.Errorf("Get(%s) after delete = %v, want ErrNotFound (message removed)", id, err)
 		}
 	}
 }
 
-func TestMailDeleteMultiPartialFailure(t *testing.T) {
-	mp := mail.NewFake()
-	m1, _ := mp.Send("human", "mayor", "", "one")
-	m2, _ := mp.Send("human", "mayor", "", "two")
-	if err := mp.Archive(m2.ID); err != nil {
-		t.Fatalf("pre-archive m2: %v", err)
+// failingDeleteProvider fails the delete of one message ID, so a batch delete
+// can exercise per-id error reporting alongside successes and repeats.
+type failingDeleteProvider struct {
+	*mail.Fake
+	failID string
+}
+
+func (p failingDeleteProvider) DeleteMany(ids []string) ([]mail.ArchiveResult, error) {
+	results := make([]mail.ArchiveResult, len(ids))
+	for i, id := range ids {
+		results[i] = mail.ArchiveResult{ID: id}
+		if id == p.failID {
+			results[i].Err = errors.New("store unavailable")
+			continue
+		}
+		results[i].Err = p.Delete(id)
 	}
+	return results, nil
+}
+
+func TestMailDeleteMultiPartialFailure(t *testing.T) {
+	fake := mail.NewFake()
+	m1, _ := fake.Send("human", "mayor", "", "one")
+	m2, _ := fake.Send("human", "mayor", "", "two")
+	if err := fake.Delete(m2.ID); err != nil {
+		t.Fatalf("pre-delete m2: %v", err)
+	}
+	mp := failingDeleteProvider{Fake: fake, failID: "ghost"}
 
 	var stdout, stderr bytes.Buffer
 	code := doMailDelete(mp, events.Discard, []string{m1.ID, m2.ID, "ghost"}, &stdout, &stderr)
@@ -2557,12 +2579,8 @@ func TestMailDeleteWhitespaceJoinedIDs(t *testing.T) {
 		t.Errorf("recorded events = %d, want 3", n)
 	}
 	for _, id := range []string{"gc-1", "gc-2", "gc-3"} {
-		b, err := store.Get(id)
-		if err != nil {
-			t.Fatalf("Get(%s) after delete: %v", id, err)
-		}
-		if b.Status != "closed" {
-			t.Errorf("bead %s status = %q, want closed", id, b.Status)
+		if _, err := store.Get(id); !errors.Is(err, beads.ErrNotFound) {
+			t.Errorf("Get(%s) after delete = %v, want ErrNotFound (message removed)", id, err)
 		}
 	}
 }

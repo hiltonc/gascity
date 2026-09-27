@@ -17,6 +17,18 @@ var ErrAlreadyArchived = errors.New("already archived")
 // ErrNotFound is returned when a message ID does not exist.
 var ErrNotFound = errors.New("message not found")
 
+// ErrNotArchived is returned by [Provider.Unarchive] when the message is
+// already open, so callers can skip announcing a reopen that did not happen.
+var ErrNotArchived = errors.New("not archived")
+
+const (
+	// StatusOpen marks a message that is live in the recipient's mailbox.
+	StatusOpen = "open"
+	// StatusClosed marks an archived message: still readable by ID and listed
+	// by [Provider.Archived], but absent from inbox views.
+	StatusClosed = "closed"
+)
+
 const (
 	// AutoHandoffLabel marks mail created by gc handoff --auto for provider
 	// context-cycle delivery.
@@ -60,6 +72,10 @@ type Message struct {
 	Priority  int       `json:"priority,omitempty"`
 	CC        []string  `json:"cc,omitempty"`
 	Rig       string    `json:"rig,omitempty"`
+	// Status is [StatusOpen] or [StatusClosed]. An archived message is closed.
+	Status string `json:"status" enum:"open,closed" doc:"Message state: open, or closed once archived."`
+	// ClosedAt is when the message was closed; nil while it is open.
+	ClosedAt *time.Time `json:"closed_at,omitempty" doc:"When the message was closed. Absent while open."`
 }
 
 // HandoffIntent is the domain-shaped request for handoff mail. It lets the
@@ -141,17 +157,28 @@ type Provider interface {
 	// MarkUnread marks a message as unread (removes "read" label).
 	MarkUnread(id string) error
 
-	// Archive removes a message from all views. Bead-backed implementations
-	// close the message bead, which keeps the row for history while taking it
-	// out of every mail view.
+	// Archive closes a message. It leaves the inbox views (Inbox, Check, All,
+	// Count, Thread) but stays readable by ID and is listed by Archived.
+	// Archiving a closed message returns [ErrAlreadyArchived].
 	Archive(id string) error
+
+	// Unarchive reopens an archived message, returning it to the inbox views.
+	// It returns [ErrNotFound] for a message that does not exist and
+	// [ErrNotArchived] for one that is already open.
+	Unarchive(id string) error
+
+	// Archived returns the closed (archived) messages for the recipient,
+	// read and unread.
+	Archived(recipient string) ([]Message, error)
 
 	// ArchiveMany archives a batch of messages in one round-trip where the
 	// backend supports it, returning per-id results in input order.
 	// Implementations MUST preserve per-id error reporting.
 	ArchiveMany(ids []string) ([]ArchiveResult, error)
 
-	// Delete is an alias for Archive.
+	// Delete permanently removes a message, open or archived. Unlike Archive
+	// it is destructive: a deleted message is no longer readable by ID.
+	// Deleting a message that no longer exists returns [ErrAlreadyArchived].
 	Delete(id string) error
 
 	// DeleteMany deletes a batch of messages in one round-trip where the
