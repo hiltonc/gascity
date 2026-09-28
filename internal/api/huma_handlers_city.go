@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/gastownhall/gascity/internal/api/apierr"
@@ -87,18 +88,12 @@ func (s *Server) humaHandleProviderReadiness(ctx context.Context, input *Provide
 
 // humaHandleReadiness is the Huma-typed handler for GET /v0/readiness.
 func (s *Server) humaHandleReadiness(ctx context.Context, input *ReadinessInput) (*ReadinessOutput, error) {
-	items, err := parseRequestedReadinessItems(
-		input.Items,
-		"items",
-		defaultReadinessItems,
-		supportedReadiness,
-	)
+	resp, err := ProbeReadiness(ctx, input.Items, input.Fresh)
 	if err != nil {
-		return nil, apierr.InvalidRequest.Msg(err.Error())
-	}
-
-	resp, err := buildReadinessResponse(ctx, items, input.Fresh)
-	if err != nil {
+		var invalid *InvalidReadinessItemsError
+		if errors.As(err, &invalid) {
+			return nil, apierr.InvalidRequest.Msg(err.Error())
+		}
 		return nil, apierr.Internal.Msg(err.Error())
 	}
 
