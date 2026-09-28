@@ -313,12 +313,12 @@ func packsLockSHA256(cityPath string) string {
 }
 
 func (sm *SupervisorMux) humaHandleReadiness(ctx context.Context, input *SupervisorReadinessInput) (*SupervisorReadinessOutput, error) {
-	items, err := parseRequestedReadinessItems(input.Items, "items", defaultReadinessItems, supportedReadiness)
+	resp, err := ProbeReadiness(ctx, input.Items, input.Fresh)
 	if err != nil {
-		return nil, apierr.InvalidRequest.Msg("invalid: " + err.Error())
-	}
-	resp, err := buildReadinessResponse(ctx, items, input.Fresh)
-	if err != nil {
+		var invalid *InvalidReadinessItemsError
+		if errors.As(err, &invalid) {
+			return nil, apierr.InvalidRequest.Msg("invalid: " + err.Error())
+		}
 		return nil, apierr.Internal.Msg("internal: " + err.Error())
 	}
 	out := &SupervisorReadinessOutput{}

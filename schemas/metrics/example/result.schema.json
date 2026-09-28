@@ -216,7 +216,10 @@
               "worktree-cleanup",
               "worktree-ensure",
               "worktree-verify",
-              "storage-preflight"
+              "storage-preflight",
+              "session-pending",
+              "session-stop-turn",
+              "status-readiness"
             ]
           },
           "event_id": {

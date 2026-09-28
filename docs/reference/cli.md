@@ -4018,10 +4018,12 @@ gc session
 | [gc session new](#gc-session-new) | Create a new chat session from an agent template |
 | [gc session nudge](#gc-session-nudge) | Send a text message to a running session |
 | [gc session peek](#gc-session-peek) | View session output without attaching |
+| [gc session pending](#gc-session-pending) | List sessions awaiting a human decision |
 | [gc session pin](#gc-session-pin) | Keep a session awake |
 | [gc session prune](#gc-session-prune) | Close old dormant sessions |
 | [gc session rename](#gc-session-rename) | Rename a session |
 | [gc session reset](#gc-session-reset) | Restart a session fresh while preserving the bead |
+| [gc session stop-turn](#gc-session-stop-turn) | Interrupt a session's running turn and wait for idle |
 | [gc session submit](#gc-session-submit) | Submit a message with semantic delivery intent |
 | [gc session suspend](#gc-session-suspend) | Suspend a session (save state, free resources) |
 | [gc session unpin](#gc-session-unpin) | Remove a session awake pin |
@@ -4201,6 +4203,33 @@ gc session peek <session-id-or-alias> [flags]
 | `--json` | bool |  | emit JSONL result |
 | `--lines` | int | `50` | number of lines to capture |
 
+## gc session pending
+
+List the active sessions whose runtime is waiting on a human decision,
+such as a tool approval or a prompt for input.
+
+Each active session's runtime is asked directly (for tmux, by matching the
+approval prompt in the pane). This is the same aggregate the supervisor serves
+at GET /v0/city/&#123;cityName&#125;/pending, and --json emits that route's response body
+with one addition: the CLI's "ok": true field. The route's X-GC-Index and
+cache-age response headers have no CLI equivalent. Sessions whose probe fails
+are listed in partial_errors rather than failing the command.
+
+```
+gc session pending [flags]
+```
+
+**Example:**
+
+```
+gc session pending
+gc session pending --json
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--json` | bool |  | emit the GET /v0/city/&#123;cityName&#125;/pending response body |
+
 ## gc session pin
 
 Keep a session awake by setting its durable pin override.
@@ -4273,6 +4302,34 @@ gc session reset <session-id-or-alias> [flags]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--json` | bool |  | emit JSONL |
+
+## gc session stop-turn
+
+Interrupt the turn a session is currently running and wait until the
+session is back at an idle prompt.
+
+This sends the provider's own interrupt, the same operation the supervisor
+performs for POST /v0/city/&#123;cityName&#125;/session/&#123;id&#125;/stop; --json emits that
+route's response body (&#123;"status":"ok","id":...&#125;) plus the CLI's "ok": true
+field. It sends no message. To interrupt and hand the session
+new instructions, use "gc session submit --intent interrupt_now".
+
+Accepts a session ID (e.g., gc-42) or session alias (e.g., mayor).
+
+```
+gc session stop-turn <session-id-or-alias> [flags]
+```
+
+**Example:**
+
+```
+gc session stop-turn mayor
+gc session stop-turn gc-42 --json
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--json` | bool |  | emit the POST /v0/city/&#123;cityName&#125;/session/&#123;id&#125;/stop response body |
 
 ## gc session submit
 
@@ -4551,6 +4608,41 @@ gc status [path|name] [flags]
 |------|------|---------|-------------|
 | `--format` | string |  | Output format: text or json |
 | `--json` | bool |  | Output in JSON format |
+
+| Subcommand | Description |
+|------------|-------------|
+| [gc status readiness](#gc-status-readiness) | Show whether each provider CLI is installed and logged in |
+
+## gc status readiness
+
+Probe each provider CLI (and the GitHub CLI) on this host and report
+whether it is installed and logged in.
+
+This is the same probe the supervisor serves at GET /v0/city/&#123;cityName&#125;/readiness,
+and --json emits that route's response body plus the CLI's "ok": true field.
+It probes the host's CLI logins directly, so it needs neither a city nor a
+running supervisor.
+
+Statuses: configured, needs_auth, not_installed, invalid_configuration,
+probe_error.
+
+```
+gc status readiness [flags]
+```
+
+**Example:**
+
+```
+gc status readiness
+gc status readiness --items claude,codex --json
+gc status readiness --fresh
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--fresh` | bool |  | bypass the short-lived probe cache |
+| `--items` | string |  | comma-separated items to probe (default: claude,codex,gemini,github_cli) |
+| `--json` | bool |  | emit the GET /v0/city/&#123;cityName&#125;/readiness response body |
 
 ## gc stop
 
