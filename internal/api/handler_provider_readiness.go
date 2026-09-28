@@ -237,6 +237,34 @@ func ProbeProviders(ctx context.Context, providers []string, fresh bool) (map[st
 	return out, nil
 }
 
+// ReadinessResponse is the body of GET /v0/readiness and
+// GET /v0/city/{cityName}/readiness. It is an alias so the OpenAPI schema
+// keeps its existing name.
+type ReadinessResponse = readinessResponse
+
+// InvalidReadinessItemsError reports a readiness items list that names an
+// unsupported item or no items at all. HTTP callers map it to 400.
+type InvalidReadinessItemsError struct {
+	err error
+}
+
+func (e *InvalidReadinessItemsError) Error() string { return e.err.Error() }
+
+func (e *InvalidReadinessItemsError) Unwrap() error { return e.err }
+
+// ProbeReadiness answers the readiness routes: it parses the comma-separated
+// items list (empty means the default set claude,codex,gemini,github_cli),
+// then probes each item's CLI login. Both readiness routes and
+// `gc status readiness` call it, so the defaults, validation and probes cannot
+// drift between them. A bad items list returns *InvalidReadinessItemsError.
+func ProbeReadiness(ctx context.Context, itemsCSV string, fresh bool) (ReadinessResponse, error) {
+	items, err := parseRequestedReadinessItems(itemsCSV, "items", defaultReadinessItems, supportedReadiness)
+	if err != nil {
+		return ReadinessResponse{}, &InvalidReadinessItemsError{err: err}
+	}
+	return buildReadinessResponse(ctx, items, fresh)
+}
+
 func parseRequestedReadinessItems(
 	raw string,
 	paramName string,

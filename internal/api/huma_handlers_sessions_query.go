@@ -3,17 +3,14 @@ package api
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"strings"
 
 	"github.com/gastownhall/gascity/internal/api/apierr"
 	"github.com/gastownhall/gascity/internal/beads"
-	"github.com/gastownhall/gascity/internal/runtime"
 	"github.com/gastownhall/gascity/internal/session"
 	"github.com/gastownhall/gascity/internal/sessionlog"
 	"github.com/gastownhall/gascity/internal/worker"
-	"golang.org/x/sync/errgroup"
 )
 
 // Query-side session handlers (list, get, transcript, pending, agent-list,
@@ -400,31 +397,19 @@ func (s *Server) humaHandleSessionPending(_ context.Context, input *SessionIDInp
 
 // --- City Pending Aggregate ---
 
-// cityPendingProbeConcurrency bounds the city pending aggregate's per-session
-// probe fan-out so a many-session city neither serializes expensive runtime
-// probes nor floods the provider with unbounded concurrent captures.
-const cityPendingProbeConcurrency = 8
-
-// cityPendingProbeRow is one probed session and its pending-probe outcome.
-type cityPendingProbeRow struct {
-	info      session.Info
-	pending   *runtime.PendingInteraction
-	supported bool
-	err       error
-}
-
 // cityPendingSnapshot is one pass over the city's probe set: every session
 // probed, in deterministic order, plus the listing's own partial errors.
 // listingPartial means the session listing itself was incomplete, so a session
 // missing from rows may still exist.
 type cityPendingSnapshot struct {
-	rows           []cityPendingProbeRow
+	rows           []session.CityPendingProbe
 	listingErrors  []string
 	listingPartial bool
 }
 
 // probeCityPending probes every session that could be holding a pending
-// decision. It backs GET /v0/city/{cityName}/pending. The controller's
+// decision through session.Manager.ProbeCityPending, the probe `gc session
+// pending` shares. It backs GET /v0/city/{cityName}/pending. The controller's
 // pending-interaction lane (cmd/gc pending_interaction_lane.go), which
 // publishes session.pending transitions, probes the same active set through
 // the same runtime detector.
@@ -449,31 +434,7 @@ func (s *Server) probeCityPending() (cityPendingSnapshot, error) {
 	if err != nil {
 		return cityPendingSnapshot{}, err
 	}
-	// ListFromInfos takes a comma-separated state filter; StateNone is the empty
-	// string, so this resolves to "active," — both states, closed beads still
-	// excluded by the status guard (sessionMatchesFiltersInfo).
-	stateFilter := strings.Join([]string{string(session.StateActive), string(session.StateNone)}, ",")
-	sessions := mgr.ListFromInfos(infos, stateFilter, "")
-
-	// Probe sessions concurrently with bounded fan-out. Pending() can be
-	// expensive per session (e.g. a tmux pane capture), so probing a
-	// many-session city sequentially adds avoidable latency and provider load;
-	// the limit keeps a large city from spawning an unbounded probe storm.
-	// PendingByName reuses each session's already-resolved runtime name,
-	// skipping the redundant per-session bead-store lookup that Pending(id)
-	// would perform. Each goroutine writes its own slot in rows, so the
-	// result stays in session order regardless of probe completion order.
-	rows := make([]cityPendingProbeRow, len(sessions))
-	group := new(errgroup.Group)
-	group.SetLimit(cityPendingProbeConcurrency)
-	for i, sess := range sessions {
-		group.Go(func() error {
-			pending, supported, pErr := mgr.PendingByName(sess.SessionName)
-			rows[i] = cityPendingProbeRow{info: sess, pending: pending, supported: supported, err: pErr}
-			return nil
-		})
-	}
-	_ = group.Wait()
+	rows := mgr.ProbeCityPending(infos)
 
 	return cityPendingSnapshot{
 		rows:           rows,
@@ -505,32 +466,11 @@ func (s *Server) humaHandleCityPending(_ context.Context, _ *CityPendingInput) (
 		return nil, apierr.Internal.Msg(err.Error())
 	}
 
-	partialErrors := snap.listingErrors
-	entries := make([]cityPendingEntry, 0, len(snap.rows))
-	for _, row := range snap.rows {
-		if row.err != nil {
-			partialErrors = append(partialErrors, fmt.Sprintf("session %s: %v", row.info.ID, row.err))
-			continue
-		}
-		if !row.supported || row.pending == nil {
-			continue
-		}
-		entries = append(entries, cityPendingEntry{
-			SessionID: row.info.ID,
-			RequestID: row.pending.RequestID,
-			Kind:      row.pending.Kind,
-		})
-	}
-
+	entries, probeErrors := session.CityPendingEntries(snap.rows)
 	return &ListOutput[cityPendingEntry]{
 		Index:     s.latestIndex(),
 		CacheAgeS: cacheAgeSeconds(store.Store),
-		Body: ListBody[cityPendingEntry]{
-			Items:         entries,
-			Total:         len(entries),
-			Partial:       len(partialErrors) > 0,
-			PartialErrors: partialErrors,
-		},
+		Body:      CityPendingBody(entries, append(snap.listingErrors, probeErrors...)),
 	}, nil
 }
 
