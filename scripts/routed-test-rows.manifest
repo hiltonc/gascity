@@ -18,6 +18,7 @@ cmd/gc/cmd_mail_test.go
 cmd/gc/cmd_maintenance_test.go
 cmd/gc/cmd_order_test.go
 cmd/gc/cmd_rig_test.go
+cmd/gc/cmd_session_pending_test.go
 cmd/gc/cmd_session_test.go
 cmd/gc/cmd_status_test.go
 cmd/gc/cmd_wait_test.go

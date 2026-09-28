@@ -266,7 +266,6 @@ go_library(
         "@com_github_fsnotify_fsnotify//:fsnotify",
         "@com_github_go_sql_driver_mysql//:mysql",
         "@in_gopkg_yaml_v3//:yaml_v3",
-        "@org_golang_x_sync//errgroup",
         "@org_golang_x_sync//singleflight",
     ],
 )
@@ -288,6 +287,7 @@ go_test(
         "cache_liveness_test.go",
         "cache_read_model_tier_test.go",
         "class_store_test.go",
+        "cli_projection_test.go",
         "client_extmsg_test.go",
         "client_remote_test.go",
         "client_sling_test.go",

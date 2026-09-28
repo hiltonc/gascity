@@ -157,6 +157,7 @@ all agents with running status, rigs, and a summary count.`,
 	}
 	cmd.Flags().BoolVar(&jsonFlag, "json", false, "Output in JSON format")
 	cmd.Flags().StringVar(&formatFlag, "format", "", "Output format: text or json")
+	cmd.AddCommand(newStatusReadinessCmd(stdout, stderr))
 	return cmd
 }
 

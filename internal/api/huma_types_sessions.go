@@ -35,6 +35,31 @@ type cityPendingEntry struct {
 	Kind      string `json:"kind" doc:"Pending interaction kind (e.g. tool-approval, prompt-for-input)."`
 }
 
+// CityPendingEntry is the exported name of the city pending aggregate's item,
+// for CLI callers that emit the same body the route does. It is an alias so
+// the OpenAPI schema keeps its existing name.
+type CityPendingEntry = cityPendingEntry
+
+// CityPendingBody builds the GET /v0/city/{cityName}/pending response body
+// from session.Manager.CityPending output. partialErrors combines read-model
+// and per-session probe failures; any entry marks the body partial.
+func CityPendingBody(pending []session.CityPendingEntry, partialErrors []string) ListBody[CityPendingEntry] {
+	items := make([]CityPendingEntry, 0, len(pending))
+	for _, p := range pending {
+		items = append(items, CityPendingEntry{
+			SessionID: p.SessionID,
+			RequestID: p.RequestID,
+			Kind:      p.Kind,
+		})
+	}
+	return ListBody[CityPendingEntry]{
+		Items:         items,
+		Total:         len(items),
+		Partial:       len(partialErrors) > 0,
+		PartialErrors: partialErrors,
+	}
+}
+
 // SessionGetInput is the Huma input for GET /v0/city/{cityName}/session/{id}.
 type SessionGetInput struct {
 	CityScope

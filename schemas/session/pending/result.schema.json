@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Body of GET /v0/city/{cityName}/pending, plus the CLI's ok field.",
+  "type": "object",
+  "required": ["ok", "items", "total"],
+  "properties": {
+    "ok": { "const": true },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["session_id", "request_id", "kind"],
+        "properties": {
+          "session_id": { "type": "string" },
+          "request_id": { "type": "string" },
+          "kind": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "total": { "type": "integer", "minimum": 0 },
+    "next_cursor": { "type": "string" },
+    "partial": { "type": "boolean" },
+    "partial_errors": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": true
+}

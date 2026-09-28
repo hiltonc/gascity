@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Body of POST /v0/city/{cityName}/session/{id}/stop, plus the CLI's ok field.",
+  "type": "object",
+  "required": ["ok", "status", "id"],
+  "properties": {
+    "ok": { "const": true },
+    "status": { "const": "ok" },
+    "id": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": true
+}
