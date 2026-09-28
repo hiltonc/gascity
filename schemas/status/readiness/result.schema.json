@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Body of GET /v0/city/{cityName}/readiness, plus the CLI's ok field.",
+  "type": "object",
+  "required": ["ok", "items"],
+  "properties": {
+    "ok": { "const": true },
+    "items": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["name", "kind", "display_name", "status"],
+        "properties": {
+          "name": { "type": "string" },
+          "kind": { "type": "string", "enum": ["provider", "tool"] },
+          "display_name": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["configured", "needs_auth", "not_installed", "invalid_configuration", "probe_error"]
+          },
+          "detail": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

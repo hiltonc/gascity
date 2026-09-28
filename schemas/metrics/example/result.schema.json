@@ -221,7 +221,10 @@
               "beads-city-migrate-proxied",
               "storage-repair-sequence",
               "runtime-workdir-export",
-              "agent-is-foreign"
+              "agent-is-foreign",
+              "session-pending",
+              "session-stop-turn",
+              "status-readiness"
             ]
           },
           "event_id": {

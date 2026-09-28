@@ -9,6 +9,7 @@ go_library(
         "canonical_identity.go",
         "chat.go",
         "circuit_state.go",
+        "city_pending.go",
         "create.go",
         "create_options.go",
         "info_apply_patch.go",
@@ -72,6 +73,7 @@ go_library(
         "//internal/sessionlog",
         "//internal/telemetry",
         "//internal/worker/transcript",
+        "@org_golang_x_sync//errgroup",
     ],
 )
 
@@ -84,6 +86,7 @@ go_test(
         "chat_empty_session_key_test.go",
         "chat_test.go",
         "circuit_state_test.go",
+        "city_pending_test.go",
         "create_options_test.go",
         "create_test.go",
         "enrich_and_twins_test.go",
