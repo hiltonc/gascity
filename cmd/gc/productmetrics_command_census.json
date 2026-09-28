@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "next_id": 210,
+  "next_id": 213,
   "permanent_ids": [
     {
       "name": "help",
@@ -3721,6 +3721,21 @@
       "id": 147
     },
     {
+      "path": "gc session pending",
+      "aliases": [],
+      "conditional_modes": [],
+      "hidden": false,
+      "effective_hidden": false,
+      "disable_flag_parsing": false,
+      "shape": "runnable",
+      "recording_policy": "recordable",
+      "mode": "standard",
+      "notice_policy": "eligible",
+      "classification": "session-pending",
+      "owner": "immediate",
+      "id": 210
+    },
+    {
       "path": "gc session pin",
       "aliases": [],
       "conditional_modes": [],
@@ -3779,6 +3794,21 @@
       "classification": "session-reset",
       "owner": "immediate",
       "id": 151
+    },
+    {
+      "path": "gc session stop-turn",
+      "aliases": [],
+      "conditional_modes": [],
+      "hidden": false,
+      "effective_hidden": false,
+      "disable_flag_parsing": false,
+      "shape": "runnable",
+      "recording_policy": "recordable",
+      "mode": "standard",
+      "notice_policy": "eligible",
+      "classification": "session-stop-turn",
+      "owner": "immediate",
+      "id": 211
     },
     {
       "path": "gc session submit",
@@ -3986,13 +4016,28 @@
       "hidden": false,
       "effective_hidden": false,
       "disable_flag_parsing": false,
-      "shape": "runnable",
+      "shape": "runnable-group",
       "recording_policy": "recordable",
       "mode": "standard",
       "notice_policy": "eligible",
       "classification": "status",
       "owner": "immediate",
       "id": 163
+    },
+    {
+      "path": "gc status readiness",
+      "aliases": [],
+      "conditional_modes": [],
+      "hidden": false,
+      "effective_hidden": false,
+      "disable_flag_parsing": false,
+      "shape": "runnable",
+      "recording_policy": "recordable",
+      "mode": "standard",
+      "notice_policy": "eligible",
+      "classification": "status-readiness",
+      "owner": "immediate",
+      "id": 212
     },
     {
       "path": "gc stop",

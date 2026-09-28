@@ -98,6 +98,13 @@ func (c *SessionCatalog) ListFromInfos(infos []SessionInfo, stateFilter, templat
 	return c.manager.ListFromInfos(infos, stateFilter, templateFilter)
 }
 
+// CityPending reports which sessions in a pre-loaded Info feed are awaiting a
+// human decision, via session.Manager.CityPending. It keeps cmd/gc on the
+// worker boundary while sharing the aggregate the pending route uses.
+func (c *SessionCatalog) CityPending(infos []SessionInfo) ([]sessionpkg.CityPendingEntry, []string) {
+	return c.manager.CityPending(infos)
+}
+
 // SubmissionCapabilities reports whether the session can accept submit-style input.
 func (c *SessionCatalog) SubmissionCapabilities(id string) (SessionSubmissionCapabilities, error) {
 	return c.manager.SubmissionCapabilities(id)
