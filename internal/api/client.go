@@ -622,8 +622,18 @@ func NewCityScopedClient(baseURL, cityName string) *Client {
 	return newClient(baseURL, cityName)
 }
 
+// NewCityScopedClientWithHTTPClient is NewCityScopedClient over a
+// caller-supplied HTTP client, so the caller owns the transport (for
+// example one that serves an in-process http.Handler without a listener).
+func NewCityScopedClientWithHTTPClient(baseURL, cityName string, httpClient *http.Client) *Client {
+	return newClientWithHTTPClient(baseURL, cityName, httpClient)
+}
+
 func newClient(baseURL, cityName string) *Client {
-	httpClient := &http.Client{Timeout: defaultClientTimeout}
+	return newClientWithHTTPClient(baseURL, cityName, &http.Client{Timeout: defaultClientTimeout})
+}
+
+func newClientWithHTTPClient(baseURL, cityName string, httpClient *http.Client) *Client {
 	cw, err := genclient.NewClientWithResponses(
 		baseURL,
 		genclient.WithHTTPClient(httpClient),
@@ -1425,6 +1435,74 @@ func (c *Client) KillSession(id string) error {
 	}
 	resp, err := c.cw.PostV0CityByCityNameSessionByIdKillWithResponse(context.Background(), c.cityName, id, nil)
 	return checkMutation(resp, err)
+}
+
+// StopSessionTurn interrupts a session's running turn and waits for it to
+// settle idle via POST /v0/city/{cityName}/session/{id}/stop. It returns the
+// resolved session id the server reports.
+func (c *Client) StopSessionTurn(id string) (string, error) {
+	if err := c.requireCityScope(); err != nil {
+		return "", err
+	}
+	resp, err := c.cw.PostV0CityByCityNameSessionByIdStopWithResponse(context.Background(), c.cityName, id, nil)
+	if err := checkMutation(resp, err); err != nil {
+		return "", err
+	}
+	if resp.JSON200 == nil || resp.JSON200.Id == nil {
+		return id, nil
+	}
+	return *resp.JSON200.Id, nil
+}
+
+// CityPending fetches the city-wide snapshot of sessions awaiting a human
+// decision via GET /v0/city/{cityName}/pending.
+func (c *Client) CityPending() (CachedRead[ListBody[CityPendingEntry]], error) {
+	if err := c.requireCityScope(); err != nil {
+		return CachedRead[ListBody[CityPendingEntry]]{}, err
+	}
+	resp, err := c.cw.GetV0CityByCityNamePendingWithResponse(context.Background(), c.cityName)
+	if err != nil {
+		return CachedRead[ListBody[CityPendingEntry]]{}, &connError{err: fmt.Errorf("request failed: %w", err)}
+	}
+	if resp == nil {
+		return CachedRead[ListBody[CityPendingEntry]]{}, &connError{err: fmt.Errorf("nil response")}
+	}
+	if err := apiErrorFromResponse(resp.StatusCode(), pdOf(resp)); err != nil {
+		return CachedRead[ListBody[CityPendingEntry]]{}, err
+	}
+	return CachedRead[ListBody[CityPendingEntry]]{
+		Body:       cityPendingBodyFromGen(resp.JSON200),
+		AgeSeconds: cacheAgeFromResponse(resp.HTTPResponse),
+	}, nil
+}
+
+// cityPendingBodyFromGen converts the generated pending list body into the
+// server-side wire type, so API and local callers emit one shape.
+func cityPendingBodyFromGen(g *genclient.ListBodyCityPendingEntry) ListBody[CityPendingEntry] {
+	body := ListBody[CityPendingEntry]{Items: []CityPendingEntry{}}
+	if g == nil {
+		return body
+	}
+	if g.Items != nil {
+		for _, it := range *g.Items {
+			body.Items = append(body.Items, CityPendingEntry{
+				SessionID: it.SessionId,
+				RequestID: it.RequestId,
+				Kind:      it.Kind,
+			})
+		}
+	}
+	body.Total = int(g.Total)
+	if g.NextCursor != nil {
+		body.NextCursor = *g.NextCursor
+	}
+	if g.Partial != nil {
+		body.Partial = *g.Partial
+	}
+	if g.PartialErrors != nil {
+		body.PartialErrors = append([]string(nil), (*g.PartialErrors)...)
+	}
+	return body
 }
 
 // SendSessionMessage delivers a message to a session via the async
