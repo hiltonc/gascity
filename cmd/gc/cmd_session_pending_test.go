@@ -180,15 +180,103 @@ func TestRouteSessionPendingAPIEmitsRouteBody(t *testing.T) {
 	}
 }
 
-func TestRouteSessionPendingAPINotFoundDoesNotFallBack(t *testing.T) {
-	c := inProcessAPIClient("test-city", problemHandler(http.StatusNotFound, "not_found: no such city")(t))
+// ---------------------------------------------------------------------------
+// Read-path routing matrix for `gc session pending` (enforced by
+// scripts/check-routed-test-rows.sh). The API leg serves session "gc-api"; the
+// local leg probes the fake runtime, whose one session is awaiting approval, so
+// stdout names which leg answered.
+//
+//   api-happy-path       /pending 200                   route=api, exit 0
+//   api-cache-not-live   503 cache_not_live             fallback, exit 0
+//   api-500-fallback     generic 500                    fallback (conn-refused)
+//   api-404-error        404 problem+json               no fallback, exit 1
+//   controller-down      apiClient returns nil          fallback (controller-down)
+//   escape-hatch         GC_NO_API truthy               fallback (escape-hatch)
+//
+// `gc session stop-turn` and `gc status readiness` carry no rows: stop-turn is
+// a write that routes API-first to reach in-process runtimes, not a read with a
+// store fallback, and readiness probes the host in-process with no API client.
+// ---------------------------------------------------------------------------
 
-	var stdout, stderr bytes.Buffer
-	if code := routeSessionPending(c, "", true, &stdout, &stderr); code == 0 {
-		t.Fatalf("routeSessionPending = 0, want failure; stdout=%s", stdout.String())
+// okSessionPendingHandler serves the pending route with one API-only session.
+func okSessionPendingHandler(_ *testing.T) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v0/city/test-city/pending" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(api.ListBody[api.CityPendingEntry]{ //nolint:errcheck
+			Items: []api.CityPendingEntry{{SessionID: "gc-api", RequestID: "req-api", Kind: "approval"}},
+			Total: 1,
+		})
+	})
+}
+
+func TestRouteSessionPending_SixRowMatrix(t *testing.T) {
+	tests := []struct {
+		name         string
+		handler      func(*testing.T) http.Handler
+		useNilClient bool
+		nilReason    string
+		wantExit     int
+		wantRoute    string
+		wantReason   string
+		wantStderr   string
+		wantLocal    bool
+	}{
+		{name: "api-happy-path", handler: okSessionPendingHandler, wantExit: 0, wantRoute: "api"},
+		{name: "api-cache-not-live", handler: problemHandler(http.StatusServiceUnavailable, "cache_not_live: priming"), wantExit: 0, wantRoute: "fallback", wantReason: "cache-not-live", wantLocal: true},
+		{name: "api-500-fallback", handler: problemHandler(http.StatusInternalServerError, "internal: explode"), wantExit: 0, wantRoute: "fallback", wantReason: "conn-refused", wantLocal: true},
+		{name: "api-404-error", handler: problemHandler(http.StatusNotFound, "not_found: no such city"), wantExit: 1, wantRoute: "api", wantReason: "error", wantStderr: "not_found"},
+		{name: "controller-down", useNilClient: true, nilReason: "controller-down", wantExit: 0, wantRoute: "fallback", wantReason: "controller-down", wantLocal: true},
+		{name: "escape-hatch", useNilClient: true, nilReason: "escape-hatch", wantExit: 0, wantRoute: "fallback", wantReason: "escape-hatch", wantLocal: true},
 	}
-	if !strings.Contains(stderr.String(), "not_found") {
-		t.Fatalf("stderr = %q, want the API error", stderr.String())
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fake, localID := setupSessionCLIRouteTestCity(t)
+			fake.SetPendingInteraction(sessionCLIRouteTestRuntimeName, &runtime.PendingInteraction{RequestID: "req-local", Kind: "approval"})
+			t.Setenv("GC_DEBUG", "1")
+
+			var c *api.Client
+			if !tc.useNilClient {
+				c = inProcessAPIClient("test-city", tc.handler(t))
+			}
+
+			var stdout, stderr bytes.Buffer
+			code := routeSessionPending(c, tc.nilReason, true, &stdout, &stderr)
+
+			if code != tc.wantExit {
+				t.Fatalf("exit = %d, want %d; stderr=%q stdout=%q", code, tc.wantExit, stderr.String(), stdout.String())
+			}
+			want := "route=" + tc.wantRoute
+			if tc.wantReason != "" {
+				want += " reason=" + tc.wantReason
+			}
+			if !strings.Contains(stderr.String(), want) {
+				t.Errorf("stderr missing %q:\n%s", want, stderr.String())
+			}
+			if n := strings.Count(stderr.String(), "route="); n != 1 {
+				t.Errorf("route=... lines = %d, want 1:\n%s", n, stderr.String())
+			}
+			if tc.wantStderr != "" && !strings.Contains(stderr.String(), tc.wantStderr) {
+				t.Errorf("stderr missing %q:\n%s", tc.wantStderr, stderr.String())
+			}
+			if tc.wantExit != 0 {
+				if stdout.Len() != 0 {
+					t.Errorf("stdout = %q, want empty on error", stdout.String())
+				}
+				return
+			}
+			body, _ := decodeCityPendingJSON(t, stdout.Bytes())
+			wantID := "gc-api"
+			if tc.wantLocal {
+				wantID = localID
+			}
+			if len(body.Items) != 1 || body.Items[0].SessionID != wantID {
+				t.Errorf("items = %#v, want one entry for %s", body.Items, wantID)
+			}
+		})
 	}
 }
 
