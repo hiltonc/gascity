@@ -1814,6 +1814,29 @@ type MailConfig struct {
 	// RetentionTTL is how long read messages are retained before purge. Empty
 	// or "0" disables read-message retention.
 	RetentionTTL string `toml:"retention_ttl,omitempty"`
+	// ArchiveReadAfter is how long a read message stays in its recipient's
+	// inbox before the supervisor's mail sweep archives (closes) it. A Go
+	// duration. Empty means "1h"; "0" means read mail is never archived by the
+	// sweep.
+	ArchiveReadAfter string `toml:"archive_read_after,omitempty" jsonschema:"default=1h"`
+	// Recipients override archive_read_after and retention_ttl for the
+	// recipients they match. The first matching entry wins; a knob an entry
+	// leaves unset falls back to the [mail] value.
+	Recipients []MailRecipientRetention `toml:"recipient,omitempty"`
+}
+
+// MailRecipientRetention overrides the [mail] read-mail retention knobs for
+// the recipient addresses it matches.
+type MailRecipientRetention struct {
+	// Match selects recipients by their stored address: an exact address such
+	// as "human", or a path.Match glob such as "*/refinery".
+	Match string `toml:"match" jsonschema:"required"`
+	// ArchiveReadAfter overrides [mail] archive_read_after for matching
+	// recipients. "0" means never archive.
+	ArchiveReadAfter string `toml:"archive_read_after,omitempty"`
+	// RetentionTTL overrides [mail] retention_ttl for matching recipients.
+	// "0" means never purge.
+	RetentionTTL string `toml:"retention_ttl,omitempty"`
 }
 
 // RetentionTTLDuration parses RetentionTTL as a Go time.Duration. Empty or

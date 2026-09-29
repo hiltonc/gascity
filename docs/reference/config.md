@@ -542,6 +542,18 @@ MailConfig holds mail provider settings.
 |-------|------|----------|---------|-------------|
 | `provider` | string |  |  | Provider selects the mail backend: "fake", "fail", "exec:&lt;script&gt;", or "" (default: beadmail). |
 | `retention_ttl` | string |  |  | RetentionTTL is how long read messages are retained before purge. Empty or "0" disables read-message retention. |
+| `archive_read_after` | string |  | `1h` | ArchiveReadAfter is how long a read message stays in its recipient's inbox before the supervisor's mail sweep archives (closes) it. A Go duration. Empty means "1h"; "0" means read mail is never archived by the sweep. |
+| `recipient` | []MailRecipientRetention |  |  | Recipients override archive_read_after and retention_ttl for the recipients they match. The first matching entry wins; a knob an entry leaves unset falls back to the [mail] value. |
+
+## MailRecipientRetention
+
+MailRecipientRetention overrides the [mail] read-mail retention knobs for the recipient addresses it matches.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `match` | string | **yes** |  | Match selects recipients by their stored address: an exact address such as "human", or a path.Match glob such as "*/refinery". |
+| `archive_read_after` | string |  |  | ArchiveReadAfter overrides [mail] archive_read_after for matching recipients. "0" means never archive. |
+| `retention_ttl` | string |  |  | RetentionTTL overrides [mail] retention_ttl for matching recipients. "0" means never purge. |
 
 ## MaintenanceConfig
 

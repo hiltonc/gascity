@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/config"
 )
 
 // batchGCStore is a gcTestStore that also advertises beads.BatchDeleter and
@@ -59,7 +60,7 @@ func TestWispGCClosureUsesBatchedDelete(t *testing.T) {
 	}
 	store := &batchGCStore{gcTestStore: base}
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)

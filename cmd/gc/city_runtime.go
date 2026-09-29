@@ -1786,8 +1786,18 @@ func (cr *CityRuntime) runNudgeMailSweepWatchdog(now time.Time) {
 		return
 	}
 	statePtr := &nudgeState
+	// Config load has already validated the policy, so an error here means the
+	// runtime is holding a config that never went through load; skip the tick
+	// rather than sweep with a policy nobody configured.
+	mailPolicy, policyErr := mailRetentionPolicyForConfig(cr.cfg)
+	if policyErr != nil {
+		if cr.stderr != nil {
+			fmt.Fprintf(cr.stderr, "%s: nudge-mail-sweep watchdog: %v\n", cr.logPrefix, policyErr) //nolint:errcheck // best-effort stderr
+		}
+		return
+	}
 
-	result, sweepErr := sweepStaleNudgeMail(nudgeStore, mailStore, statePtr, now, nudgeMailSweepDefaultNudgeTTL, nudgeMailSweepDefaultMailTTL, nudgeMailSweepWatchdogCloseBudget)
+	result, sweepErr := sweepStaleNudgeMail(nudgeStore, mailStore, statePtr, now, nudgeMailSweepDefaultNudgeTTL, mailPolicy, nudgeMailSweepWatchdogCloseBudget)
 	recordMailLifecycleEvents(cr.rec, events.MailArchived, mailSystemActor, result.MailClosedIDs)
 	if sweepErr != nil && cr.stderr != nil {
 		fmt.Fprintf(cr.stderr, "%s: nudge-mail-sweep watchdog: %v\n", cr.logPrefix, sweepErr) //nolint:errcheck // best-effort stderr

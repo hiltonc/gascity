@@ -104,7 +104,7 @@ var typedClassCodecNeedles = []codecNeedle{
 	{"nudges", ".FindBead(", "nudgequeue.Store.Find (internal/nudgequeue)"},
 	{"nudges", ".FindBeadIncludingTerminal(", "nudgequeue.Store.FindIncludingTerminal (internal/nudgequeue)"},
 	{"nudges", "StaleCandidatesBefore(", "nudgequeue.Store.StaleShadowsBefore (internal/nudgequeue)"},
-	{"messaging", ".ReadMessagesBefore(", "beadmail.SweepReadMessagesBefore/CountReadMessagesBefore (internal/mail/beadmail)"},
+	{"messaging", ".ReadMessagesBefore(", "beadmail.SweepReadMessages/CountReadMessages (internal/mail/beadmail)"},
 	{"messaging", "ReadMessageWispEntries(", "beadmail.PurgeReadMessageWisps (internal/mail/beadmail)"},
 }
 
