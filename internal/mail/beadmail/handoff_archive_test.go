@@ -121,12 +121,12 @@ func TestArchiveInjectedAutoHandoffReclaimedByReadGatedTTLSweep(t *testing.T) {
 	// handoffs are wisp-tier (SendHandoff sets Ephemeral); only the read
 	// (injected) one is a candidate.
 	cutoff := time.Now().Add(time.Hour)
-	purged, err := PurgeReadMessageWisps(beads.MailStore{Store: store}, cutoff)
+	purged, err := PurgeReadMessageWisps(beads.MailStore{Store: store}, purgeBeforeCutoff, cutoff.Add(time.Nanosecond))
 	if err != nil {
 		t.Fatalf("PurgeReadMessageWisps: %v", err)
 	}
-	if purged != 1 {
-		t.Fatalf("purged = %d, want 1 (only the read injected handoff)", purged)
+	if len(purged) != 1 {
+		t.Fatalf("purged = %d, want 1 (only the read injected handoff)", len(purged))
 	}
 
 	// The injected+read handoff is reclaimed by the TTL sweep (its recoverable
