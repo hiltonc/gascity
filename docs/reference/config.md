@@ -543,7 +543,19 @@ MailConfig holds mail provider settings.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `provider` | string |  |  | Provider selects the mail backend: "fake", "fail", "exec:&lt;script&gt;", or "" (default: beadmail). |
-| `retention_ttl` | string |  |  | RetentionTTL has two consumers: it is how long read messages are retained before purge, and how long a read mail bead stays open before the nudge-mail sweep closes it. Empty or "0" disables read-message purge. The sweep distinguishes the two: empty leaves it at its own 60-minute default, while "0" disables its mail-close phase. |
+| `retention_ttl` | string |  |  | RetentionTTL is how long read messages are retained before purge. Empty or "0" disables read-message purge. While archive_read_after is unset it is also how long a read mail bead stays open before the nudge-mail sweep closes it; there, empty leaves the sweep at its 1-hour default, while "0" disables its mail-close phase. |
+| `archive_read_after` | string |  | `1h` | ArchiveReadAfter is how long a read message stays in its recipient's inbox before the supervisor's mail sweep archives (closes) it. A Go duration. Empty means retention_ttl when that is set, else "1h"; "0" means read mail is never archived by the sweep. |
+| `recipient` | []MailRecipientRetention |  |  | Recipients override archive_read_after and retention_ttl for the recipients they match. The first matching entry wins; a knob an entry leaves unset falls back to the [mail] value. |
+
+## MailRecipientRetention
+
+MailRecipientRetention overrides the [mail] read-mail retention knobs for the recipient addresses it matches.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `match` | string | **yes** |  | Match selects recipients by their stored address: an exact address such as "human", or a path.Match glob such as "*/refinery". |
+| `archive_read_after` | string |  |  | ArchiveReadAfter overrides [mail] archive_read_after for matching recipients. "0" means never archive. |
+| `retention_ttl` | string |  |  | RetentionTTL overrides [mail] retention_ttl for matching recipients. "0" means never purge. |
 
 ## MaintenanceConfig
 

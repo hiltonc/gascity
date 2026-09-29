@@ -1134,7 +1134,7 @@ func migratedThenCollectedCity(t *testing.T) (cityPath string, cfg *config.City,
 	target := mustResolveInfraTarget(t, cityPath, cfg)
 
 	binding := openMigratedDestination(t, target)
-	gc := newWispGC(time.Minute, 24*time.Hour, 24*time.Hour)
+	gc := newWispGC(time.Minute, 24*time.Hour, mailPurgeAfter(24*time.Hour))
 	if gc == nil {
 		t.Fatal("wisp GC did not construct")
 	}
