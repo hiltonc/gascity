@@ -20,6 +20,7 @@ import (
 	"github.com/gastownhall/gascity/internal/events"
 	"github.com/gastownhall/gascity/internal/execenv"
 	"github.com/gastownhall/gascity/internal/executionevent"
+	"github.com/gastownhall/gascity/internal/fsys"
 	"github.com/gastownhall/gascity/internal/molecule"
 	"github.com/gastownhall/gascity/internal/nudgequeue"
 	"github.com/gastownhall/gascity/internal/orderdiscovery"
@@ -2092,7 +2093,7 @@ func bdCursorAcrossStores(orderName string, stores ...beads.Store) (uint64, erro
 
 func newOrderSweepNudgeMailCmd(stdout, stderr io.Writer) *cobra.Command {
 	nudgeTTL := nudgeMailSweepDefaultNudgeTTL
-	mailTTL := nudgeMailSweepDefaultMailTTL
+	var mailTTL time.Duration
 	dryRun := false
 	quiet := false
 	cmd := &cobra.Command{
@@ -2101,8 +2102,12 @@ func newOrderSweepNudgeMailCmd(stdout, stderr io.Writer) *cobra.Command {
 		Long: `Close stale delivered nudge beads and read mail beads.
 
 Nudge beads that are past --nudge-ttl and not in the live nudge queue are
-closed. Read mail beads past --mail-ttl are closed. A budget cap of ` + fmt.Sprintf("%d", nudgeMailSweepCloseBudget) + ` closes
-per invocation prevents runaway sweeps under load.
+closed. Read mail beads are archived (closed) once their recipient's
+[mail] archive_read_after window has passed, or its [[mail.recipient]]
+override; a recipient whose window is "0" is never swept. --mail-ttl replaces
+that whole policy for one run with a single window for every recipient.
+
+A budget cap of ` + fmt.Sprintf("%d", nudgeMailSweepCloseBudget) + ` closes per invocation prevents runaway sweeps under load.
 
 Use --dry-run to log what would be closed without making any changes.
 The controller watchdog also runs this sweep automatically every 5 minutes.`,
@@ -2116,7 +2121,7 @@ The controller watchdog also runs this sweep automatically every 5 minutes.`,
 		},
 	}
 	cmd.Flags().DurationVar(&nudgeTTL, "nudge-ttl", nudgeMailSweepDefaultNudgeTTL, "min age before a delivered nudge bead is GC'd")
-	cmd.Flags().DurationVar(&mailTTL, "mail-ttl", nudgeMailSweepDefaultMailTTL, "min age before a read mail bead is GC'd; 0 disables the mail-close phase (default: cfg.Mail.RetentionTTL when set, else "+nudgeMailSweepDefaultMailTTL.String()+")")
+	cmd.Flags().DurationVar(&mailTTL, "mail-ttl", 0, "min age before a read mail bead is archived, for every recipient; overrides the city's [mail] archive_read_after policy for this run, and 0 disables the mail phase (default: that policy)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "log what would be closed; make no changes")
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress success output")
 	return cmd
@@ -2125,9 +2130,9 @@ The controller watchdog also runs this sweep automatically every 5 minutes.`,
 // validateNudgeMailSweepFlags checks the sweep-nudge-mail flags before any
 // city is resolved. --nudge-ttl must stay positive (there is no "disabled"
 // meaning for it). --mail-ttl may be an explicit 0 -- that is the CLI's way
-// to disable the mail-close phase (see nudgeMailSweepMailTTLForConfig /
-// sweepStaleNudgeMail) -- but a negative value is rejected either way, and an
-// unset flag is left for config resolution rather than validated here.
+// to disable the mail phase for one run (a zero archive window never archives;
+// see sweepNudgeMailPolicy) -- but a negative value is rejected either way, and
+// an unset flag is left to the city's [mail] policy rather than validated here.
 func validateNudgeMailSweepFlags(nudgeTTL, mailTTL time.Duration, mailTTLExplicit bool) error {
 	if nudgeTTL <= 0 {
 		return fmt.Errorf("--nudge-ttl must be positive")
@@ -2144,6 +2149,22 @@ func cmdOrderSweepNudgeMail(nudgeTTL, mailTTL time.Duration, mailTTLExplicit, dr
 		return 1
 	}
 	cityPath, err := resolveCity()
+	if err != nil {
+		fmt.Fprintf(stderr, "gc order sweep-nudge-mail: %v\n", err) //nolint:errcheck // best-effort stderr
+		return 1
+	}
+	var cfg *config.City
+	if !mailTTLExplicit {
+		// Read the [mail] policy straight from config, like the class-store
+		// routing below does, so this command does not stomp the process-wide
+		// feature-flag globals (see the resolveCLIStorageRoutes doc).
+		cfg, _, err = config.LoadWithIncludes(fsys.OSFS{}, filepath.Join(cityPath, "city.toml"))
+		if err != nil {
+			fmt.Fprintf(stderr, "gc order sweep-nudge-mail: %v\n", err) //nolint:errcheck // best-effort stderr
+			return 1
+		}
+	}
+	mailPolicy, err := sweepNudgeMailPolicy(cfg, mailTTL, mailTTLExplicit)
 	if err != nil {
 		fmt.Fprintf(stderr, "gc order sweep-nudge-mail: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
@@ -2167,13 +2188,6 @@ func cmdOrderSweepNudgeMail(nudgeTTL, mailTTL time.Duration, mailTTLExplicit, dr
 	}
 	statePtr := &nudgeState
 
-	if !mailTTLExplicit {
-		// Read the TTL default straight from city.toml. openStoreAtForCity above
-		// already loaded the city config through loadCityConfig, but it does not
-		// hand that config back to this caller, so the value is read again here.
-		mailTTL = nudgeMailSweepMailTTLForCity(cityPath, mailTTL, stderr)
-	}
-
 	now := time.Now()
 	// Route each phase to its coordination class, the way the controller's
 	// nudge-mail sweep watchdog already does (city_runtime.go, via
@@ -2185,13 +2199,24 @@ func cmdOrderSweepNudgeMail(nudgeTTL, mailTTL time.Duration, mailTTLExplicit, dr
 	nudges := cliNudgesStore(store, nil, cityPath)
 	mail := cliMailStore(store, nil, cityPath)
 	if dryRun {
-		return cmdOrderSweepNudgeMailDryRun(nudges, mail, statePtr, now, nudgeTTL, mailTTL, quiet, stdout, stderr)
+		return cmdOrderSweepNudgeMailDryRun(nudges, mail, statePtr, now, nudgeTTL, mailPolicy, quiet, stdout, stderr)
 	}
-	return cmdOrderSweepNudgeMailRun(nudges, mail, statePtr, now, nudgeTTL, mailTTL, quiet, openCityRecorder(stderr), stdout, stderr)
+	return cmdOrderSweepNudgeMailRun(nudges, mail, statePtr, now, nudgeTTL, mailPolicy, quiet, openCityRecorder(stderr), stdout, stderr)
 }
 
-func cmdOrderSweepNudgeMailDryRun(nudges beads.NudgesStore, mail beads.MailStore, nudgeState *nudgequeue.State, now time.Time, nudgeTTL, mailTTL time.Duration, quiet bool, stdout, stderr io.Writer) int {
-	counts, err := countStaleNudgeMail(nudges, mail, nudgeState, now, nudgeTTL, mailTTL, nudgeMailSweepCloseBudget)
+// sweepNudgeMailPolicy picks the read-mail archive policy for one
+// sweep-nudge-mail run: an explicit --mail-ttl archives every recipient's read
+// mail after that one window, replacing the city's policy; otherwise the run
+// follows the city's [mail] policy, per recipient.
+func sweepNudgeMailPolicy(cfg *config.City, mailTTL time.Duration, mailTTLSet bool) (config.MailRetentionPolicy, error) {
+	if mailTTLSet {
+		return config.NewMailRetentionPolicy(config.MailRetentionWindows{ArchiveReadAfter: mailTTL}), nil
+	}
+	return mailRetentionPolicyForConfig(cfg)
+}
+
+func cmdOrderSweepNudgeMailDryRun(nudges beads.NudgesStore, mail beads.MailStore, nudgeState *nudgequeue.State, now time.Time, nudgeTTL time.Duration, mailPolicy config.MailRetentionPolicy, quiet bool, stdout, stderr io.Writer) int {
+	counts, err := countStaleNudgeMail(nudges, mail, nudgeState, now, nudgeTTL, mailPolicy, nudgeMailSweepCloseBudget)
 	if err != nil {
 		fmt.Fprintf(stderr, "gc order sweep-nudge-mail: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
@@ -2208,8 +2233,8 @@ func cmdOrderSweepNudgeMailDryRun(nudges beads.NudgesStore, mail beads.MailStore
 	return 0
 }
 
-func cmdOrderSweepNudgeMailRun(nudges beads.NudgesStore, mail beads.MailStore, nudgeState *nudgequeue.State, now time.Time, nudgeTTL, mailTTL time.Duration, quiet bool, rec events.Recorder, stdout, stderr io.Writer) int {
-	result, sweepErr := sweepStaleNudgeMail(nudges, mail, nudgeState, now, nudgeTTL, mailTTL, nudgeMailSweepCloseBudget)
+func cmdOrderSweepNudgeMailRun(nudges beads.NudgesStore, mail beads.MailStore, nudgeState *nudgequeue.State, now time.Time, nudgeTTL time.Duration, mailPolicy config.MailRetentionPolicy, quiet bool, rec events.Recorder, stdout, stderr io.Writer) int {
+	result, sweepErr := sweepStaleNudgeMail(nudges, mail, nudgeState, now, nudgeTTL, mailPolicy, nudgeMailSweepCloseBudget)
 	recordMailLifecycleEvents(rec, events.MailArchived, eventActor(), result.MailClosedIDs)
 
 	if sweepErr != nil {

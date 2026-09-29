@@ -1832,11 +1832,34 @@ type MailConfig struct {
 	// Provider selects the mail backend: "fake", "fail",
 	// "exec:<script>", or "" (default: beadmail).
 	Provider string `toml:"provider,omitempty"`
-	// RetentionTTL has two consumers: it is how long read messages are
-	// retained before purge, and how long a read mail bead stays open before
-	// the nudge-mail sweep closes it. Empty or "0" disables read-message
-	// purge. The sweep distinguishes the two: empty leaves it at its own
-	// 60-minute default, while "0" disables its mail-close phase.
+	// RetentionTTL is how long read messages are retained before purge. Empty
+	// or "0" disables read-message purge. While archive_read_after is unset it
+	// is also how long a read mail bead stays open before the nudge-mail sweep
+	// closes it; there, empty leaves the sweep at its 1-hour default, while "0"
+	// disables its mail-close phase.
+	RetentionTTL string `toml:"retention_ttl,omitempty"`
+	// ArchiveReadAfter is how long a read message stays in its recipient's
+	// inbox before the supervisor's mail sweep archives (closes) it. A Go
+	// duration. Empty means retention_ttl when that is set, else "1h"; "0"
+	// means read mail is never archived by the sweep.
+	ArchiveReadAfter string `toml:"archive_read_after,omitempty" jsonschema:"default=1h"`
+	// Recipients override archive_read_after and retention_ttl for the
+	// recipients they match. The first matching entry wins; a knob an entry
+	// leaves unset falls back to the [mail] value.
+	Recipients []MailRecipientRetention `toml:"recipient,omitempty"`
+}
+
+// MailRecipientRetention overrides the [mail] read-mail retention knobs for
+// the recipient addresses it matches.
+type MailRecipientRetention struct {
+	// Match selects recipients by their stored address: an exact address such
+	// as "human", or a path.Match glob such as "*/refinery".
+	Match string `toml:"match" jsonschema:"required"`
+	// ArchiveReadAfter overrides [mail] archive_read_after for matching
+	// recipients. "0" means never archive.
+	ArchiveReadAfter string `toml:"archive_read_after,omitempty"`
+	// RetentionTTL overrides [mail] retention_ttl for matching recipients.
+	// "0" means never purge.
 	RetentionTTL string `toml:"retention_ttl,omitempty"`
 }
 

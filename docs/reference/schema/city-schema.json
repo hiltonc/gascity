@@ -1938,12 +1938,46 @@
         },
         "retention_ttl": {
           "type": "string",
-          "description": "RetentionTTL has two consumers: it is how long read messages are\nretained before purge, and how long a read mail bead stays open before\nthe nudge-mail sweep closes it. Empty or \"0\" disables read-message\npurge. The sweep distinguishes the two: empty leaves it at its own\n60-minute default, while \"0\" disables its mail-close phase."
+          "description": "RetentionTTL is how long read messages are retained before purge. Empty\nor \"0\" disables read-message purge. While archive_read_after is unset it\nis also how long a read mail bead stays open before the nudge-mail sweep\ncloses it; there, empty leaves the sweep at its 1-hour default, while \"0\"\ndisables its mail-close phase."
+        },
+        "archive_read_after": {
+          "type": "string",
+          "description": "ArchiveReadAfter is how long a read message stays in its recipient's\ninbox before the supervisor's mail sweep archives (closes) it. A Go\nduration. Empty means retention_ttl when that is set, else \"1h\"; \"0\"\nmeans read mail is never archived by the sweep.",
+          "default": "1h"
+        },
+        "recipient": {
+          "items": {
+            "$ref": "#/$defs/MailRecipientRetention"
+          },
+          "type": "array",
+          "description": "Recipients override archive_read_after and retention_ttl for the\nrecipients they match. The first matching entry wins; a knob an entry\nleaves unset falls back to the [mail] value."
         }
       },
       "additionalProperties": false,
       "type": "object",
       "description": "MailConfig holds mail provider settings."
+    },
+    "MailRecipientRetention": {
+      "properties": {
+        "match": {
+          "type": "string",
+          "description": "Match selects recipients by their stored address: an exact address such\nas \"human\", or a path.Match glob such as \"*/refinery\"."
+        },
+        "archive_read_after": {
+          "type": "string",
+          "description": "ArchiveReadAfter overrides [mail] archive_read_after for matching\nrecipients. \"0\" means never archive."
+        },
+        "retention_ttl": {
+          "type": "string",
+          "description": "RetentionTTL overrides [mail] retention_ttl for matching recipients.\n\"0\" means never purge."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "match"
+      ],
+      "description": "MailRecipientRetention overrides the [mail] read-mail retention knobs for the recipient addresses it matches."
     },
     "MaintenanceConfig": {
       "properties": {
