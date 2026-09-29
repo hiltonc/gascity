@@ -2892,8 +2892,12 @@ gc order show <name> [flags]
 Close stale delivered nudge beads and read mail beads.
 
 Nudge beads that are past --nudge-ttl and not in the live nudge queue are
-closed. Read mail beads past --mail-ttl are closed. A budget cap of 50 closes
-per invocation prevents runaway sweeps under load.
+closed. Read mail beads are archived (closed) once their recipient's
+[mail] archive_read_after window has passed, or its [[mail.recipient]]
+override; a recipient whose window is "0" is never swept. --mail-ttl replaces
+that whole policy for one run with a single window for every recipient.
+
+A budget cap of 50 closes per invocation prevents runaway sweeps under load.
 
 Use --dry-run to log what would be closed without making any changes.
 The controller watchdog also runs this sweep automatically every 5 minutes.
@@ -2905,7 +2909,7 @@ gc order sweep-nudge-mail [flags]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--dry-run` | bool |  | log what would be closed; make no changes |
-| `--mail-ttl` | duration | `1h0m0s` | min age before a read mail bead is GC'd |
+| `--mail-ttl` | duration | `0s` | min age before a read mail bead is archived, for every recipient; overrides the city's [mail] archive_read_after policy for this run (default: that policy) |
 | `--nudge-ttl` | duration | `10m0s` | min age before a delivered nudge bead is GC'd |
 | `--quiet` | bool |  | suppress success output |
 

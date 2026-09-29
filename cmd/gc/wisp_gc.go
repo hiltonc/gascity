@@ -120,10 +120,12 @@ type wispGC interface {
 
 // memoryWispGC is the production implementation of wispGC.
 type memoryWispGC struct {
-	interval         time.Duration
-	ttl              time.Duration
-	mailRetentionTTL time.Duration
-	lastRun          time.Time
+	interval time.Duration
+	ttl      time.Duration
+	// mailRetention decides, per recipient, when the retention arm purges a
+	// read message.
+	mailRetention config.MailRetentionPolicy
+	lastRun       time.Time
 	// rec announces each read message the retention arm purges; nil records
 	// nothing.
 	rec events.Recorder
@@ -131,15 +133,15 @@ type memoryWispGC struct {
 
 // newWispGC creates a wisp GC tracker. Returns nil if disabled. The tracker
 // runs when an interval is configured and at least one retention policy is
-// enabled.
-func newWispGC(interval, ttl, mailRetentionTTL time.Duration) wispGC {
-	if interval <= 0 || (ttl <= 0 && mailRetentionTTL <= 0) {
+// enabled: the wisp TTL, or a read-mail purge window for any recipient.
+func newWispGC(interval, ttl time.Duration, mailRetention config.MailRetentionPolicy) wispGC {
+	if interval <= 0 || (ttl <= 0 && mailRetention.ShortestRetentionTTL() <= 0) {
 		return nil
 	}
 	return &memoryWispGC{
-		interval:         interval,
-		ttl:              ttl,
-		mailRetentionTTL: mailRetentionTTL,
+		interval:      interval,
+		ttl:           ttl,
+		mailRetention: mailRetention,
 	}
 }
 
@@ -150,11 +152,14 @@ func newWispGCForConfig(cfg *config.City, rec events.Recorder) wispGC {
 	if cfg == nil {
 		return nil
 	}
-	mailRetentionTTL, err := cfg.Mail.RetentionTTLDuration()
+	mailRetention, err := mailRetentionPolicyForConfig(cfg)
 	if err != nil {
-		mailRetentionTTL = 0
+		// Config load has already rejected an invalid policy; a config that
+		// skipped load purges no mail rather than guess at a policy.
+		log.Printf("wisp gc: read-mail retention disabled: %v", err)
+		mailRetention = config.MailRetentionPolicy{}
 	}
-	wg := newWispGC(cfg.Daemon.WispGCIntervalDuration(), cfg.Daemon.WispTTLDuration(), mailRetentionTTL)
+	wg := newWispGC(cfg.Daemon.WispGCIntervalDuration(), cfg.Daemon.WispTTLDuration(), mailRetention)
 	if mwg, ok := wg.(*memoryWispGC); ok {
 		mwg.rec = rec
 	}
@@ -222,18 +227,18 @@ func (m *memoryWispGC) runGC(graphStore beads.GraphStore, mailStore beads.MailSt
 		deleteErr = errors.Join(deleteErr, orphanErr)
 	}
 
-	if m.mailRetentionTTL > 0 && mailStore.Store != nil {
+	if m.mailRetention.ShortestRetentionTTL() > 0 && mailStore.Store != nil {
 		// The read-message retention arm is messaging-class: its candidate query
 		// and wisp-tier delete loop live inside the messaging edge (beadmail),
 		// against the messaging store — disjoint from the graph-class purge above.
-		mailPurged, mailErr := beadmail.PurgeReadMessageWisps(mailStore, now.Add(-m.mailRetentionTTL))
+		mailPurged, mailErr := beadmail.PurgeReadMessageWisps(mailStore, m.mailRetention, now)
 		purged += len(mailPurged)
 		recordMailLifecycleEvents(m.rec, events.MailDeleted, mailSystemActor, mailPurged)
 		if mailErr != nil {
 			deleteErr = errors.Join(deleteErr, mailErr)
 		}
 		if len(mailPurged) > 0 {
-			log.Printf("wisp gc: purged %d read message wisps (retention_ttl=%s)", len(mailPurged), gcRetentionTTLString(m.mailRetentionTTL))
+			log.Printf("wisp gc: purged %d read message wisps (retention_ttl=%s)", len(mailPurged), gcRetentionTTLString(m.mailRetention.ShortestRetentionTTL()))
 		}
 	}
 

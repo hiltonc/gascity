@@ -8,8 +8,17 @@ import (
 
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/coordclass"
 	"github.com/gastownhall/gascity/internal/mail"
+)
+
+// archiveBeforeCutoff and purgeBeforeCutoff give every recipient a one
+// nanosecond window, so a sweep or purge run at cutoff+1ns acts on exactly the
+// read mail created before cutoff.
+var (
+	archiveBeforeCutoff = config.NewMailRetentionPolicy(config.MailRetentionWindows{ArchiveReadAfter: time.Nanosecond})
+	purgeBeforeCutoff   = config.NewMailRetentionPolicy(config.MailRetentionWindows{RetentionTTL: time.Nanosecond})
 )
 
 // readMailSeed builds a seed Bead for NewMemStoreFrom representing an open read
@@ -86,7 +95,7 @@ func (s *deleteTrackStore) Delete(id string) error {
 	return nil
 }
 
-func TestSweepReadMessagesBefore_ClosesAgedReadMailWithReason(t *testing.T) {
+func TestSweepReadMessages_ClosesAgedReadMailWithReason(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	cutoff := now
 	old := now.Add(-time.Minute)
@@ -103,7 +112,7 @@ func TestSweepReadMessagesBefore_ClosesAgedReadMailWithReason(t *testing.T) {
 	mailStore := beads.MailStore{Store: store}
 
 	const reason = "mail gc-swept: test retention reason padded to length"
-	closed, closeErrs, listErr := SweepReadMessagesBefore(mailStore, cutoff, 0, reason)
+	closed, closeErrs, listErr := SweepReadMessages(mailStore, archiveBeforeCutoff, cutoff.Add(time.Nanosecond), 0, reason)
 	if listErr != nil {
 		t.Fatalf("unexpected list error: %v", listErr)
 	}
@@ -141,7 +150,7 @@ func TestSweepReadMessagesBefore_ClosesAgedReadMailWithReason(t *testing.T) {
 	}
 }
 
-func TestSweepReadMessagesBefore_LimitCapsCloses(t *testing.T) {
+func TestSweepReadMessages_LimitCapsCloses(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	old := now.Add(-time.Minute)
 
@@ -153,7 +162,7 @@ func TestSweepReadMessagesBefore_LimitCapsCloses(t *testing.T) {
 	store := beads.NewMemStoreFrom(100, seed, nil)
 	mailStore := beads.MailStore{Store: store}
 
-	closed, closeErrs, listErr := SweepReadMessagesBefore(mailStore, now, 2, "reason padded to twenty plus characters")
+	closed, closeErrs, listErr := SweepReadMessages(mailStore, archiveBeforeCutoff, now.Add(time.Nanosecond), 2, "reason padded to twenty plus characters")
 	if listErr != nil || len(closeErrs) != 0 {
 		t.Fatalf("unexpected errors: list=%v perBead=%v", listErr, closeErrs)
 	}
@@ -176,7 +185,7 @@ func TestSweepReadMessagesBefore_LimitCapsCloses(t *testing.T) {
 	}
 }
 
-func TestSweepReadMessagesBefore_PerBeadCloseErrorIsCollected(t *testing.T) {
+func TestSweepReadMessages_PerBeadCloseErrorIsCollected(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	old := now.Add(-time.Minute)
 
@@ -189,7 +198,7 @@ func TestSweepReadMessagesBefore_PerBeadCloseErrorIsCollected(t *testing.T) {
 	store := closeErrStore{MemStore: base, failClose: map[string]error{"bad": errors.New("close boom")}}
 	mailStore := beads.MailStore{Store: store}
 
-	closed, closeErrs, listErr := SweepReadMessagesBefore(mailStore, now, 0, "reason padded to twenty plus characters")
+	closed, closeErrs, listErr := SweepReadMessages(mailStore, archiveBeforeCutoff, now.Add(time.Nanosecond), 0, "reason padded to twenty plus characters")
 	if listErr != nil {
 		t.Fatalf("unexpected list error: %v", listErr)
 	}
@@ -204,12 +213,12 @@ func TestSweepReadMessagesBefore_PerBeadCloseErrorIsCollected(t *testing.T) {
 	}
 }
 
-func TestSweepReadMessagesBefore_ListErrorIsFatal(t *testing.T) {
+func TestSweepReadMessages_ListErrorIsFatal(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	store := listErrStore{MemStore: beads.NewMemStore(), err: errors.New("store down")}
 	mailStore := beads.MailStore{Store: store}
 
-	closed, closeErrs, listErr := SweepReadMessagesBefore(mailStore, now, 0, "reason padded to twenty plus characters")
+	closed, closeErrs, listErr := SweepReadMessages(mailStore, archiveBeforeCutoff, now.Add(time.Nanosecond), 0, "reason padded to twenty plus characters")
 	if listErr == nil {
 		t.Fatal("expected fatal list error")
 	}
@@ -218,7 +227,7 @@ func TestSweepReadMessagesBefore_ListErrorIsFatal(t *testing.T) {
 	}
 }
 
-func TestCountReadMessagesBefore_CountsWithoutMutating(t *testing.T) {
+func TestCountReadMessages_CountsWithoutMutating(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	old := now.Add(-time.Minute)
 	fresh := now.Add(time.Minute)
@@ -232,7 +241,7 @@ func TestCountReadMessagesBefore_CountsWithoutMutating(t *testing.T) {
 	store := beads.NewMemStoreFrom(100, seed, nil)
 	mailStore := beads.MailStore{Store: store}
 
-	count, err := CountReadMessagesBefore(mailStore, now, 0)
+	count, err := CountReadMessages(mailStore, archiveBeforeCutoff, now.Add(time.Nanosecond), 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -252,7 +261,7 @@ func TestCountReadMessagesBefore_CountsWithoutMutating(t *testing.T) {
 	}
 }
 
-func TestCountReadMessagesBefore_LimitCapsCount(t *testing.T) {
+func TestCountReadMessages_LimitCapsCount(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	old := now.Add(-time.Minute)
 	seed := []beads.Bead{
@@ -263,7 +272,7 @@ func TestCountReadMessagesBefore_LimitCapsCount(t *testing.T) {
 	store := beads.NewMemStoreFrom(100, seed, nil)
 	mailStore := beads.MailStore{Store: store}
 
-	count, err := CountReadMessagesBefore(mailStore, now, 2)
+	count, err := CountReadMessages(mailStore, archiveBeforeCutoff, now.Add(time.Nanosecond), 2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -294,7 +303,7 @@ func TestPurgeReadMessageWisps_DeletesAgedReadWisps(t *testing.T) {
 	store := &deleteTrackStore{MemStore: beads.NewMemStoreFrom(100, seed, nil), failDelete: map[string]error{}}
 	mailStore := beads.MailStore{Store: store}
 
-	purged, err := PurgeReadMessageWisps(mailStore, cutoff)
+	purged, err := PurgeReadMessageWisps(mailStore, purgeBeforeCutoff, cutoff.Add(time.Nanosecond))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -351,7 +360,7 @@ func TestPurgeReadMessageWisps_SkipsMessageUnreadAfterSnapshot(t *testing.T) {
 	}
 
 	mailStore := beads.MailStore{Store: store}
-	purged, err := PurgeReadMessageWisps(mailStore, cutoff)
+	purged, err := PurgeReadMessageWisps(mailStore, purgeBeforeCutoff, cutoff.Add(time.Nanosecond))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -387,7 +396,7 @@ func TestPurgeReadMessageWisps_SkipsMessageGoneAfterSnapshot(t *testing.T) {
 	}
 
 	mailStore := beads.MailStore{Store: store}
-	purged, err := PurgeReadMessageWisps(mailStore, cutoff)
+	purged, err := PurgeReadMessageWisps(mailStore, purgeBeforeCutoff, cutoff.Add(time.Nanosecond))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -418,7 +427,7 @@ func TestPurgeReadMessageWisps_SurfacesLiveRecheckError(t *testing.T) {
 	store := &staleListStore{deleteTrackStore: underlying, snapshot: seed}
 
 	mailStore := beads.MailStore{Store: store}
-	purged, err := PurgeReadMessageWisps(mailStore, cutoff)
+	purged, err := PurgeReadMessageWisps(mailStore, purgeBeforeCutoff, cutoff.Add(time.Nanosecond))
 	if err == nil {
 		t.Fatal("PurgeReadMessageWisps: want error, got nil (a live-read failure must not be swallowed)")
 	}
@@ -444,7 +453,7 @@ func TestPurgeReadMessageWisps_DeleteErrorSurfacedAndContinues(t *testing.T) {
 	}
 	mailStore := beads.MailStore{Store: store}
 
-	purged, err := PurgeReadMessageWisps(mailStore, cutoff)
+	purged, err := PurgeReadMessageWisps(mailStore, purgeBeforeCutoff, cutoff.Add(time.Nanosecond))
 	if err == nil {
 		t.Fatal("expected delete error to be surfaced")
 	}
@@ -459,7 +468,7 @@ func TestPurgeReadMessageWisps_DeleteErrorSurfacedAndContinues(t *testing.T) {
 func TestPurgeReadMessageWisps_ListErrorSurfaced(t *testing.T) {
 	store := listErrStore{MemStore: beads.NewMemStore(), err: errors.New("store down")}
 	mailStore := beads.MailStore{Store: store}
-	purged, err := PurgeReadMessageWisps(mailStore, time.Now())
+	purged, err := PurgeReadMessageWisps(mailStore, purgeBeforeCutoff, time.Now().Add(time.Nanosecond))
 	if err == nil {
 		t.Fatal("expected list error to be surfaced")
 	}
@@ -515,8 +524,7 @@ func TestRetentionSweptReadMailStaysAddressableUntilPurge(t *testing.T) {
 
 	// The retention sweep closes the aged read mail with the canonical reason,
 	// exactly as the production nudge-mail watchdog does.
-	closed, closeErrs, listErr := SweepReadMessagesBefore(
-		beads.MailStore{Store: store}, time.Now().Add(time.Hour), 0, RetentionSweepCloseReason)
+	closed, closeErrs, listErr := SweepReadMessages(beads.MailStore{Store: store}, archiveBeforeCutoff, time.Now().Add(time.Hour+time.Nanosecond), 0, RetentionSweepCloseReason)
 	if listErr != nil {
 		t.Fatalf("sweep list error: %v", listErr)
 	}
@@ -599,4 +607,195 @@ func contains(ss []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// recipientPolicy archives and purges read mail after an hour, except for
+// "human", whose read mail is never archived or purged, and "*/witness",
+// whose read mail is archived after ten minutes and purged after two hours.
+func recipientPolicy(t *testing.T) config.MailRetentionPolicy {
+	t.Helper()
+	policy, err := config.MailConfig{
+		ArchiveReadAfter: "1h",
+		RetentionTTL:     "1h",
+		Recipients: []config.MailRecipientRetention{
+			{Match: "human", ArchiveReadAfter: "0", RetentionTTL: "0"},
+			{Match: "*/witness", ArchiveReadAfter: "10m", RetentionTTL: "2h"},
+		},
+	}.RetentionPolicy()
+	if err != nil {
+		t.Fatalf("RetentionPolicy: %v", err)
+	}
+	return policy
+}
+
+func addressedTo(recipient string) func(*beads.Bead) {
+	return func(b *beads.Bead) { b.Assignee = recipient }
+}
+
+func TestSweepReadMessages_PerRecipientWindows(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	seed := []beads.Bead{
+		readMailSeed("human-old", now.Add(-72*time.Hour), addressedTo("human")),
+		readMailSeed("worker-old", now.Add(-2*time.Hour), addressedTo("gascity/worker")),
+		readMailSeed("worker-recent", now.Add(-30*time.Minute), addressedTo("gascity/worker")),
+		readMailSeed("witness-recent", now.Add(-30*time.Minute), addressedTo("gascity/witness")),
+		readMailSeed("witness-fresh", now.Add(-5*time.Minute), addressedTo("gascity/witness")),
+	}
+	store := beads.NewMemStoreFrom(100, seed, nil)
+
+	closed, closeErrs, listErr := SweepReadMessages(beads.MailStore{Store: store}, recipientPolicy(t), now, 0, RetentionSweepCloseReason)
+	if listErr != nil || len(closeErrs) != 0 {
+		t.Fatalf("sweep errors: list=%v close=%v", listErr, closeErrs)
+	}
+	if got, want := strings.Join(closed, ","), "worker-old,witness-recent"; got != want {
+		t.Fatalf("closed = %s, want %s", got, want)
+	}
+	for id, wantStatus := range map[string]string{
+		"human-old":      "open",
+		"worker-old":     "closed",
+		"worker-recent":  "open",
+		"witness-recent": "closed",
+		"witness-fresh":  "open",
+	} {
+		b, err := store.Get(id)
+		if err != nil {
+			t.Fatalf("Get(%s): %v", id, err)
+		}
+		if b.Status != wantStatus {
+			t.Errorf("%s status = %q, want %q", id, b.Status, wantStatus)
+		}
+	}
+}
+
+// TestSweepReadMessages_SkippedMessagesConsumeNoBudget pins that a recipient
+// whose window is zero neither spends the close budget nor starves the
+// recipients behind it: its old read mail is the oldest candidate set, so a
+// candidate listing bounded by the budget would return only messages the policy
+// skips and close nothing.
+func TestSweepReadMessages_SkippedMessagesConsumeNoBudget(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	seed := []beads.Bead{
+		readMailSeed("human-1", now.Add(-96*time.Hour), addressedTo("human")),
+		readMailSeed("human-2", now.Add(-95*time.Hour), addressedTo("human")),
+		readMailSeed("human-3", now.Add(-94*time.Hour), addressedTo("human")),
+		readMailSeed("worker-1", now.Add(-3*time.Hour), addressedTo("gascity/worker")),
+		readMailSeed("worker-2", now.Add(-2*time.Hour), addressedTo("gascity/worker")),
+	}
+	store := beads.NewMemStoreFrom(100, seed, nil)
+	mailStore := beads.MailStore{Store: store}
+	policy := recipientPolicy(t)
+
+	count, err := CountReadMessages(mailStore, policy, now, 1)
+	if err != nil {
+		t.Fatalf("CountReadMessages: %v", err)
+	}
+	closed, closeErrs, listErr := SweepReadMessages(mailStore, policy, now, 1, RetentionSweepCloseReason)
+	if listErr != nil || len(closeErrs) != 0 {
+		t.Fatalf("sweep errors: list=%v close=%v", listErr, closeErrs)
+	}
+	if len(closed) != 1 || closed[0] != "worker-1" {
+		t.Fatalf("closed = %v, want [worker-1]", closed)
+	}
+	if count != len(closed) {
+		t.Fatalf("dry-run count = %d, sweep closed %d; they must agree", count, len(closed))
+	}
+}
+
+func TestCountReadMessages_AgreesWithSweepPerRecipient(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	seed := []beads.Bead{
+		readMailSeed("human-old", now.Add(-72*time.Hour), addressedTo("human")),
+		readMailSeed("worker-old", now.Add(-2*time.Hour), addressedTo("gascity/worker")),
+		readMailSeed("worker-closed", now.Add(-2*time.Hour), addressedTo("gascity/worker"), func(b *beads.Bead) { b.Status = "closed" }),
+		readMailSeed("witness-recent", now.Add(-30*time.Minute), addressedTo("gascity/witness")),
+		readMailSeed("witness-fresh", now.Add(-5*time.Minute), addressedTo("gascity/witness")),
+	}
+	for _, limit := range []int{0, 1, 2, 5} {
+		store := beads.NewMemStoreFrom(100, seed, nil)
+		mailStore := beads.MailStore{Store: store}
+		policy := recipientPolicy(t)
+		count, err := CountReadMessages(mailStore, policy, now, limit)
+		if err != nil {
+			t.Fatalf("limit %d: CountReadMessages: %v", limit, err)
+		}
+		closed, _, listErr := SweepReadMessages(mailStore, policy, now, limit, RetentionSweepCloseReason)
+		if listErr != nil {
+			t.Fatalf("limit %d: sweep: %v", limit, listErr)
+		}
+		if count != len(closed) {
+			t.Errorf("limit %d: count = %d, sweep closed %d", limit, count, len(closed))
+		}
+	}
+}
+
+func TestSweepReadMessages_NoArchiveWindowListsNothing(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	store := &listCountStore{MemStore: beads.NewMemStoreFrom(100, []beads.Bead{
+		readMailSeed("old", now.Add(-72*time.Hour), addressedTo("gascity/worker")),
+	}, nil)}
+	policy := config.NewMailRetentionPolicy(config.MailRetentionWindows{RetentionTTL: time.Hour})
+
+	closed, _, listErr := SweepReadMessages(beads.MailStore{Store: store}, policy, now, 0, RetentionSweepCloseReason)
+	if listErr != nil {
+		t.Fatalf("sweep: %v", listErr)
+	}
+	if len(closed) != 0 || store.lists != 0 {
+		t.Fatalf("closed = %v after %d listings, want nothing closed and nothing listed", closed, store.lists)
+	}
+}
+
+// listCountStore counts List calls.
+type listCountStore struct {
+	*beads.MemStore
+	lists int
+}
+
+func (s *listCountStore) List(q beads.ListQuery) ([]beads.Bead, error) {
+	s.lists++
+	return s.MemStore.List(q)
+}
+
+func TestPurgeReadMessageWisps_PerRecipientWindows(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	readWisp := func(id, recipient string, createdAt time.Time) beads.Bead {
+		return beads.Bead{
+			ID: id, Type: "message", Status: "closed", Assignee: recipient, CreatedAt: createdAt,
+			Metadata: map[string]string{mail.ReadMetadataKey: "true"}, Ephemeral: true,
+		}
+	}
+	seed := []beads.Bead{
+		readWisp("human-ancient", "human", now.Add(-720*time.Hour)),
+		readWisp("worker-old", "gascity/worker", now.Add(-90*time.Minute)),
+		readWisp("worker-recent", "gascity/worker", now.Add(-30*time.Minute)),
+		readWisp("witness-mid", "gascity/witness", now.Add(-90*time.Minute)),
+		readWisp("witness-old", "gascity/witness", now.Add(-3*time.Hour)),
+	}
+	store := &deleteTrackStore{MemStore: beads.NewMemStoreFrom(100, seed, nil), failDelete: map[string]error{}}
+
+	purged, err := PurgeReadMessageWisps(beads.MailStore{Store: store}, recipientPolicy(t), now)
+	if err != nil {
+		t.Fatalf("PurgeReadMessageWisps: %v", err)
+	}
+	got := map[string]bool{}
+	for _, id := range purged {
+		got[id] = true
+	}
+	want := map[string]bool{"worker-old": true, "witness-old": true}
+	if len(got) != len(want) {
+		t.Fatalf("purged = %v, want worker-old and witness-old", purged)
+	}
+	for id := range want {
+		if !got[id] {
+			t.Errorf("purged = %v, missing %s", purged, id)
+		}
+	}
+}
+
+func TestPurgeReadMessageWisps_NoRetentionWindowListsNothing(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	store := &listCountStore{MemStore: beads.NewMemStore()}
+	purged, err := PurgeReadMessageWisps(beads.MailStore{Store: store}, config.MailRetentionPolicy{}, now)
+	if err != nil || len(purged) != 0 || store.lists != 0 {
+		t.Fatalf("purged=%v err=%v lists=%d, want nothing purged and nothing listed", purged, err, store.lists)
+	}
 }

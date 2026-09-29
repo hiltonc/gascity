@@ -8,9 +8,22 @@ import (
 	"time"
 
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/events"
 	"github.com/gastownhall/gascity/internal/nudgequeue"
 )
+
+// mailArchiveAfter is a read-mail policy that archives every recipient's read
+// mail after window.
+func mailArchiveAfter(window time.Duration) config.MailRetentionPolicy {
+	return config.NewMailRetentionPolicy(config.MailRetentionWindows{ArchiveReadAfter: window})
+}
+
+// mailPurgeAfter is a read-mail policy that purges every recipient's read mail
+// after window.
+func mailPurgeAfter(window time.Duration) config.MailRetentionPolicy {
+	return config.NewMailRetentionPolicy(config.MailRetentionWindows{RetentionTTL: window})
+}
 
 // nudgeSeed builds a seed Bead for NewMemStoreFrom representing an open nudge bead.
 // id must be unique within the seed slice.
@@ -55,7 +68,7 @@ func TestSweepStaleNudgeMail_TTLBoundaries(t *testing.T) {
 	}
 	store := beads.NewMemStoreFrom(100, seed, nil)
 
-	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeTTL, mailTTL, 0)
+	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeTTL, mailArchiveAfter(mailTTL), 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -84,7 +97,7 @@ func TestSweepStaleNudgeMail_PendingExclusion(t *testing.T) {
 		Pending: []nudgequeue.Item{{ID: pendingID}},
 	}
 
-	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, state, now, nudgeTTL, time.Hour, 0)
+	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, state, now, nudgeTTL, mailArchiveAfter(time.Hour), 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -118,7 +131,7 @@ func TestSweepStaleNudgeMail_InFlightExclusion(t *testing.T) {
 		InFlight: []nudgequeue.Item{{ID: inFlightID}},
 	}
 
-	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, state, now, nudgeTTL, time.Hour, 0)
+	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, state, now, nudgeTTL, mailArchiveAfter(time.Hour), 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -155,7 +168,7 @@ func TestSweepStaleNudgeMail_OpenStatusFilter(t *testing.T) {
 	}
 	store := beads.NewMemStoreFrom(100, seed, nil)
 
-	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, time.Minute, mailTTL, 0)
+	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, time.Minute, mailArchiveAfter(mailTTL), 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -181,7 +194,7 @@ func TestSweepStaleNudgeMail_BudgetCap(t *testing.T) {
 	}
 	store := beads.NewMemStoreFrom(100, seed, nil)
 
-	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeTTL, mailTTL, budget)
+	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeTTL, mailArchiveAfter(mailTTL), budget)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -205,7 +218,7 @@ func TestSweepStaleNudgeMail_BudgetZeroMeansUnlimited(t *testing.T) {
 	}
 	store := beads.NewMemStoreFrom(100, seed, nil)
 
-	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeTTL, mailTTL, 0)
+	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeTTL, mailArchiveAfter(mailTTL), 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -248,7 +261,7 @@ func TestSweepStaleNudgeMail_PerBeadCloseFailureContinues(t *testing.T) {
 		failIDs:  map[string]bool{id2: true},
 	}
 
-	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeTTL, time.Hour, 0)
+	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeTTL, mailArchiveAfter(time.Hour), 0)
 
 	// The sweep should report the error for the failing bead.
 	if err == nil {
@@ -306,7 +319,7 @@ func TestSweepStaleNudgeMail_PerBeadMetadataFailureContinues(t *testing.T) {
 		failIDs:  map[string]bool{id2: true},
 	}
 
-	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeTTL, time.Hour, 0)
+	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeTTL, mailArchiveAfter(time.Hour), 0)
 	if err == nil {
 		t.Fatal("expected non-nil error for metadata failure")
 	}
@@ -327,7 +340,7 @@ func TestSweepStaleNudgeMail_NudgeTerminalMetadata(t *testing.T) {
 	seed := []beads.Bead{nudgeSeed(beadID, "nudge-abc", now.Add(-nudgeTTL-time.Second))}
 	store := beads.NewMemStoreFrom(100, seed, nil)
 
-	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeTTL, time.Hour, 0)
+	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeTTL, mailArchiveAfter(time.Hour), 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -368,7 +381,7 @@ func TestSweepStaleNudgeMail_NilNudgeStateTreatsAllAsSafe(t *testing.T) {
 	}
 	store := beads.NewMemStoreFrom(100, seed, nil)
 
-	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeTTL, time.Hour, 0)
+	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeTTL, mailArchiveAfter(time.Hour), 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -393,7 +406,7 @@ func TestSweepStaleNudgeMail_BudgetSplitNudgeThenMail(t *testing.T) {
 	}
 	store := beads.NewMemStoreFrom(100, seed, nil)
 
-	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeTTL, mailTTL, 3)
+	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeTTL, mailArchiveAfter(mailTTL), 3)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -421,7 +434,7 @@ func TestSweepStaleNudgeMail_MultiplePerBeadErrors(t *testing.T) {
 		failIDs:  map[string]bool{id1: true, id2: true},
 	}
 
-	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeTTL, time.Hour, 0)
+	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeTTL, mailArchiveAfter(time.Hour), 0)
 	if err == nil {
 		t.Fatal("expected non-nil error when all beads fail")
 	}
@@ -454,7 +467,7 @@ func TestCmdOrderSweepNudgeMailRun_NothingToClose(t *testing.T) {
 	store := beads.NewMemStoreFrom(100, nil, nil)
 
 	var stdout, stderr bytes.Buffer
-	cmdOrderSweepNudgeMailRun(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, nudgeMailSweepDefaultMailTTL, false, events.Discard, &stdout, &stderr)
+	cmdOrderSweepNudgeMailRun(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, mailArchiveAfter(config.DefaultMailArchiveReadAfter), false, events.Discard, &stdout, &stderr)
 	if !strings.Contains(stdout.String(), "nothing to close") {
 		t.Errorf("expected 'nothing to close' message, got: %q", stdout.String())
 	}
@@ -464,12 +477,12 @@ func TestCmdOrderSweepNudgeMailRun_NormalOutput(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	seed := []beads.Bead{
 		nudgeSeed("n1", "nudge-1", now.Add(-nudgeMailSweepDefaultNudgeTTL-time.Second)),
-		mailSeed("m1", now.Add(-nudgeMailSweepDefaultMailTTL-time.Second)),
+		mailSeed("m1", now.Add(-config.DefaultMailArchiveReadAfter-time.Second)),
 	}
 	store := beads.NewMemStoreFrom(100, seed, nil)
 
 	var stdout, stderr bytes.Buffer
-	cmdOrderSweepNudgeMailRun(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, nudgeMailSweepDefaultMailTTL, false, events.Discard, &stdout, &stderr)
+	cmdOrderSweepNudgeMailRun(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, mailArchiveAfter(config.DefaultMailArchiveReadAfter), false, events.Discard, &stdout, &stderr)
 	out := stdout.String()
 	if !strings.Contains(out, "nudge-mail-sweep: closed") {
 		t.Errorf("expected 'nudge-mail-sweep: closed' in output, got: %q", out)
@@ -492,7 +505,7 @@ func TestCmdOrderSweepNudgeMailRun_CapReachedMessage(t *testing.T) {
 	store := beads.NewMemStoreFrom(100, seed, nil)
 
 	var stdout, stderr bytes.Buffer
-	cmdOrderSweepNudgeMailRun(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, nudgeMailSweepDefaultMailTTL, false, events.Discard, &stdout, &stderr)
+	cmdOrderSweepNudgeMailRun(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, mailArchiveAfter(config.DefaultMailArchiveReadAfter), false, events.Discard, &stdout, &stderr)
 	if !strings.Contains(stdout.String(), "cap reached") {
 		t.Errorf("expected 'cap reached' in output when budget is full, got: %q", stdout.String())
 	}
@@ -509,7 +522,7 @@ func TestCmdOrderSweepNudgeMailRun_PerBeadErrorPrintedToStderr(t *testing.T) {
 	store := &nudgeSweepFailingClose{MemStore: mem, failIDs: map[string]bool{failID: true}}
 
 	var stdout, stderr bytes.Buffer
-	cmdOrderSweepNudgeMailRun(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, nudgeMailSweepDefaultMailTTL, false, events.Discard, &stdout, &stderr)
+	cmdOrderSweepNudgeMailRun(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, mailArchiveAfter(config.DefaultMailArchiveReadAfter), false, events.Discard, &stdout, &stderr)
 	if !strings.Contains(stderr.String(), "ERROR") {
 		t.Errorf("expected ERROR line on stderr for failing bead, got: %q", stderr.String())
 	}
@@ -524,7 +537,7 @@ func TestCmdOrderSweepNudgeMailRun_QuietSuppressesOutput(t *testing.T) {
 	store := beads.NewMemStoreFrom(100, nil, nil)
 
 	var stdout, stderr bytes.Buffer
-	cmdOrderSweepNudgeMailRun(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, nudgeMailSweepDefaultMailTTL, true, events.Discard, &stdout, &stderr)
+	cmdOrderSweepNudgeMailRun(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, mailArchiveAfter(config.DefaultMailArchiveReadAfter), true, events.Discard, &stdout, &stderr)
 	if stdout.String() != "" {
 		t.Errorf("expected empty stdout with --quiet, got: %q", stdout.String())
 	}
@@ -535,7 +548,7 @@ func TestCmdOrderSweepNudgeMailDryRun_NothingToClose(t *testing.T) {
 	store := beads.NewMemStoreFrom(100, nil, nil)
 
 	var stdout, stderr bytes.Buffer
-	cmdOrderSweepNudgeMailDryRun(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, nudgeMailSweepDefaultMailTTL, false, &stdout, &stderr)
+	cmdOrderSweepNudgeMailDryRun(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, mailArchiveAfter(config.DefaultMailArchiveReadAfter), false, &stdout, &stderr)
 	if !strings.Contains(stdout.String(), "nothing to close") {
 		t.Errorf("expected 'nothing to close' for empty store dry-run, got: %q", stdout.String())
 	}
@@ -545,12 +558,12 @@ func TestCmdOrderSweepNudgeMailDryRun_ShowsWouldClose(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	seed := []beads.Bead{
 		nudgeSeed("n1", "nudge-1", now.Add(-nudgeMailSweepDefaultNudgeTTL-time.Second)),
-		mailSeed("m1", now.Add(-nudgeMailSweepDefaultMailTTL-time.Second)),
+		mailSeed("m1", now.Add(-config.DefaultMailArchiveReadAfter-time.Second)),
 	}
 	store := beads.NewMemStoreFrom(100, seed, nil)
 
 	var stdout, stderr bytes.Buffer
-	cmdOrderSweepNudgeMailDryRun(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, nudgeMailSweepDefaultMailTTL, false, &stdout, &stderr)
+	cmdOrderSweepNudgeMailDryRun(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, mailArchiveAfter(config.DefaultMailArchiveReadAfter), false, &stdout, &stderr)
 	out := stdout.String()
 	if !strings.HasPrefix(out, "[DRY RUN]") {
 		t.Errorf("expected '[DRY RUN]' prefix, got: %q", out)
@@ -572,7 +585,7 @@ func TestCmdOrderSweepNudgeMailDryRun_NoBeadsClosed(t *testing.T) {
 	store := beads.NewMemStoreFrom(100, seed, nil)
 
 	var stdout, stderr bytes.Buffer
-	cmdOrderSweepNudgeMailDryRun(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, nudgeMailSweepDefaultMailTTL, false, &stdout, &stderr)
+	cmdOrderSweepNudgeMailDryRun(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, mailArchiveAfter(config.DefaultMailArchiveReadAfter), false, &stdout, &stderr)
 
 	// The bead should remain open.
 	open, _ := store.ListOpen()
@@ -598,7 +611,7 @@ func TestCmdOrderSweepNudgeMailDryRun_ListErrorReturnsNonZero(t *testing.T) {
 	store := &nudgeSweepFailingList{MemStore: beads.NewMemStoreFrom(100, nil, nil)}
 
 	var stdout, stderr bytes.Buffer
-	code := cmdOrderSweepNudgeMailDryRun(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, nudgeMailSweepDefaultMailTTL, false, &stdout, &stderr)
+	code := cmdOrderSweepNudgeMailDryRun(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, mailArchiveAfter(config.DefaultMailArchiveReadAfter), false, &stdout, &stderr)
 	if code == 0 {
 		t.Errorf("expected non-zero exit code on list error, got %d", code)
 	}
@@ -618,7 +631,7 @@ func TestCmdOrderSweepNudgeMailRun_ListErrorReturnsNonZero(t *testing.T) {
 	store := &nudgeSweepFailingList{MemStore: beads.NewMemStoreFrom(100, nil, nil)}
 
 	var stdout, stderr bytes.Buffer
-	code := cmdOrderSweepNudgeMailRun(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, nudgeMailSweepDefaultMailTTL, false, events.Discard, &stdout, &stderr)
+	code := cmdOrderSweepNudgeMailRun(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, mailArchiveAfter(config.DefaultMailArchiveReadAfter), false, events.Discard, &stdout, &stderr)
 	if code == 0 {
 		t.Errorf("expected non-zero exit code on list error, got %d", code)
 	}
@@ -639,7 +652,7 @@ func TestCountStaleNudgeMail_ListErrorPropagates(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	store := &nudgeSweepFailingList{MemStore: beads.NewMemStoreFrom(100, nil, nil)}
 
-	_, err := countStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, nudgeMailSweepDefaultMailTTL, 0)
+	_, err := countStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, mailArchiveAfter(config.DefaultMailArchiveReadAfter), 0)
 	if err == nil {
 		t.Fatal("expected non-nil error when the store listing fails")
 	}
@@ -651,11 +664,11 @@ func TestRunNudgeMailSweepWatchdog_ClosesStaleBeads(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	seed := []beads.Bead{
 		nudgeSeed("nudge-stale", "nudge-s", now.Add(-nudgeMailSweepDefaultNudgeTTL-time.Second)),
-		mailSeed("mail-stale", now.Add(-nudgeMailSweepDefaultMailTTL-time.Second)),
+		mailSeed("mail-stale", now.Add(-config.DefaultMailArchiveReadAfter-time.Second)),
 	}
 	store := beads.NewMemStoreFrom(100, seed, nil)
 
-	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, nudgeMailSweepDefaultMailTTL, nudgeMailSweepWatchdogCloseBudget)
+	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, mailArchiveAfter(config.DefaultMailArchiveReadAfter), nudgeMailSweepWatchdogCloseBudget)
 	if err != nil {
 		t.Fatalf("watchdog sweep: %v", err)
 	}
@@ -690,7 +703,7 @@ func TestCountStaleNudgeMail_MatchesSweepCounts(t *testing.T) {
 	// countStaleNudgeMail should return the same counts that sweepStaleNudgeMail closes.
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	nudgeTTL := nudgeMailSweepDefaultNudgeTTL
-	mailTTL := nudgeMailSweepDefaultMailTTL
+	mailTTL := config.DefaultMailArchiveReadAfter
 
 	seed := []beads.Bead{
 		nudgeSeed("n1", "nudge-1", now.Add(-nudgeTTL-time.Second)),
@@ -700,7 +713,7 @@ func TestCountStaleNudgeMail_MatchesSweepCounts(t *testing.T) {
 	}
 	store := beads.NewMemStoreFrom(100, seed, nil)
 
-	counts, err := countStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeTTL, mailTTL, 0)
+	counts, err := countStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeTTL, mailArchiveAfter(mailTTL), 0)
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
@@ -719,14 +732,14 @@ func TestCmdOrderSweepNudgeMailRun_RecordsMailArchivedPerMessage(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	seed := []beads.Bead{
 		nudgeSeed("n1", "nudge-1", now.Add(-nudgeMailSweepDefaultNudgeTTL-time.Second)),
-		mailSeed("m1", now.Add(-nudgeMailSweepDefaultMailTTL-time.Second)),
-		mailSeed("m2", now.Add(-nudgeMailSweepDefaultMailTTL-2*time.Second)),
+		mailSeed("m1", now.Add(-config.DefaultMailArchiveReadAfter-time.Second)),
+		mailSeed("m2", now.Add(-config.DefaultMailArchiveReadAfter-2*time.Second)),
 	}
 	store := beads.NewMemStoreFrom(100, seed, nil)
 	rec := events.NewFake()
 
 	var stdout, stderr bytes.Buffer
-	if code := cmdOrderSweepNudgeMailRun(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, nudgeMailSweepDefaultMailTTL, true, rec, &stdout, &stderr); code != 0 {
+	if code := cmdOrderSweepNudgeMailRun(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, mailArchiveAfter(config.DefaultMailArchiveReadAfter), true, rec, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
 	}
 	var subjects []string

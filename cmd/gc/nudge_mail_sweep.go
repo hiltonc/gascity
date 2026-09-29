@@ -6,13 +6,13 @@ import (
 	"time"
 
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/mail/beadmail"
 	"github.com/gastownhall/gascity/internal/nudgequeue"
 )
 
 const (
 	nudgeMailSweepDefaultNudgeTTL     = 10 * time.Minute
-	nudgeMailSweepDefaultMailTTL      = 60 * time.Minute
 	nudgeMailSweepCloseBudget         = 50
 	nudgeMailSweepWatchdogInterval    = 5 * time.Minute
 	nudgeMailSweepWatchdogCloseBudget = 500
@@ -44,7 +44,9 @@ type nudgeMailSweepResult struct {
 // Terminal metadata is stamped via nudgequeue.Store.SweepStale before each close
 // so the bead audit trail is intact.
 //
-// Mail candidates are open message beads with label "read" created before now-mailTTL.
+// Mail candidates are open message beads with label "read" whose recipient's
+// archive window under mailPolicy has elapsed; a recipient whose window is zero
+// is never swept.
 //
 // limit caps total closes (nudge + mail combined). Pass 0 for no cap.
 // Per-bead errors do not abort the sweep; they are returned via errors.Join so
@@ -54,7 +56,7 @@ type nudgeMailSweepResult struct {
 // class); the mail phase from the strongly-typed mailStore (the messaging class).
 // Both wrap the same underlying work store until either class relocates, so
 // behavior is unchanged today.
-func sweepStaleNudgeMail(nudgeStore beads.NudgesStore, mailStore beads.MailStore, nudgeState *nudgequeue.State, now time.Time, nudgeTTL, mailTTL time.Duration, limit int) (nudgeMailSweepResult, error) {
+func sweepStaleNudgeMail(nudgeStore beads.NudgesStore, mailStore beads.MailStore, nudgeState *nudgequeue.State, now time.Time, nudgeTTL time.Duration, mailPolicy config.MailRetentionPolicy, limit int) (nudgeMailSweepResult, error) {
 	var result nudgeMailSweepResult
 	var beadErrs []error
 
@@ -89,14 +91,13 @@ func sweepStaleNudgeMail(nudgeStore beads.NudgesStore, mailStore beads.MailStore
 	// budget is passed in. mailBudget is the remaining share of the combined
 	// limit, so a fatal listing failure early-returns (discarding accumulated
 	// per-bead errors) exactly as the inline loop did.
-	mailCutoff := now.Add(-mailTTL)
 	remaining := limit - result.NudgeClosed - result.MailClosed
 	if limit == 0 || remaining > 0 {
 		mailBudget := remaining
 		if limit == 0 {
 			mailBudget = 0
 		}
-		mailClosed, mailCloseErrs, mailListErr := beadmail.SweepReadMessagesBefore(mailStore, mailCutoff, mailBudget, nudgeMailSweepMailCloseReason)
+		mailClosed, mailCloseErrs, mailListErr := beadmail.SweepReadMessages(mailStore, mailPolicy, now, mailBudget, nudgeMailSweepMailCloseReason)
 		if mailListErr != nil {
 			return result, fmt.Errorf("nudge-mail-sweep: listing read mail beads: %w", mailListErr)
 		}
@@ -113,7 +114,7 @@ func sweepStaleNudgeMail(nudgeStore beads.NudgesStore, mailStore beads.MailStore
 // effects. The limit parameter caps the count the same way sweepStaleNudgeMail
 // caps closes; pass 0 for no cap. The nudge phase is counted from the typed
 // nudgeStore (nudges class); the mail phase from the typed mailStore (messaging class).
-func countStaleNudgeMail(nudgeStore beads.NudgesStore, mailStore beads.MailStore, nudgeState *nudgequeue.State, now time.Time, nudgeTTL, mailTTL time.Duration, limit int) (nudgeMailSweepResult, error) {
+func countStaleNudgeMail(nudgeStore beads.NudgesStore, mailStore beads.MailStore, nudgeState *nudgequeue.State, now time.Time, nudgeTTL time.Duration, mailPolicy config.MailRetentionPolicy, limit int) (nudgeMailSweepResult, error) {
 	var result nudgeMailSweepResult
 
 	liveIDs := liveNudgeIDSet(nudgeState)
@@ -135,20 +136,29 @@ func countStaleNudgeMail(nudgeStore beads.NudgesStore, mailStore beads.MailStore
 		result.NudgeClosed++
 	}
 
-	mailCutoff := now.Add(-mailTTL)
 	remaining := limit - result.NudgeClosed - result.MailClosed
 	if limit == 0 || remaining > 0 {
 		mailBudget := remaining
 		if limit == 0 {
 			mailBudget = 0
 		}
-		mailCount, err := beadmail.CountReadMessagesBefore(mailStore, mailCutoff, mailBudget)
+		mailCount, err := beadmail.CountReadMessages(mailStore, mailPolicy, now, mailBudget)
 		if err != nil {
 			return result, fmt.Errorf("nudge-mail-sweep (dry-run): listing read mail beads: %w", err)
 		}
 		result.MailClosed += mailCount
 	}
 	return result, nil
+}
+
+// mailRetentionPolicyForConfig returns the city's per-recipient read-mail
+// retention policy. A nil config gets the [mail] defaults: archive read mail
+// after an hour, never purge.
+func mailRetentionPolicyForConfig(cfg *config.City) (config.MailRetentionPolicy, error) {
+	if cfg == nil {
+		return config.MailConfig{}.RetentionPolicy()
+	}
+	return cfg.Mail.RetentionPolicy()
 }
 
 // liveNudgeIDSet returns the set of nudge IDs currently in pending or in-flight state.
