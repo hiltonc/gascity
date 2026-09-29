@@ -29,18 +29,18 @@ func TestWispGC_NilSafe(t *testing.T) {
 }
 
 func TestWispGC_DisabledReturnsNil(t *testing.T) {
-	wg := newWispGC(0, time.Hour, 0)
+	wg := newWispGC(0, time.Hour, config.MailRetentionPolicy{})
 	if wg != nil {
 		t.Error("zero interval should return nil")
 	}
-	wg = newWispGC(time.Hour, 0, 0)
+	wg = newWispGC(time.Hour, 0, config.MailRetentionPolicy{})
 	if wg != nil {
 		t.Error("zero TTL should return nil")
 	}
 }
 
 func TestWispGC_ShouldRunRespectsInterval(t *testing.T) {
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	now := time.Now()
 
 	if !wg.shouldRun(now) {
@@ -71,8 +71,8 @@ func TestWispGCForConfigUsesMailRetentionTTL(t *testing.T) {
 	if memory.ttl != 0 {
 		t.Fatalf("ttl = %v, want 0", memory.ttl)
 	}
-	if memory.mailRetentionTTL != time.Hour {
-		t.Fatalf("mailRetentionTTL = %v, want 1h", memory.mailRetentionTTL)
+	if memory.mailRetention.ShortestRetentionTTL() != time.Hour {
+		t.Fatalf("mail retention = %v, want 1h", memory.mailRetention.ShortestRetentionTTL())
 	}
 }
 
@@ -85,7 +85,7 @@ func TestWispGC_PurgesExpiredMolecules(t *testing.T) {
 		makeGCBead("mol-3", now.Add(-3*time.Hour), "closed", "molecule"),
 	})
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -326,7 +326,7 @@ func TestWispGC_UnsplitCitySessionPurgeLeavesWorkStore(t *testing.T) {
 			if ledger := cr.infraSessionLedger(); ledger.Store != nil {
 				t.Fatalf("infraSessionLedger() = %T, want no ledger on an unsplit city", ledger.Store)
 			}
-			wg := newWispGC(time.Minute, 24*time.Hour, 24*time.Hour)
+			wg := newWispGC(time.Minute, 24*time.Hour, mailPurgeAfter(24*time.Hour))
 			if _, err := wg.runGC(cr.graphBeadStore(), cr.infraSessionLedger(), cr.mailBeadStore(), now); err != nil {
 				t.Fatalf("runGC: %v", err)
 			}
@@ -404,7 +404,7 @@ func TestWispGC_SplitCityPurgesClosedInfraSessions(t *testing.T) {
 	}
 
 	// Mail retention alone does not opt the city into purging session history.
-	mailOnly := newWispGC(time.Minute, 0, 24*time.Hour)
+	mailOnly := newWispGC(time.Minute, 0, mailPurgeAfter(24*time.Hour))
 	if _, err := mailOnly.runGC(cr.graphBeadStore(), sessionLedger, cr.mailBeadStore(), now); err != nil {
 		t.Fatalf("mail-only runGC: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestWispGC_SplitCityPurgesClosedInfraSessions(t *testing.T) {
 		t.Fatalf("mail-retention-only GC purged a session: %v", err)
 	}
 
-	wg := newWispGC(time.Minute, 24*time.Hour, 0)
+	wg := newWispGC(time.Minute, 24*time.Hour, config.MailRetentionPolicy{})
 	if _, err := wg.runGC(cr.graphBeadStore(), sessionLedger, cr.mailBeadStore(), now); err != nil {
 		t.Fatalf("runGC: %v", err)
 	}
@@ -495,7 +495,7 @@ func TestWispGC_SessionPurgeScanBudgetDoesNotStarve(t *testing.T) {
 	wispGCSessionPurgeScanCap = 2
 	t.Cleanup(func() { wispGCSessionPurgeScanCap = prevScan })
 
-	wg := newWispGC(time.Minute, 24*time.Hour, 0)
+	wg := newWispGC(time.Minute, 24*time.Hour, config.MailRetentionPolicy{})
 	sessionLedger := beads.SessionStore{Store: ledger}
 	graph := beads.GraphStore{Store: ledger}
 	var total []int
@@ -530,7 +530,7 @@ func TestWispGC_NothingExpired(t *testing.T) {
 		makeGCBead("mol-1", now.Add(-10*time.Minute), "closed", "molecule"),
 	})
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -571,7 +571,7 @@ func TestWispGCClosesGeneratedMembersOnlyForTerminalRoots(t *testing.T) {
 		}),
 	})
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	if _, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now); err != nil {
 		t.Fatalf("runGC: %v", err)
 	}
@@ -622,7 +622,7 @@ func TestWispGC_ClosesOpenSpecSidecarsForClosedWorkflowRoots(t *testing.T) {
 		}),
 	})
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -680,7 +680,7 @@ func TestWispGC_PurgesExpiredReadMessageRetention(t *testing.T) {
 		},
 	})
 
-	wg := newWispGC(5*time.Minute, 0, time.Hour)
+	wg := newWispGC(5*time.Minute, 0, mailPurgeAfter(time.Hour))
 	if wg == nil {
 		t.Fatal("mail retention should enable wisp GC when interval is configured")
 	}
@@ -706,7 +706,7 @@ func TestWispGC_ReadMessageRetentionZeroDisablesAndSuppressesLog(t *testing.T) {
 	})
 
 	logOutput := captureWispGCLog(t, func() {
-		wg := newWispGC(5*time.Minute, time.Hour, 0)
+		wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 		purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 		if err != nil {
 			t.Fatalf("runGC: %v", err)
@@ -730,7 +730,7 @@ func TestWispGC_ReadMessageRetentionLogsCountAndTTL(t *testing.T) {
 	})
 
 	logOutput := captureWispGCLog(t, func() {
-		wg := newWispGC(5*time.Minute, 0, time.Hour)
+		wg := newWispGC(5*time.Minute, 0, mailPurgeAfter(time.Hour))
 		if _, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now); err != nil {
 			t.Fatalf("runGC: %v", err)
 		}
@@ -743,7 +743,7 @@ func TestWispGC_ReadMessageRetentionLogsCountAndTTL(t *testing.T) {
 
 func TestWispGC_EmptyList(t *testing.T) {
 	store := newGCStore(nil)
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, time.Now())
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -761,7 +761,7 @@ func TestWispGC_DeleteErrorIsSurfacedAndContinues(t *testing.T) {
 	})
 	store.deleteErrors["mol-1"] = fmt.Errorf("delete failed")
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err == nil {
 		t.Fatal("expected delete error to be surfaced")
@@ -801,7 +801,7 @@ func TestWispGC_PurgesExpiredMoleculeChildrenWithRoot(t *testing.T) {
 		t.Fatalf("DepAdd(mol-1.2->mol-1.1): %v", err)
 	}
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -952,7 +952,7 @@ func TestWispGC_PurgesExpiredClosureAcrossStorageTiers(t *testing.T) {
 		t.Fatalf("DepAdd(no-history-child->metadata-child): %v", err)
 	}
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -983,7 +983,7 @@ func TestWispGC_DoesNotDeleteExternalDependents(t *testing.T) {
 		t.Fatalf("DepAdd(external-1->mol-1.1): %v", err)
 	}
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -1022,7 +1022,7 @@ func TestWispGC_PurgesParentChildOwnedDependentsWithoutMetadata(t *testing.T) {
 		t.Fatalf("DepAdd(mol-1.2->mol-1.1): %v", err)
 	}
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -1050,7 +1050,7 @@ func TestWispGC_LeavesRootWhenChildDeleteFails(t *testing.T) {
 	}
 	store.deleteErrors["mol-1.1"] = fmt.Errorf("delete failed")
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err == nil {
 		t.Fatal("expected child delete error")
@@ -1109,7 +1109,7 @@ func TestWispGC_PartialChildDeleteRemainsRetryable(t *testing.T) {
 	}
 	store.deleteErrors["mol-1.2"] = fmt.Errorf("delete failed")
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err == nil {
 		t.Fatal("expected first pass child delete error")
@@ -1155,7 +1155,7 @@ func TestWispGC_PreservesOrderTrackingBeads(t *testing.T) {
 		makeGCBeadWithLabels("track-open", now.Add(-5*time.Hour), "open", "task", labelOrderTracking),
 	})
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -1183,7 +1183,7 @@ func TestWispGC_PreservesLegacyIssuesTierTrackingBeads(t *testing.T) {
 		},
 	})
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -1204,7 +1204,7 @@ func TestWispGC_DoesNotListOrderTrackingBeads(t *testing.T) {
 	})
 	store.listErrors[gcQueryKey{Status: "closed", Label: labelOrderTracking}] = fmt.Errorf("tracking list failed")
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -1234,7 +1234,7 @@ func TestWispGC_TrackingBeadsDoNotDeleteParentChildDescendants(t *testing.T) {
 		t.Fatalf("DepAdd(track-child->track-old): %v", err)
 	}
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -1256,7 +1256,7 @@ func TestWispGC_ListErrorFailsRun(t *testing.T) {
 	store := newGCStore(nil)
 	store.listErrors[gcQueryKey{Status: "closed", Type: "molecule"}] = fmt.Errorf("molecule list failed")
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	_, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, time.Now())
 	if err == nil {
 		t.Fatal("expected list error")
@@ -1271,7 +1271,7 @@ func TestWispGC_ReapsClosedOrphanWhenRootAbsent(t *testing.T) {
 		makeGCOrphanWisp("orphan-1", now.Add(-2*time.Hour), "ghost-root"),
 	})
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -1292,7 +1292,7 @@ func TestWispGC_ReapsClosedOrphanWhenRootClosed(t *testing.T) {
 		makeGCOrphanWisp("orphan-2", now.Add(-2*time.Hour), "term-root"),
 	})
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -1315,7 +1315,7 @@ func TestWispGC_DoesNotReapWhenRootOpen(t *testing.T) {
 		makeGCOrphanWisp("orphan-live", now.Add(-2*time.Hour), "live-root"),
 	})
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -1338,7 +1338,7 @@ func TestWispGC_DryRunDefaultReapsNothing(t *testing.T) {
 		makeGCOrphanWisp("orphan-dry", now.Add(-2*time.Hour), "ghost-root"),
 	})
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	var purged int
 	var runErr error
 	logOutput := captureWispGCLog(t, func() {
@@ -1370,7 +1370,7 @@ func TestWispGC_ReapHonorsBatchCap(t *testing.T) {
 		makeGCOrphanWisp("orphan-cap-2", now.Add(-2*time.Hour), "ghost-root"),
 	})
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -1403,7 +1403,7 @@ func TestWispGC_ReapBatchCapBoundsAttemptsNotJustSuccesses(t *testing.T) {
 	store.deleteErrors["orphan-fail-1"] = fmt.Errorf("delete failed")
 	store.deleteErrors["orphan-fail-2"] = fmt.Errorf("delete failed")
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err == nil {
 		t.Fatal("expected reap delete error to be surfaced")
@@ -1435,7 +1435,7 @@ func TestWispGC_ReapsRootlessPlainTaskWisp(t *testing.T) {
 	noRoot.Ephemeral = true
 	store := newGCStore([]beads.Bead{noRoot})
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -1457,7 +1457,7 @@ func TestWispGC_ReapSkipsRootlessNonTaskRow(t *testing.T) {
 	noRoot.Ephemeral = true
 	store := newGCStore([]beads.Bead{noRoot})
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -1485,7 +1485,7 @@ func TestWispGC_ReapSkipsRootlessPlainTaskWithChildren(t *testing.T) {
 	child.ParentID = "no-root"
 	store := newGCStore([]beads.Bead{noRoot, child})
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -1515,7 +1515,7 @@ func TestWispGC_ReapSkipsRootlessPlainTaskWithParent(t *testing.T) {
 		child,
 	})
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -1539,7 +1539,7 @@ func TestWispGC_ReapSkipsRootlessMessageWisp(t *testing.T) {
 	msg.Status = "closed"
 	store := newGCStore([]beads.Bead{msg})
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -1571,7 +1571,7 @@ func TestWispGC_ReapDryRunBoundsRootlessProbes(t *testing.T) {
 	}
 	store := newGCStore(seed)
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	var purged int
 	var runErr error
 	output := captureWispGCLog(t, func() {
@@ -1615,7 +1615,7 @@ func TestWispGC_ReapSkipsRootlessTaskWithParentDepOnly(t *testing.T) {
 		t.Fatalf("DepAdd: %v", err)
 	}
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -1644,7 +1644,7 @@ func TestWispGC_ReapSkipsRootlessTaskWithChildDepOnly(t *testing.T) {
 		t.Fatalf("DepAdd: %v", err)
 	}
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -1668,7 +1668,7 @@ func TestWispGC_ReapDeleteErrorSurfacedAndContinues(t *testing.T) {
 	})
 	store.deleteErrors["orphan-err"] = fmt.Errorf("delete failed")
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err == nil {
 		t.Fatal("expected reap delete error to be surfaced")
@@ -1697,7 +1697,7 @@ func TestWispGC_DoesNotReapWhenRootGetErrors(t *testing.T) {
 	// outage), so collectibility cannot be proven.
 	store.getErrors["flaky-root"] = fmt.Errorf("store temporarily unavailable")
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err == nil {
 		t.Fatal("expected unreadable-root Get error to be surfaced")
@@ -1776,7 +1776,7 @@ func TestWispGC_ClosesAbandonedOpenRootWhenAllDescendantsTerminal(t *testing.T) 
 
 	withCloseAbandonedEnforced(t, func() {
 		withCloseAbandonedTTL(t, 5*time.Minute, func() {
-			wg := newWispGC(5*time.Minute, time.Hour, 0)
+			wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 			if _, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now); err != nil {
 				t.Fatalf("runGC: %v", err)
 			}
@@ -1826,7 +1826,7 @@ func TestWispGC_ClosesAbandonedV1MoleculeRootWithoutWorkflowMetadata(t *testing.
 
 	withCloseAbandonedEnforced(t, func() {
 		withCloseAbandonedTTL(t, 5*time.Minute, func() {
-			wg := newWispGC(5*time.Minute, time.Hour, 0)
+			wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 			if _, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now); err != nil {
 				t.Fatalf("runGC: %v", err)
 			}
@@ -1891,7 +1891,7 @@ func TestWispGC_ClosesAbandonedInProgressGraphRootWhenAllDescendantsTerminal(t *
 
 	withCloseAbandonedEnforced(t, func() {
 		withCloseAbandonedTTL(t, 5*time.Minute, func() {
-			wg := newWispGC(5*time.Minute, time.Hour, 0)
+			wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 			if _, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now); err != nil {
 				t.Fatalf("runGC: %v", err)
 			}
@@ -1942,7 +1942,7 @@ func TestWispGC_CollectsClosedGraphWorkflowRoot(t *testing.T) {
 		t.Fatalf("DepAdd(graph-root.step->graph-root): %v", err)
 	}
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -2050,7 +2050,7 @@ func TestWispGC_ReapSkipsOrphanOwningOpenSubStepWithoutChargingCap(t *testing.T)
 		makeGCOrphanWisp("orphan-ok", now.Add(-2*time.Hour), "ghost-root"),
 	})
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v (a refused reap is a skip, not a sweep failure)", err)
@@ -2083,7 +2083,7 @@ func TestWispGC_ClosurePurgeHonorsBatchCap(t *testing.T) {
 		makeGCBead("mol-c", now.Add(-2*time.Hour), "closed", "molecule"),
 	})
 
-	wg := newWispGC(5*time.Minute, time.Hour, 0)
+	wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 	purged, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now)
 	if err != nil {
 		t.Fatalf("runGC: %v", err)
@@ -2134,7 +2134,7 @@ func TestWispGC_LeavesOpenRootWithLiveDescendant(t *testing.T) {
 	}
 
 	withCloseAbandonedEnforced(t, func() {
-		wg := newWispGC(5*time.Minute, time.Hour, 0)
+		wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 		if _, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now); err != nil {
 			t.Fatalf("runGC: %v", err)
 		}
@@ -2164,7 +2164,7 @@ func TestWispGC_LeavesSteplessRoot(t *testing.T) {
 		// Close TTL well beyond the root's 2h idle age: the root is inside the
 		// instantiator race window.
 		withCloseAbandonedTTL(t, 24*time.Hour, func() {
-			wg := newWispGC(5*time.Minute, time.Hour, 0)
+			wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 			if _, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now); err != nil {
 				t.Fatalf("runGC: %v", err)
 			}
@@ -2201,7 +2201,7 @@ func TestWispGC_ClosesAbandonedSteplessUnclaimedRootPastTTL(t *testing.T) {
 
 	withCloseAbandonedEnforced(t, func() {
 		withCloseAbandonedTTL(t, 5*time.Minute, func() {
-			wg := newWispGC(5*time.Minute, time.Hour, 0)
+			wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 			if _, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now); err != nil {
 				t.Fatalf("runGC: %v", err)
 			}
@@ -2242,7 +2242,7 @@ func TestWispGC_ClosesAssignedButUnclaimedSteplessRootPastTTL(t *testing.T) {
 
 	withCloseAbandonedEnforced(t, func() {
 		withCloseAbandonedTTL(t, 5*time.Minute, func() {
-			wg := newWispGC(5*time.Minute, time.Hour, 0)
+			wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 			if _, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now); err != nil {
 				t.Fatalf("runGC: %v", err)
 			}
@@ -2279,7 +2279,7 @@ func TestWispGC_LeavesSteplessClaimedRootPastTTL(t *testing.T) {
 
 	withCloseAbandonedEnforced(t, func() {
 		withCloseAbandonedTTL(t, 5*time.Minute, func() {
-			wg := newWispGC(5*time.Minute, time.Hour, 0)
+			wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 			if _, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now); err != nil {
 				t.Fatalf("runGC: %v", err)
 			}
@@ -2314,7 +2314,7 @@ func TestWispGC_DryRunDefaultDoesNotCloseSteplessRoot(t *testing.T) {
 	var logOutput string
 	withCloseAbandonedTTL(t, 5*time.Minute, func() {
 		logOutput = captureWispGCLog(t, func() {
-			wg := newWispGC(5*time.Minute, time.Hour, 0)
+			wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 			if _, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now); err != nil {
 				t.Fatalf("runGC: %v", err)
 			}
@@ -2352,7 +2352,7 @@ func TestWispGC_LeavesSteplessExemptRootPastTTL(t *testing.T) {
 
 	withCloseAbandonedEnforced(t, func() {
 		withCloseAbandonedTTL(t, 5*time.Minute, func() {
-			wg := newWispGC(5*time.Minute, time.Hour, 0)
+			wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 			if _, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now); err != nil {
 				t.Fatalf("runGC: %v", err)
 			}
@@ -2400,7 +2400,7 @@ func TestWispGC_LeavesSteplessRootWithLiveAttachmentSourcePastTTL(t *testing.T) 
 
 	withCloseAbandonedEnforced(t, func() {
 		withCloseAbandonedTTL(t, 5*time.Minute, func() {
-			wg := newWispGC(5*time.Minute, time.Hour, 0)
+			wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 			if _, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now); err != nil {
 				t.Fatalf("runGC: %v", err)
 			}
@@ -2444,7 +2444,7 @@ func TestWispGC_ClosesSteplessRootWhenAttachmentSourceTerminal(t *testing.T) {
 
 	withCloseAbandonedEnforced(t, func() {
 		withCloseAbandonedTTL(t, 5*time.Minute, func() {
-			wg := newWispGC(5*time.Minute, time.Hour, 0)
+			wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 			if _, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now); err != nil {
 				t.Fatalf("runGC: %v", err)
 			}
@@ -2492,7 +2492,7 @@ func TestWispGC_LeavesSteplessRootWithLiveGraphV2AttachmentSourcePastTTL(t *test
 
 	withCloseAbandonedEnforced(t, func() {
 		withCloseAbandonedTTL(t, 5*time.Minute, func() {
-			wg := newWispGC(5*time.Minute, time.Hour, 0)
+			wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 			if _, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now); err != nil {
 				t.Fatalf("runGC: %v", err)
 			}
@@ -2531,7 +2531,7 @@ func TestWispGC_LeavesSteplessRootWhenAttachmentQueryFails(t *testing.T) {
 	withCloseAbandonedEnforced(t, func() {
 		withCloseAbandonedTTL(t, 5*time.Minute, func() {
 			logOutput = captureWispGCLog(t, func() {
-				wg := newWispGC(5*time.Minute, time.Hour, 0)
+				wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 				if _, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now); err != nil {
 					t.Fatalf("runGC: %v", err)
 				}
@@ -2577,7 +2577,7 @@ func TestWispGC_RespectsTTLCutoff(t *testing.T) {
 
 	withCloseAbandonedEnforced(t, func() {
 		withCloseAbandonedTTL(t, time.Hour, func() {
-			wg := newWispGC(5*time.Minute, time.Hour, 0)
+			wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 			if _, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now); err != nil {
 				t.Fatalf("runGC: %v", err)
 			}
@@ -2613,7 +2613,7 @@ func TestWispGC_SkipsZFCExemptRoot(t *testing.T) {
 	}
 
 	withCloseAbandonedEnforced(t, func() {
-		wg := newWispGC(5*time.Minute, time.Hour, 0)
+		wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 		if _, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now); err != nil {
 			t.Fatalf("runGC: %v", err)
 		}
@@ -2652,7 +2652,7 @@ func TestWispGC_DryRunDefaultDoesNotClose(t *testing.T) {
 	var logOutput string
 	withCloseAbandonedTTL(t, 5*time.Minute, func() {
 		logOutput = captureWispGCLog(t, func() {
-			wg := newWispGC(5*time.Minute, time.Hour, 0)
+			wg := newWispGC(5*time.Minute, time.Hour, config.MailRetentionPolicy{})
 			if _, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now); err != nil {
 				t.Fatalf("runGC: %v", err)
 			}
