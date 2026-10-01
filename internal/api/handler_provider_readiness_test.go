@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gastownhall/gascity/internal/config"
 )
 
 func TestReadinessRegistrySync(t *testing.T) {
@@ -109,7 +112,7 @@ func TestProbeZCodeNotInstalled(t *testing.T) {
 	homeDir := t.TempDir()
 	pinProbeSearchPath(t, homeDir)
 
-	result := probeZCode(homeDir)
+	result := probeZCode(homeDir, nil)
 	if result.status != probeStatusNotInstalled {
 		t.Fatalf("probeZCode status = %q, want %q (detail %q)", result.status, probeStatusNotInstalled, result.detail)
 	}
@@ -122,12 +125,12 @@ func TestProbeZCodeNeedsBundleAndKey(t *testing.T) {
 
 	t.Setenv("ZCODE_CJS", "")
 	t.Setenv("ZCODE_API_KEY", "")
-	if result := probeZCode(homeDir); result.status != probeStatusInvalidConfiguration {
+	if result := probeZCode(homeDir, nil); result.status != probeStatusInvalidConfiguration {
 		t.Fatalf("missing bundle status = %q, want %q", result.status, probeStatusInvalidConfiguration)
 	}
 
 	t.Setenv("ZCODE_CJS", filepath.Join(homeDir, "absent.cjs"))
-	if result := probeZCode(homeDir); result.status != probeStatusInvalidConfiguration {
+	if result := probeZCode(homeDir, nil); result.status != probeStatusInvalidConfiguration {
 		t.Fatalf("absent bundle status = %q, want %q", result.status, probeStatusInvalidConfiguration)
 	}
 
@@ -136,13 +139,13 @@ func TestProbeZCodeNeedsBundleAndKey(t *testing.T) {
 		t.Fatalf("write bundle: %v", err)
 	}
 	t.Setenv("ZCODE_CJS", bundle)
-	if result := probeZCode(homeDir); result.status != probeStatusNeedsAuth {
+	if result := probeZCode(homeDir, nil); result.status != probeStatusNeedsAuth {
 		t.Fatalf("missing key status = %q, want %q", result.status, probeStatusNeedsAuth)
 	}
 
 	t.Setenv("ZCODE_API_KEY", "not-a-real-key")
 	writeExecutable(t, filepath.Join(homeDir, ".local", "bin"), "node", "#!/bin/sh\necho v22.5.0\n")
-	if result := probeZCode(homeDir); result.status != probeStatusConfigured {
+	if result := probeZCode(homeDir, nil); result.status != probeStatusConfigured {
 		t.Fatalf("configured status = %q, want %q (detail %q)", result.status, probeStatusConfigured, result.detail)
 	}
 }
@@ -172,7 +175,7 @@ func TestProbeZCodeChecksTheNodeFloor(t *testing.T) {
 	} {
 		writeExecutable(t, userBin, "node", "#!/bin/sh\necho "+tc.version+"\n")
 		t.Setenv("ZCODE_NODE_BIN", filepath.Join(userBin, "node"))
-		if got := probeZCode(homeDir); got.status != tc.want {
+		if got := probeZCode(homeDir, nil); got.status != tc.want {
 			t.Fatalf("node %s status = %q, want %q (detail %q)", tc.version, got.status, tc.want, got.detail)
 		}
 	}
@@ -182,7 +185,7 @@ func TestProbeZCodeChecksTheNodeFloor(t *testing.T) {
 	if err := os.Remove(filepath.Join(userBin, "node")); err != nil {
 		t.Fatalf("remove node stub: %v", err)
 	}
-	if got := probeZCode(homeDir); got.status != probeStatusInvalidConfiguration {
+	if got := probeZCode(homeDir, nil); got.status != probeStatusInvalidConfiguration {
 		t.Fatalf("missing node status = %q, want %q", got.status, probeStatusInvalidConfiguration)
 	}
 }
@@ -192,7 +195,7 @@ func TestProbeMimoCodeNotInstalled(t *testing.T) {
 	pinProbeSearchPath(t, homeDir)
 	t.Setenv("XIAOMI_API_KEY", "")
 
-	result := probeMimoCode(homeDir)
+	result := probeMimoCode(homeDir, nil)
 	if result.status != probeStatusNotInstalled {
 		t.Fatalf("probeMimoCode status = %q, want %q (%s)", result.status, probeStatusNotInstalled, result.detail)
 	}
@@ -204,7 +207,19 @@ func TestProbeMimoCodeEnvKeyConfigured(t *testing.T) {
 	stageMimoProbeBinary(t, homeDir)
 	t.Setenv("XIAOMI_API_KEY", "test-key")
 
-	result := probeMimoCode(homeDir)
+	result := probeMimoCode(homeDir, nil)
+	if result.status != probeStatusConfigured {
+		t.Fatalf("probeMimoCode status = %q, want %q (%s)", result.status, probeStatusConfigured, result.detail)
+	}
+}
+
+func TestProbeMimoCodeCityEnvKeyConfigured(t *testing.T) {
+	homeDir := t.TempDir()
+	pinProbeSearchPath(t, homeDir)
+	stageMimoProbeBinary(t, homeDir)
+	t.Setenv("XIAOMI_API_KEY", "")
+
+	result := probeMimoCode(homeDir, providerProbeEnv{"XIAOMI_API_KEY": "city-key"})
 	if result.status != probeStatusConfigured {
 		t.Fatalf("probeMimoCode status = %q, want %q (%s)", result.status, probeStatusConfigured, result.detail)
 	}
@@ -217,7 +232,7 @@ func TestProbeMimoCodeNeedsAuthWithoutKeyOrCredentials(t *testing.T) {
 	t.Setenv("XIAOMI_API_KEY", "")
 	t.Setenv("XDG_DATA_HOME", "")
 
-	result := probeMimoCode(homeDir)
+	result := probeMimoCode(homeDir, nil)
 	if result.status != probeStatusNeedsAuth {
 		t.Fatalf("probeMimoCode status = %q, want %q (%s)", result.status, probeStatusNeedsAuth, result.detail)
 	}
@@ -238,7 +253,7 @@ func TestProbeMimoCodeAuthFileConfigured(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result := probeMimoCode(homeDir)
+	result := probeMimoCode(homeDir, nil)
 	if result.status != probeStatusConfigured {
 		t.Fatalf("probeMimoCode status = %q, want %q (%s)", result.status, probeStatusConfigured, result.detail)
 	}
@@ -259,7 +274,7 @@ func TestProbeMimoCodeEmptyAuthFileNeedsAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result := probeMimoCode(homeDir)
+	result := probeMimoCode(homeDir, nil)
 	if result.status != probeStatusNeedsAuth {
 		t.Fatalf("probeMimoCode status = %q, want %q (%s)", result.status, probeStatusNeedsAuth, result.detail)
 	}
@@ -281,7 +296,7 @@ func TestProbeMimoCodeAuthFileConfiguredUnderXDGDataHome(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result := probeMimoCode(homeDir)
+	result := probeMimoCode(homeDir, nil)
 	if result.status != probeStatusConfigured {
 		t.Fatalf("probeMimoCode status = %q, want %q (%s)", result.status, probeStatusConfigured, result.detail)
 	}
@@ -304,7 +319,7 @@ func TestProbeMimoCodeAbsoluteXDGDataHomeShadowsHomeAuthFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result := probeMimoCode(homeDir)
+	result := probeMimoCode(homeDir, nil)
 	if result.status != probeStatusNeedsAuth {
 		t.Fatalf("probeMimoCode status = %q, want %q (%s)", result.status, probeStatusNeedsAuth, result.detail)
 	}
@@ -325,7 +340,7 @@ func TestProbeMimoCodeRelativeXDGDataHomeFallsBackToHome(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result := probeMimoCode(homeDir)
+	result := probeMimoCode(homeDir, nil)
 	if result.status != probeStatusConfigured {
 		t.Fatalf("probeMimoCode status = %q, want %q (%s)", result.status, probeStatusConfigured, result.detail)
 	}
@@ -396,7 +411,7 @@ func TestClaudeProbeCommandEnvForwardsConfigDirAndOAuthToken(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-test")
 
-	env := claudeProbeCommandEnv()
+	env := claudeProbeCommandEnv(nil)
 	if !slices.Contains(env, "CLAUDE_CONFIG_DIR="+configDir) {
 		t.Fatalf("claudeProbeCommandEnv missing CLAUDE_CONFIG_DIR forwarding: %v", env)
 	}
@@ -405,11 +420,30 @@ func TestClaudeProbeCommandEnvForwardsConfigDirAndOAuthToken(t *testing.T) {
 	}
 }
 
+func TestClaudeProbeCommandEnvAddsConfiguredEnv(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", "/process/claude")
+
+	env := claudeProbeCommandEnv(providerProbeEnv{
+		"CLAUDE_CONFIG_DIR": "/city/claude",
+		"ANTHROPIC_MODEL":   "claude-opus-5-5[1m]",
+	})
+	// Environ applies exec's last-value-wins rule for a repeated key.
+	got := (&exec.Cmd{Env: env}).Environ()
+	for _, want := range []string{"CLAUDE_CONFIG_DIR=/city/claude", "ANTHROPIC_MODEL=claude-opus-5-5[1m]"} {
+		if !slices.Contains(got, want) {
+			t.Fatalf("claude probe env missing %q: %v", want, got)
+		}
+	}
+	if slices.Contains(got, "CLAUDE_CONFIG_DIR=/process/claude") {
+		t.Fatalf("configured CLAUDE_CONFIG_DIR did not override the process value: %v", got)
+	}
+}
+
 func TestClaudeProbeCommandEnvOmitsUnsetValues(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
 
-	env := claudeProbeCommandEnv()
+	env := claudeProbeCommandEnv(nil)
 	assertEnvOmitsPrefix(t, env, "CLAUDE_CONFIG_DIR=")
 	assertEnvOmitsPrefix(t, env, "CLAUDE_CODE_OAUTH_TOKEN=")
 }
@@ -569,6 +603,7 @@ func TestProbeCommandEnvIncludesNVMInstallDir(t *testing.T) {
 
 func TestHandleProviderReadinessReturnsConfiguredStatuses(t *testing.T) {
 	homeDir := t.TempDir()
+	clearClaudeGatewayEnv(t)
 	binDir := filepath.Join(homeDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
@@ -653,6 +688,7 @@ printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstPar
 
 func TestHandleReadinessReturnsConfiguredStatuses(t *testing.T) {
 	homeDir := t.TempDir()
+	clearClaudeGatewayEnv(t)
 	binDir := filepath.Join(homeDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
@@ -746,6 +782,7 @@ printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstPar
 
 func TestHandleProviderReadinessFreshBypassesCache(t *testing.T) {
 	homeDir := t.TempDir()
+	clearClaudeGatewayEnv(t)
 	binDir := filepath.Join(homeDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
@@ -889,6 +926,7 @@ func TestHandleProviderReadinessReturnsNeedsAuthForCodexWithEmptyTokensObject(t 
 
 func TestHandleProviderReadinessReturnsConfiguredForClaudeOAuthToken(t *testing.T) {
 	homeDir := t.TempDir()
+	clearClaudeGatewayEnv(t)
 	binDir := filepath.Join(homeDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
@@ -916,6 +954,7 @@ printf '%s\n' '{"loggedIn":true,"authMethod":"oauth_token","apiProvider":"firstP
 
 func TestHandleProviderReadinessForwardsClaudeOnlyEnvToClaudeProbe(t *testing.T) {
 	homeDir := t.TempDir()
+	clearClaudeGatewayEnv(t)
 	binDir := filepath.Join(homeDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
@@ -951,6 +990,7 @@ printf '%s\n' '{"loggedIn":true,"authMethod":"oauth_token","apiProvider":"firstP
 
 func TestHandleProviderReadinessReturnsInvalidConfigurationForClaudeNonFirstPartyProvider(t *testing.T) {
 	homeDir := t.TempDir()
+	clearClaudeGatewayEnv(t)
 	binDir := filepath.Join(homeDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
@@ -976,6 +1016,7 @@ printf '%s\n' '{"loggedIn":true,"authMethod":"oauth_token","apiProvider":"bedroc
 
 func TestHandleProviderReadinessReturnsInvalidConfigurationForClaudeUnknownAuthMethod(t *testing.T) {
 	homeDir := t.TempDir()
+	clearClaudeGatewayEnv(t)
 	binDir := filepath.Join(homeDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
@@ -1001,6 +1042,7 @@ printf '%s\n' '{"loggedIn":true,"authMethod":"apiKey","apiProvider":"firstParty"
 
 func TestHandleProviderReadinessReturnsNeedsAuthForLoggedOutClaude(t *testing.T) {
 	homeDir := t.TempDir()
+	clearClaudeGatewayEnv(t)
 	binDir := filepath.Join(homeDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
@@ -1024,8 +1066,110 @@ printf '%s\n' '{"loggedIn":false,"authMethod":"claude.ai","apiProvider":"firstPa
 	assertProviderStatus(t, h, state, "/provider-readiness?providers=claude&fresh=1", "claude", probeStatusNeedsAuth)
 }
 
+// A gateway env (the teamclaude proxy shape) authenticates sessions with its
+// own key, so readiness must not fall through to the local claude.ai login,
+// which the fake reports as logged out the way the real host does.
+func TestHandleProviderReadinessClaudeGatewayEnv(t *testing.T) {
+	cases := []struct {
+		name    string
+		baseURL string
+		apiKey  string
+		token   string
+		want    string
+	}{
+		{name: "base URL and API key", baseURL: "http://127.0.0.1:3456", apiKey: "teamclaude-localhost", want: probeStatusConfigured},
+		{name: "base URL and auth token", baseURL: "http://127.0.0.1:3456", token: "gateway-token", want: probeStatusConfigured},
+		{name: "base URL without a key", baseURL: "http://127.0.0.1:3456", want: probeStatusNeedsAuth},
+		{name: "key without a base URL", apiKey: "sk-ant-api-test", want: probeStatusNeedsAuth},
+		{name: "neither", want: probeStatusNeedsAuth},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			homeDir := t.TempDir()
+			binDir := filepath.Join(homeDir, "bin")
+			if err := os.MkdirAll(binDir, 0o755); err != nil {
+				t.Fatalf("mkdir bin: %v", err)
+			}
+			writeExecutable(t, binDir, "claude", `#!/bin/sh
+printf '%s\n' '{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}'
+`)
+
+			t.Setenv("HOME", homeDir)
+			t.Setenv("ANTHROPIC_BASE_URL", tc.baseURL)
+			t.Setenv("ANTHROPIC_API_KEY", tc.apiKey)
+			t.Setenv("ANTHROPIC_AUTH_TOKEN", tc.token)
+			originalPathEnv := providerProbePathEnv
+			originalCommandContext := providerProbeCommandContext
+			providerProbePathEnv = binDir
+			providerProbeCommandContext = exec.CommandContext
+			defer func() {
+				providerProbePathEnv = originalPathEnv
+				providerProbeCommandContext = originalCommandContext
+			}()
+
+			state := newFakeState(t)
+			h := newTestCityHandler(t, state)
+			assertProviderStatus(t, h, state, "/provider-readiness?providers=claude&fresh=1", "claude", tc.want)
+		})
+	}
+}
+
+// A city whose claude provider env routes through a gateway reports claude
+// configured with no gateway vars in the process env: that env reaches the
+// provider's sessions through city.toml, not the supervisor or an SSH shell.
+// Without the city's env the probe still asks claude, which is logged out.
+// (bgc-15s)
+func TestProbeCityReadinessUsesProviderEnv(t *testing.T) {
+	stageLoggedOutClaude(t)
+	cases := []struct {
+		name string
+		cfg  *config.City
+		want string
+	}{
+		{name: "gateway in city provider env", cfg: cityWithClaudeEnv(claudeGatewayEnv()), want: probeStatusConfigured},
+		{name: "city provider without env", cfg: cityWithClaudeEnv(nil), want: probeStatusNeedsAuth},
+		{name: "no city", want: probeStatusNeedsAuth},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Not fresh: an answer cached for one env must not serve another.
+			resp, err := ProbeCityReadiness(context.Background(), tc.cfg, "claude", false)
+			if err != nil {
+				t.Fatalf("ProbeCityReadiness: %v", err)
+			}
+			if got := resp.Items["claude"].Status; got != tc.want {
+				t.Fatalf("claude status = %q, want %q (%s)", got, tc.want, resp.Items["claude"].Detail)
+			}
+		})
+	}
+}
+
+func TestHandleProviderReadinessUsesCityProviderEnv(t *testing.T) {
+	stageLoggedOutClaude(t)
+	state := newFakeState(t)
+	state.cfg.Providers["claude"] = cityWithClaudeEnv(claudeGatewayEnv()).Providers["claude"]
+	h := newTestCityHandler(t, state)
+
+	assertProviderStatus(t, h, state, "/provider-readiness?providers=claude&fresh=1", "claude", probeStatusConfigured)
+
+	req := httptest.NewRequest(http.MethodGet, cityURL(state, "/readiness?items=claude&fresh=1"), nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var resp readinessResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := resp.Items["claude"].Status; got != probeStatusConfigured {
+		t.Fatalf("readiness claude status = %q, want %q", got, probeStatusConfigured)
+	}
+}
+
 func TestHandleProviderReadinessReturnsProbeErrorForClaudeInvalidJSON(t *testing.T) {
 	homeDir := t.TempDir()
+	clearClaudeGatewayEnv(t)
 	binDir := filepath.Join(homeDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
@@ -1051,6 +1195,7 @@ printf '%s\n' 'not-json'
 
 func TestHandleProviderReadinessIncludesProbeErrorDetailForClaudeInvalidJSON(t *testing.T) {
 	homeDir := t.TempDir()
+	clearClaudeGatewayEnv(t)
 	binDir := filepath.Join(homeDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
@@ -1601,6 +1746,53 @@ func writeExecutable(t *testing.T, dir, name, body string) {
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		t.Fatalf("write %s: %v", name, err)
 	}
+}
+
+// stageLoggedOutClaude puts a claude that reports no login on the probe path,
+// under a fresh HOME, with no gateway vars in the process env.
+func stageLoggedOutClaude(t *testing.T) {
+	t.Helper()
+	homeDir := t.TempDir()
+	binDir := filepath.Join(homeDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	writeExecutable(t, binDir, "claude", `#!/bin/sh
+printf '%s\n' '{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}'
+`)
+	t.Setenv("HOME", homeDir)
+	clearClaudeGatewayEnv(t)
+	originalPathEnv := providerProbePathEnv
+	originalCommandContext := providerProbeCommandContext
+	providerProbePathEnv = binDir
+	providerProbeCommandContext = exec.CommandContext
+	t.Cleanup(func() {
+		providerProbePathEnv = originalPathEnv
+		providerProbeCommandContext = originalCommandContext
+	})
+}
+
+func claudeGatewayEnv() map[string]string {
+	return map[string]string{
+		"ANTHROPIC_BASE_URL": "http://127.0.0.1:3456",
+		"ANTHROPIC_API_KEY":  "teamclaude-localhost",
+	}
+}
+
+func cityWithClaudeEnv(env map[string]string) *config.City {
+	base := "builtin:claude"
+	return &config.City{Providers: map[string]config.ProviderSpec{
+		"claude": {Base: &base, Env: env},
+	}}
+}
+
+// clearClaudeGatewayEnv keeps a test's fake claude binary in charge of the
+// answer when the test itself runs inside a gateway-routed agent session.
+func clearClaudeGatewayEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
 }
 
 func assertEnvOmitsPrefix(t *testing.T, env []string, prefix string) {

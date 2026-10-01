@@ -3,6 +3,8 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,12 +12,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gastownhall/gascity/internal/config"
+	"github.com/gastownhall/gascity/internal/processenv"
 	"github.com/gastownhall/gascity/internal/searchpath"
 	zcodeadapter "github.com/gastownhall/gascity/internal/worker/adapters/zcode"
 	"gopkg.in/yaml.v3"
@@ -81,49 +85,51 @@ var (
 		"codex": {
 			displayName: "Codex",
 			kind:        probeKindProvider,
-			probe: func(_ context.Context, homeDir string) providerProbeResult {
+			probe: func(_ context.Context, homeDir string, _ providerProbeEnv) providerProbeResult {
 				return probeCodex(homeDir)
 			},
 		},
 		"gemini": {
 			displayName: "Gemini CLI",
 			kind:        probeKindProvider,
-			probe: func(_ context.Context, homeDir string) providerProbeResult {
+			probe: func(_ context.Context, homeDir string, _ providerProbeEnv) providerProbeResult {
 				return probeGemini(homeDir)
 			},
 		},
 		"antigravity": {
 			displayName: "Antigravity",
 			kind:        probeKindProvider,
-			probe: func(_ context.Context, homeDir string) providerProbeResult {
+			probe: func(_ context.Context, homeDir string, _ providerProbeEnv) providerProbeResult {
 				return probeAntigravity(homeDir)
 			},
 		},
 		"mimocode": {
 			displayName: "MiMo Code",
 			kind:        probeKindProvider,
-			probe: func(_ context.Context, homeDir string) providerProbeResult {
-				return probeMimoCode(homeDir)
+			probe: func(_ context.Context, homeDir string, env providerProbeEnv) providerProbeResult {
+				return probeMimoCode(homeDir, env)
 			},
 		},
 		"pi": {
 			displayName: "Pi Coding Agent",
 			kind:        probeKindProvider,
-			probe: func(_ context.Context, homeDir string) providerProbeResult {
+			probe: func(_ context.Context, homeDir string, _ providerProbeEnv) providerProbeResult {
 				return probePi(homeDir)
 			},
 		},
 		"zcode": {
 			displayName: "ZCode (Z.ai GLM harness)",
 			kind:        probeKindProvider,
-			probe: func(_ context.Context, homeDir string) providerProbeResult {
-				return probeZCode(homeDir)
+			probe: func(_ context.Context, homeDir string, env providerProbeEnv) providerProbeResult {
+				return probeZCode(homeDir, env)
 			},
 		},
 		"github_cli": {
 			displayName: "GitHub CLI",
 			kind:        probeKindTool,
-			probe:       probeGitHubCLI,
+			probe: func(ctx context.Context, homeDir string, _ providerProbeEnv) providerProbeResult {
+				return probeGitHubCLI(ctx, homeDir)
+			},
 		},
 	}
 )
@@ -187,7 +193,71 @@ type readinessItemSet map[string]struct{}
 type readinessProbeSpec struct {
 	displayName string
 	kind        string
-	probe       func(context.Context, string) providerProbeResult
+	probe       func(context.Context, string, providerProbeEnv) providerProbeResult
+}
+
+// providerProbeEnv is the env a city configures for one provider
+// ([providers.<name>.env]), expanded the way a session launch expands it. Its
+// keys override the process env for that provider's probe only, so readiness
+// sees what the provider's sessions see. A nil env reads the process env alone.
+type providerProbeEnv map[string]string
+
+func (e providerProbeEnv) get(key string) string {
+	if value := strings.TrimSpace(e[key]); value != "" {
+		return value
+	}
+	return strings.TrimSpace(os.Getenv(key))
+}
+
+// commandEnv returns the configured keys as sorted KEY=value pairs, to append
+// to a probe subprocess's scrubbed env.
+func (e providerProbeEnv) commandEnv() []string {
+	env := make([]string, 0, len(e))
+	for key, value := range e {
+		if strings.TrimSpace(value) != "" {
+			env = append(env, key+"="+value)
+		}
+	}
+	sort.Strings(env)
+	return env
+}
+
+// fingerprint keys the probe cache, so a probe with a city's provider env
+// never answers for one without it.
+func (e providerProbeEnv) fingerprint() string {
+	if len(e) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.Join(e.commandEnv(), "\x00")))
+	return hex.EncodeToString(sum[:])
+}
+
+// cityProviderProbeEnvs resolves each readiness provider's configured env from
+// a city config. Providers the city does not configure, or configures without
+// env, are absent. A nil config yields nil.
+func cityProviderProbeEnvs(cfg *config.City) map[string]providerProbeEnv {
+	if cfg == nil {
+		return nil
+	}
+	// The probe reports a missing binary itself, so resolution must not
+	// drop the env over one.
+	anyPath := func(name string) (string, error) { return name, nil }
+	envs := make(map[string]providerProbeEnv)
+	for name := range supportedProviderReadiness {
+		if _, ok := cfg.Providers[name]; !ok {
+			continue
+		}
+		resolved, err := config.ResolveProvider(&config.Agent{Provider: name}, &cfg.Workspace, cfg.Providers, anyPath)
+		if err != nil || len(resolved.Env) == 0 {
+			continue
+		}
+		env := make(providerProbeEnv, len(resolved.Env))
+		for key, value := range resolved.Env {
+			env[key] = processenv.ExpandSessionEnvValue(value)
+		}
+		envs[name] = env
+	}
+	return envs
 }
 
 type cachedProviderProbe struct {
@@ -226,7 +296,7 @@ func ProbeProviders(ctx context.Context, providers []string, fresh bool) (map[st
 	if err != nil {
 		return nil, err
 	}
-	resp, err := buildReadinessResponse(ctx, items, fresh)
+	resp, err := buildReadinessResponse(ctx, items, fresh, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -257,12 +327,21 @@ func (e *InvalidReadinessItemsError) Unwrap() error { return e.err }
 // then probes each item's CLI login. Both readiness routes and
 // `gc status readiness` call it, so the defaults, validation and probes cannot
 // drift between them. A bad items list returns *InvalidReadinessItemsError.
+// The probes read the process env; ProbeCityReadiness adds a city's provider env.
 func ProbeReadiness(ctx context.Context, itemsCSV string, fresh bool) (ReadinessResponse, error) {
+	return ProbeCityReadiness(ctx, nil, itemsCSV, fresh)
+}
+
+// ProbeCityReadiness is ProbeReadiness for one city: each provider's probe also
+// sees the env the city configures for that provider ([providers.<name>.env]),
+// which reaches the provider's sessions but not the supervisor's or an SSH
+// shell's process env. A nil cfg probes with the process env alone.
+func ProbeCityReadiness(ctx context.Context, cfg *config.City, itemsCSV string, fresh bool) (ReadinessResponse, error) {
 	items, err := parseRequestedReadinessItems(itemsCSV, "items", defaultReadinessItems, supportedReadiness)
 	if err != nil {
 		return ReadinessResponse{}, &InvalidReadinessItemsError{err: err}
 	}
-	return buildReadinessResponse(ctx, items, fresh)
+	return buildReadinessResponse(ctx, items, fresh, cityProviderProbeEnvs(cfg))
 }
 
 func parseRequestedReadinessItems(
@@ -329,6 +408,7 @@ func buildReadinessResponse(
 	ctx context.Context,
 	items []string,
 	fresh bool,
+	providerEnvs map[string]providerProbeEnv,
 ) (readinessResponse, error) {
 	homeDir, err := workspaceHomeDir()
 	if err != nil {
@@ -343,7 +423,7 @@ func buildReadinessResponse(
 		if !ok {
 			return readinessResponse{}, fmt.Errorf("unsupported readiness item %q", itemName)
 		}
-		result := probeReadinessItem(ctx, homeDir, itemName, fresh)
+		result := probeReadinessItem(ctx, homeDir, itemName, fresh, providerEnvs[itemName])
 		resp.Items[itemName] = ReadinessItem{
 			Name:        itemName,
 			Kind:        spec.kind,
@@ -355,25 +435,25 @@ func buildReadinessResponse(
 	return resp, nil
 }
 
-func probeReadinessItem(ctx context.Context, homeDir, itemName string, fresh bool) providerProbeResult {
-	cacheKey := homeDir + "\x00" + itemName
+func probeReadinessItem(ctx context.Context, homeDir, itemName string, fresh bool, env providerProbeEnv) providerProbeResult {
+	cacheKey := homeDir + "\x00" + itemName + "\x00" + env.fingerprint()
 	if !fresh {
 		if result, ok := providerProbeCache.load(cacheKey); ok {
 			return result
 		}
 	}
 
-	result := probeReadinessItemUncached(ctx, homeDir, itemName)
+	result := probeReadinessItemUncached(ctx, homeDir, itemName, env)
 	providerProbeCache.store(cacheKey, result)
 	return result
 }
 
-func probeReadinessItemUncached(ctx context.Context, homeDir, itemName string) providerProbeResult {
+func probeReadinessItemUncached(ctx context.Context, homeDir, itemName string, env providerProbeEnv) providerProbeResult {
 	spec, ok := readinessProbeSpecs[itemName]
 	if !ok || spec.probe == nil {
 		return providerProbeResult{status: probeStatusProbeError}
 	}
-	return spec.probe(ctx, homeDir)
+	return spec.probe(ctx, homeDir, env)
 }
 
 func newCachedProviderProbeStore() *cachedProviderProbeStore {
@@ -407,13 +487,16 @@ func (s *cachedProviderProbeStore) store(key string, result providerProbeResult)
 	}
 }
 
-func probeClaude(ctx context.Context, homeDir string) providerProbeResult {
+func probeClaude(ctx context.Context, homeDir string, env providerProbeEnv) providerProbeResult {
 	path, ok := findProbeBinary("claude", homeDir)
 	if !ok {
 		return providerProbeResult{status: probeStatusNotInstalled, detail: "claude executable not found in probe PATH"}
 	}
+	if claudeGatewayConfigured(env) {
+		return providerProbeResult{status: probeStatusConfigured, detail: "authenticated through ANTHROPIC_BASE_URL"}
+	}
 
-	stdout, _, err := runProbeCommandWithEnv(ctx, homeDir, 5*time.Second, claudeProbeCommandEnv(), path, "auth", "status", "--json")
+	stdout, _, err := runProbeCommandWithEnv(ctx, homeDir, 5*time.Second, claudeProbeCommandEnv(env), path, "auth", "status", "--json")
 	if err != nil && strings.TrimSpace(stdout) == "" {
 		return providerProbeResult{status: probeStatusProbeError, detail: "claude auth status failed before returning JSON"}
 	}
@@ -542,7 +625,7 @@ func probeAntigravity(homeDir string) providerProbeResult {
 	return providerProbeResult{status: probeStatusConfigured}
 }
 
-func probeMimoCode(homeDir string) providerProbeResult {
+func probeMimoCode(homeDir string, env providerProbeEnv) providerProbeResult {
 	if _, ok := findProbeBinary("mimo", homeDir); !ok {
 		return providerProbeResult{status: probeStatusNotInstalled, detail: "mimo executable not found in probe PATH"}
 	}
@@ -550,7 +633,7 @@ func probeMimoCode(homeDir string) providerProbeResult {
 	// XIAOMI_API_KEY is the headless auth path (mirrors the GitHub CLI
 	// token-env precedent); the auth.json credential store is the
 	// `mimo providers login` path.
-	if strings.TrimSpace(os.Getenv("XIAOMI_API_KEY")) != "" {
+	if env.get("XIAOMI_API_KEY") != "" {
 		return providerProbeResult{status: probeStatusConfigured}
 	}
 
@@ -598,7 +681,7 @@ func probePi(homeDir string) providerProbeResult {
 // hard preconditions are satisfied: a readable CLI bundle at ZCODE_CJS, and a
 // credential in ZCODE_API_KEY. There is no on-disk credential store to fall
 // back to — ZCode reads its key from the environment.
-func probeZCode(homeDir string) providerProbeResult {
+func probeZCode(homeDir string, env providerProbeEnv) providerProbeResult {
 	if _, ok := findProbeBinary(zcodeadapter.ExecutableName, homeDir); !ok {
 		return providerProbeResult{
 			status: probeStatusNotInstalled,
@@ -606,7 +689,7 @@ func probeZCode(homeDir string) providerProbeResult {
 		}
 	}
 
-	bundle := strings.TrimSpace(os.Getenv("ZCODE_CJS"))
+	bundle := env.get("ZCODE_CJS")
 	if bundle == "" {
 		return providerProbeResult{status: probeStatusInvalidConfiguration, detail: "set ZCODE_CJS to the ZCode CLI bundle"}
 	}
@@ -618,10 +701,10 @@ func probeZCode(homeDir string) providerProbeResult {
 	}
 	// Same order the adapter checks in, so readiness and a real launch fail on
 	// the same thing first.
-	if strings.TrimSpace(os.Getenv("ZCODE_API_KEY")) == "" {
+	if env.get("ZCODE_API_KEY") == "" {
 		return providerProbeResult{status: probeStatusNeedsAuth, detail: "set ZCODE_API_KEY"}
 	}
-	if detail := zcodeNodeFloorDetail(homeDir); detail != "" {
+	if detail := zcodeNodeFloorDetail(homeDir, env); detail != "" {
 		return providerProbeResult{status: probeStatusInvalidConfiguration, detail: detail}
 	}
 	return providerProbeResult{status: probeStatusConfigured}
@@ -632,9 +715,9 @@ func probeZCode(homeDir string) providerProbeResult {
 // distro node 18 on PATH dies with a bare "No such built-in module:
 // node:sqlite" at the first turn. The adapter enforces the same floor at
 // launch; checking it here turns a mid-run pane death into a readiness answer.
-func zcodeNodeFloorDetail(homeDir string) string {
+func zcodeNodeFloorDetail(homeDir string, env providerProbeEnv) string {
 	const guidance = "the ZCode bundle needs node >= 22.5 (it imports node:sqlite) — set ZCODE_NODE_BIN"
-	node := strings.TrimSpace(os.Getenv("ZCODE_NODE_BIN"))
+	node := env.get("ZCODE_NODE_BIN")
 	if node == "" {
 		found, ok := findProbeBinary("node", homeDir)
 		if !ok {
@@ -835,8 +918,21 @@ func probeCommandEnv(homeDir string) []string {
 	return env
 }
 
-func claudeProbeCommandEnv() []string {
-	return probeEnvVars("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN")
+// claudeGatewayConfigured reports whether the environment routes Claude Code
+// through a gateway: ANTHROPIC_BASE_URL plus an API key or bearer token (the
+// teamclaude proxy shape). Sessions then authenticate with that key, so the
+// local claude.ai login that `claude auth status` reports on does not apply.
+func claudeGatewayConfigured(env providerProbeEnv) bool {
+	if env.get("ANTHROPIC_BASE_URL") == "" {
+		return false
+	}
+	return env.get("ANTHROPIC_API_KEY") != "" || env.get("ANTHROPIC_AUTH_TOKEN") != ""
+}
+
+// claudeProbeCommandEnv is the process's claude keys plus claude's configured
+// env; exec keeps the last value of a repeated key, so configured keys win.
+func claudeProbeCommandEnv(env providerProbeEnv) []string {
+	return append(probeEnvVars("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN"), env.commandEnv()...)
 }
 
 func gitHubCLIProbeCommandEnv() []string {

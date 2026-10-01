@@ -9,12 +9,13 @@ import (
 	"text/tabwriter"
 
 	"github.com/gastownhall/gascity/internal/api"
+	"github.com/gastownhall/gascity/internal/config"
 	"github.com/spf13/cobra"
 )
 
 // statusReadinessProbe is the readiness entry point, indirected so tests can
 // substitute canned probe results without touching the host's CLI logins.
-var statusReadinessProbe = api.ProbeReadiness
+var statusReadinessProbe = api.ProbeCityReadiness
 
 // newStatusReadinessCmd creates the "gc status readiness" command.
 func newStatusReadinessCmd(stdout, stderr io.Writer) *cobra.Command {
@@ -30,7 +31,8 @@ whether it is installed and logged in.
 This is the same probe the supervisor serves at GET /v0/city/{cityName}/readiness,
 and --json emits that route's response body plus the CLI's "ok": true field.
 It probes the host's CLI logins directly, so it needs neither a city nor a
-running supervisor.
+running supervisor. Inside a city, each provider's probe also sees the env the
+city configures for it ([providers.<name>.env]), as its sessions do.
 
 Statuses: configured, needs_auth, not_installed, invalid_configuration,
 probe_error.`,
@@ -56,7 +58,7 @@ func cmdStatusReadiness(ctx context.Context, items string, fresh, jsonOutput boo
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	resp, err := statusReadinessProbe(ctx, items, fresh)
+	resp, err := statusReadinessProbe(ctx, readinessCityConfig(), items, fresh)
 	if err != nil {
 		code := "readiness_probe_failed"
 		var invalid *api.InvalidReadinessItemsError
@@ -86,4 +88,19 @@ func cmdStatusReadiness(ctx context.Context, items string, fresh, jsonOutput boo
 	}
 	_ = w.Flush() //nolint:errcheck // best-effort stdout
 	return 0
+}
+
+// readinessCityConfig loads the enclosing city's config, best-effort. Readiness
+// needs no city, but inside one a provider's env (say, a gateway's
+// ANTHROPIC_BASE_URL) lives in city.toml, not in this process's env.
+func readinessCityConfig() *config.City {
+	cityPath, err := resolveCity()
+	if err != nil {
+		return nil
+	}
+	cfg, err := loadCityConfig(cityPath, io.Discard)
+	if err != nil {
+		return nil
+	}
+	return cfg
 }

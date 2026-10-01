@@ -331,7 +331,7 @@ func (sm *SupervisorMux) humaHandleProviderReadiness(ctx context.Context, input 
 	if err != nil {
 		return nil, apierr.InvalidRequest.Msg("invalid: " + err.Error())
 	}
-	resp, err := buildReadinessResponse(ctx, providers, input.Fresh)
+	resp, err := buildReadinessResponse(ctx, providers, input.Fresh, nil)
 	if err != nil {
 		return nil, apierr.Internal.Msg("internal: " + err.Error())
 	}
