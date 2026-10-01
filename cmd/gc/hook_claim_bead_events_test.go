@@ -274,7 +274,9 @@ func TestHookClaimAnnouncesClaimToRunProjection(t *testing.T) {
 		t.Fatalf("projected metadata = %v, want the stored row's %v", got.Metadata, stored.Metadata)
 	}
 	// The announcement reads nothing it can derive: after the hook's last
-	// write (the stamp), the only bd call is the one edge confirmation.
+	// write (the stamp), the only bd calls are the one edge confirmation and
+	// the read of the step's root that decides whether this session adopts a
+	// released workflow root (adoptReleasedHookWorkflowRoot).
 	var afterWrites []string
 	for _, args := range city.bdArgs {
 		if args[0] == "update" {
@@ -283,8 +285,9 @@ func TestHookClaimAnnouncesClaimToRunProjection(t *testing.T) {
 		}
 		afterWrites = append(afterWrites, strings.Join(args, " "))
 	}
-	if len(afterWrites) != 1 || !strings.HasPrefix(afterWrites[0], "dep list ") {
-		t.Fatalf("bd calls after the hook's last write = %q, want only one edge confirmation", afterWrites)
+	rootRead := "show --json " + city.rootID
+	if len(afterWrites) != 2 || !strings.HasPrefix(afterWrites[0], "dep list ") || afterWrites[1] != rootRead {
+		t.Fatalf("bd calls after the hook's last write = %q, want one edge confirmation then %q", afterWrites, rootRead)
 	}
 
 	// The announcement is the supervisor's own bead.updated shape: a canonical
