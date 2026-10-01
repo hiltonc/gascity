@@ -412,6 +412,9 @@ func probeClaude(ctx context.Context, homeDir string) providerProbeResult {
 	if !ok {
 		return providerProbeResult{status: probeStatusNotInstalled, detail: "claude executable not found in probe PATH"}
 	}
+	if claudeGatewayConfigured() {
+		return providerProbeResult{status: probeStatusConfigured, detail: "authenticated through ANTHROPIC_BASE_URL"}
+	}
 
 	stdout, _, err := runProbeCommandWithEnv(ctx, homeDir, 5*time.Second, claudeProbeCommandEnv(), path, "auth", "status", "--json")
 	if err != nil && strings.TrimSpace(stdout) == "" {
@@ -833,6 +836,18 @@ func probeCommandEnv(homeDir string) []string {
 		env = append(env, "XDG_STATE_HOME="+filepath.Join(homeDir, ".local", "state"))
 	}
 	return env
+}
+
+// claudeGatewayConfigured reports whether the environment routes Claude Code
+// through a gateway: ANTHROPIC_BASE_URL plus an API key or bearer token (the
+// teamclaude proxy shape). Sessions then authenticate with that key, so the
+// local claude.ai login that `claude auth status` reports on does not apply.
+func claudeGatewayConfigured() bool {
+	if strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL")) == "" {
+		return false
+	}
+	return strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) != "" ||
+		strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN")) != ""
 }
 
 func claudeProbeCommandEnv() []string {
