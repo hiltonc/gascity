@@ -20,6 +20,7 @@ import (
 	"github.com/gastownhall/gascity/internal/events"
 	"github.com/gastownhall/gascity/internal/executionevent"
 	"github.com/gastownhall/gascity/internal/git"
+	"github.com/gastownhall/gascity/internal/sourceworkflow"
 )
 
 const hookClaimCommandName = "hook"
@@ -207,7 +208,11 @@ type hookClaimOps struct {
 	Claim              hookClaimFunc
 	ListContinuation   hookListContinuationFunc
 	AssignContinuation hookAssignContinuationFunc
-	DrainAck           hookDrainAckFunc
+	// ListRootSteps lists the in-progress steps of a workflow root (the beads
+	// whose gc.root_bead_id names it). It answers whether a routed root is a
+	// running workflow that must not be claimed (gsc-tf857).
+	ListRootSteps hookListRootStepsFunc
+	DrainAck      hookDrainAckFunc
 	// DrainPending reports whether the session bead named by sessionID is
 	// already draining, i.e. whether this seat has been told to stop. It is the
 	// F-D fence's only input and is read from the SESSION row rather than from
@@ -299,6 +304,7 @@ type (
 	hookClaimFunc                 func(context.Context, string, []string, string, string) (beads.Bead, bool, error)
 	hookListContinuationFunc      func(context.Context, string, []string, string, string) ([]beads.Bead, error)
 	hookAssignContinuationFunc    func(context.Context, string, []string, string, string) error
+	hookListRootStepsFunc         func(ctx context.Context, dir string, env []string, rootID string) ([]beads.Bead, error)
 	hookDrainAckFunc              func(io.Writer) error
 	hookDrainPendingFunc          func(sessionID string) (bool, error)
 	hookEmitClaimRejectedFunc     func(beadID, existingClaimant, attemptedClaimant string)
@@ -526,6 +532,9 @@ func (ops *hookClaimOps) applyDefaults() {
 	}
 	if ops.AssignContinuation == nil {
 		ops.AssignContinuation = hookAssignContinuationWithBdStore
+	}
+	if ops.ListRootSteps == nil {
+		ops.ListRootSteps = hookListRootStepsWithBdStore
 	}
 	if ops.DrainAck == nil {
 		ops.DrainAck = hookRuntimeDrainAck
@@ -858,6 +867,9 @@ func claimFirstEligibleHookCandidate(candidates []beads.Bead, opts hookClaimOpti
 	claimsErrored := false
 	now := ops.nowOrWallClock()
 	for _, candidate := range candidates {
+		if skipHeldHookWorkflowRoot(ctx, candidate, opts, ops, dir, stderr) {
+			continue
+		}
 		reclaimedFrom := ""
 		if !hookCandidateClaimable(candidate, opts.RouteTargets, now) {
 			// ga-7rj87d FR1/FR2: a route-matched candidate whose ONLY claim
@@ -985,6 +997,81 @@ func mergeHookClaimCandidateMetadata(candidate, claimed beads.Bead) beads.Bead {
 	maps.Copy(metadata, claimed.Metadata)
 	claimed.Metadata = metadata
 	return claimed
+}
+
+// skipHeldHookWorkflowRoot reports whether candidate is a routed workflow root
+// that must not be claimed because one of its steps is already held in
+// progress (gsc-tf857): the workflow is running, and the root would hand this
+// session a launch fallback with nothing left to launch.
+//
+// A failed step read fails OPEN and the root is claimed as it was before this
+// check existed, the same trade the controller's demand count makes: a store
+// hiccup must not stop every workflow in the city from launching.
+func skipHeldHookWorkflowRoot(ctx context.Context, candidate beads.Bead, opts hookClaimOptions, ops hookClaimOps, dir string, stderr io.Writer) bool {
+	if !sourceworkflow.IsWorkflowRoot(candidate) || !hookClaimMatchesRoute(candidate, opts.RouteTargets) || ops.ListRootSteps == nil {
+		return false
+	}
+	// An assigned root is not claimable here unless stale reclaim is on, so
+	// there is nothing to protect and no reason to read its steps.
+	if strings.TrimSpace(candidate.Assignee) != "" && !opts.AutoReclaimStaleClaims {
+		return false
+	}
+	step, held, err := workflowRootHeldStep(candidate, func(rootID string) ([]beads.Bead, error) {
+		return ops.ListRootSteps(ctx, dir, opts.Env, rootID)
+	})
+	switch {
+	case err != nil:
+		fmt.Fprintf(stderr, "gc hook --claim: reading the steps of workflow root %s: %v; offering it unchecked\n", candidate.ID, err) //nolint:errcheck
+		return false
+	case held:
+		fmt.Fprintf(stderr, "gc hook --claim: skipping workflow root %s: its step %s is in progress under %s\n", candidate.ID, step.ID, strings.TrimSpace(step.Assignee)) //nolint:errcheck
+		return true
+	}
+	return false
+}
+
+// adoptReleasedHookWorkflowRoot claims the workflow root of a step this
+// invocation just claimed, when that root was released and is routed to this
+// session.
+//
+// When a session dies, releaseWorkFromClosedSessionBead releases its root and
+// its step alike. The replacement claims the step as ordinary routed work, and
+// before this the root stayed open and unassigned: claim demand that spawned a
+// second worker and was handed to it while the replacement was mid-step
+// (gsc-tf857, gcd-lcredp). Re-linking the root restores the shape the first
+// claimant had, a root held by the session running its steps.
+//
+// Best-effort and compare-and-swap: a root another session already holds, or
+// one that is not open, is left alone, and every failure is reported and
+// swallowed because the step claim has already been delivered.
+func adoptReleasedHookWorkflowRoot(step beads.Bead, opts hookClaimOptions, ops hookClaimOps, dir string, stderr io.Writer) {
+	rootID := strings.TrimSpace(step.Metadata[beadmeta.RootBeadIDMetadataKey])
+	if rootID == "" || rootID == strings.TrimSpace(step.ID) || ops.ReadWorkMeta == nil || ops.Claim == nil || ops.claimWindowSpent() {
+		return
+	}
+	ctx, cancel := ops.claimMutationContext()
+	defer cancel()
+	root, err := ops.ReadWorkMeta(ctx, dir, opts.Env, rootID, opts.Assignee)
+	if err != nil {
+		fmt.Fprintf(stderr, "gc hook --claim: reading workflow root %s of %s: %v\n", rootID, step.ID, err) //nolint:errcheck
+		return
+	}
+	if !sourceworkflow.IsWorkflowRoot(root) ||
+		!strings.EqualFold(strings.TrimSpace(root.Status), "open") ||
+		strings.TrimSpace(root.Assignee) != "" ||
+		!hookClaimMatchesRoute(root, opts.RouteTargets) {
+		return
+	}
+	claimed, ok, err := ops.Claim(ctx, dir, opts.Env, rootID, opts.Assignee)
+	switch {
+	case err != nil:
+		fmt.Fprintf(stderr, "gc hook --claim: adopting workflow root %s of %s: %v\n", rootID, step.ID, err) //nolint:errcheck
+		return
+	case !ok || !hookClaimHasIdentity(claimed.Assignee, opts.IdentityCandidates):
+		return
+	}
+	fmt.Fprintf(stderr, "gc hook --claim: adopted released workflow root %s with its step %s\n", rootID, step.ID) //nolint:errcheck
+	stampHookClaimIdentity(mergeHookClaimCandidateMetadata(root, claimed), opts, ops, dir, stderr)
 }
 
 // hookCandidateClaimable reports whether a work-query candidate is eligible for a
@@ -1269,6 +1356,9 @@ func writeHookClaimWorkResultForBead(result hookClaimJSONResult, bead beads.Bead
 		// because it returns before the stamp.
 		clearHookSessionCurrentClaim(opts, ops, stderr)
 		return unwindUndeliveredHookClaim(hookClaimReleaseReasonUndelivered, cause, bead, opts, ops, dir, stderr)
+	}
+	if minted {
+		adoptReleasedHookWorkflowRoot(bead, opts, ops, dir, stderr)
 	}
 	return 0
 }
@@ -2948,6 +3038,10 @@ func hookListContinuationWithBdStore(_ context.Context, dir string, env []string
 		},
 		TierMode: beads.TierBoth,
 	})
+}
+
+func hookListRootStepsWithBdStore(_ context.Context, dir string, env []string, rootID string) ([]beads.Bead, error) {
+	return hookClaimBdStore(dir, env, "").List(workflowRootStepsQuery(rootID))
 }
 
 func hookAssignContinuationWithBdStore(_ context.Context, dir string, env []string, beadID, assignee string) error {
