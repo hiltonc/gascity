@@ -569,6 +569,7 @@ func TestProbeCommandEnvIncludesNVMInstallDir(t *testing.T) {
 
 func TestHandleProviderReadinessReturnsConfiguredStatuses(t *testing.T) {
 	homeDir := t.TempDir()
+	clearClaudeGatewayEnv(t)
 	binDir := filepath.Join(homeDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
@@ -653,6 +654,7 @@ printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstPar
 
 func TestHandleReadinessReturnsConfiguredStatuses(t *testing.T) {
 	homeDir := t.TempDir()
+	clearClaudeGatewayEnv(t)
 	binDir := filepath.Join(homeDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
@@ -746,6 +748,7 @@ printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstPar
 
 func TestHandleProviderReadinessFreshBypassesCache(t *testing.T) {
 	homeDir := t.TempDir()
+	clearClaudeGatewayEnv(t)
 	binDir := filepath.Join(homeDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
@@ -889,6 +892,7 @@ func TestHandleProviderReadinessReturnsNeedsAuthForCodexWithEmptyTokensObject(t 
 
 func TestHandleProviderReadinessReturnsConfiguredForClaudeOAuthToken(t *testing.T) {
 	homeDir := t.TempDir()
+	clearClaudeGatewayEnv(t)
 	binDir := filepath.Join(homeDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
@@ -916,6 +920,7 @@ printf '%s\n' '{"loggedIn":true,"authMethod":"oauth_token","apiProvider":"firstP
 
 func TestHandleProviderReadinessForwardsClaudeOnlyEnvToClaudeProbe(t *testing.T) {
 	homeDir := t.TempDir()
+	clearClaudeGatewayEnv(t)
 	binDir := filepath.Join(homeDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
@@ -951,6 +956,7 @@ printf '%s\n' '{"loggedIn":true,"authMethod":"oauth_token","apiProvider":"firstP
 
 func TestHandleProviderReadinessReturnsInvalidConfigurationForClaudeNonFirstPartyProvider(t *testing.T) {
 	homeDir := t.TempDir()
+	clearClaudeGatewayEnv(t)
 	binDir := filepath.Join(homeDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
@@ -976,6 +982,7 @@ printf '%s\n' '{"loggedIn":true,"authMethod":"oauth_token","apiProvider":"bedroc
 
 func TestHandleProviderReadinessReturnsInvalidConfigurationForClaudeUnknownAuthMethod(t *testing.T) {
 	homeDir := t.TempDir()
+	clearClaudeGatewayEnv(t)
 	binDir := filepath.Join(homeDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
@@ -1001,6 +1008,7 @@ printf '%s\n' '{"loggedIn":true,"authMethod":"apiKey","apiProvider":"firstParty"
 
 func TestHandleProviderReadinessReturnsNeedsAuthForLoggedOutClaude(t *testing.T) {
 	homeDir := t.TempDir()
+	clearClaudeGatewayEnv(t)
 	binDir := filepath.Join(homeDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
@@ -1024,8 +1032,57 @@ printf '%s\n' '{"loggedIn":false,"authMethod":"claude.ai","apiProvider":"firstPa
 	assertProviderStatus(t, h, state, "/provider-readiness?providers=claude&fresh=1", "claude", probeStatusNeedsAuth)
 }
 
+// A gateway env (the teamclaude proxy shape) authenticates sessions with its
+// own key, so readiness must not fall through to the local claude.ai login,
+// which the fake reports as logged out the way the real host does.
+func TestHandleProviderReadinessClaudeGatewayEnv(t *testing.T) {
+	cases := []struct {
+		name    string
+		baseURL string
+		apiKey  string
+		token   string
+		want    string
+	}{
+		{name: "base URL and API key", baseURL: "http://127.0.0.1:3456", apiKey: "teamclaude-localhost", want: probeStatusConfigured},
+		{name: "base URL and auth token", baseURL: "http://127.0.0.1:3456", token: "gateway-token", want: probeStatusConfigured},
+		{name: "base URL without a key", baseURL: "http://127.0.0.1:3456", want: probeStatusNeedsAuth},
+		{name: "key without a base URL", apiKey: "sk-ant-api-test", want: probeStatusNeedsAuth},
+		{name: "neither", want: probeStatusNeedsAuth},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			homeDir := t.TempDir()
+			binDir := filepath.Join(homeDir, "bin")
+			if err := os.MkdirAll(binDir, 0o755); err != nil {
+				t.Fatalf("mkdir bin: %v", err)
+			}
+			writeExecutable(t, binDir, "claude", `#!/bin/sh
+printf '%s\n' '{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}'
+`)
+
+			t.Setenv("HOME", homeDir)
+			t.Setenv("ANTHROPIC_BASE_URL", tc.baseURL)
+			t.Setenv("ANTHROPIC_API_KEY", tc.apiKey)
+			t.Setenv("ANTHROPIC_AUTH_TOKEN", tc.token)
+			originalPathEnv := providerProbePathEnv
+			originalCommandContext := providerProbeCommandContext
+			providerProbePathEnv = binDir
+			providerProbeCommandContext = exec.CommandContext
+			defer func() {
+				providerProbePathEnv = originalPathEnv
+				providerProbeCommandContext = originalCommandContext
+			}()
+
+			state := newFakeState(t)
+			h := newTestCityHandler(t, state)
+			assertProviderStatus(t, h, state, "/provider-readiness?providers=claude&fresh=1", "claude", tc.want)
+		})
+	}
+}
+
 func TestHandleProviderReadinessReturnsProbeErrorForClaudeInvalidJSON(t *testing.T) {
 	homeDir := t.TempDir()
+	clearClaudeGatewayEnv(t)
 	binDir := filepath.Join(homeDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
@@ -1051,6 +1108,7 @@ printf '%s\n' 'not-json'
 
 func TestHandleProviderReadinessIncludesProbeErrorDetailForClaudeInvalidJSON(t *testing.T) {
 	homeDir := t.TempDir()
+	clearClaudeGatewayEnv(t)
 	binDir := filepath.Join(homeDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
@@ -1601,6 +1659,15 @@ func writeExecutable(t *testing.T, dir, name, body string) {
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		t.Fatalf("write %s: %v", name, err)
 	}
+}
+
+// clearClaudeGatewayEnv keeps a test's fake claude binary in charge of the
+// answer when the test itself runs inside a gateway-routed agent session.
+func clearClaudeGatewayEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
 }
 
 func assertEnvOmitsPrefix(t *testing.T, env []string, prefix string) {
