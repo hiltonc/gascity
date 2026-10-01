@@ -2123,6 +2123,13 @@ func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCh
 			if !servable {
 				continue
 			}
+			// A workflow root whose step a session already holds is a running
+			// workflow, not launch demand: gc hook --claim refuses it, so a
+			// seat spawned for it could only drain (gsc-tf857). A failed step
+			// read counts the root as before rather than hiding demand.
+			if _, held, heldErr := workflowRootHeldStep(b, storeWorkflowRootStepLister(group.store)); heldErr == nil && held {
+				continue
+			}
 			seen := countedBeads[template]
 			if seen == nil {
 				seen = make(map[string]struct{})
