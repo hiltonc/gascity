@@ -574,6 +574,7 @@ func cmdHookWithOptions(args []string, opts hookCommandOptions, stdout, stderr i
 			// The process env, as the pre-claim fence reads the token:
 			// queryEnv has GC_INSTANCE_TOKEN filtered out.
 			StartedFence: hookStartedFenceOf(os.Environ()),
+			FailHalts:    cfg.FailHaltsEnabled(),
 		}
 		return claimHookWork(city, workQuery, workDir, queryEnv, stores, claimOpts, emitQueryFailure, stdout, stderr)
 	}

@@ -207,6 +207,10 @@ type hookClaimOptions struct {
 	// built for subprocesses, and its inherited-secret filter drops
 	// GC_INSTANCE_TOKEN.
 	StartedFence hookStartedFence
+	// FailHalts is [workflows] fail_halts: a claimed workflow step that needs a
+	// step whose terminal outcome halts its dependents is closed skipped
+	// instead of handed to the worker (haltClaimedHookBead).
+	FailHalts bool
 }
 
 // continuationPinAssignee returns the identity a continuation sibling is pinned
@@ -385,6 +389,10 @@ type hookClaimOps struct {
 	// its result is written. Nil — the default — announces nothing; only
 	// claimHookWork installs it. Best-effort.
 	AnnounceBeadEvents func()
+	// HaltClaimed applies the fail-halts rule to a bead this invocation just
+	// claimed, returning the halting step's ID and whether the bead was
+	// halted. Only consulted when hookClaimOptions.FailHalts is set.
+	HaltClaimed hookHaltClaimedFunc
 }
 
 type (
@@ -742,6 +750,9 @@ func (ops *hookClaimOps) applyDefaults() {
 	if ops.EmitWorkStartedUnrecorded == nil {
 		ops.EmitWorkStartedUnrecorded = emitWorkStartedUnrecorded
 	}
+	if ops.HaltClaimed == nil {
+		ops.HaltClaimed = hookHaltClaimedWithBdStore
+	}
 	if ops.Now == nil {
 		ops.Now = time.Now
 	}
@@ -1030,6 +1041,9 @@ func claimFirstReadyHookAssignment(candidates []beads.Bead, opts hookClaimOption
 		if hookClaimWorkflowStop(ctx, claimed, claimed.Assignee, opts, ops, dir, stderr) {
 			continue
 		}
+		if haltClaimedHookBead(ctx, claimed, opts, ops, dir, stderr) {
+			continue
+		}
 		result := hookClaimJSONResult{
 			SchemaVersion: "1",
 			OK:            true,
@@ -1189,6 +1203,9 @@ func claimFirstEligibleHookCandidate(candidates []beads.Bead, opts hookClaimOpti
 		claimed = mergeHookClaimCandidateMetadata(candidate, claimed)
 		// Re-check across the CAS, as the ready tier does.
 		if hookClaimWorkflowStop(ctx, claimed, claimed.Assignee, opts, ops, dir, stderr) {
+			continue
+		}
+		if haltClaimedHookBead(ctx, claimed, opts, ops, dir, stderr) {
 			continue
 		}
 		result := hookClaimJSONResult{
