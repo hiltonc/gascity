@@ -485,6 +485,14 @@ func (r *hookClaimClassRoute) listContinuation(rootID, group string) ([]beads.Be
 	return siblings, nil
 }
 
+func (r *hookClaimClassRoute) listRootSteps(rootID string) ([]beads.Bead, error) {
+	steps, err := r.graph.List(workflowRootStepsQuery(rootID))
+	if err != nil {
+		return nil, fmt.Errorf("listing in-progress steps of %q in the relocated class binding: %w", rootID, err)
+	}
+	return steps, nil
+}
+
 // emitExecutionStepStarted records the durable lifecycle-start fact against the
 // binding that owns the step.
 //
@@ -512,8 +520,9 @@ func (r *hookClaimClassRoute) emitExecutionStepStarted(step beads.Bead) {
 //
 // Every wrapped seam applies the same rule: run the work-scope write; escalate
 // only on the not-found that proves the bead is not there; take the binding only
-// when it is proved to hold the id. The one exception is ListContinuation, which
-// is a QUERY and has no not-found to escalate on — see below.
+// when it is proved to hold the id. The exceptions are ListContinuation and
+// ListRootSteps, which are QUERIES and have no not-found to escalate on — see
+// below.
 func classRoutedHookClaimOps(ops hookClaimOps, route *hookClaimClassRoute) hookClaimOps {
 	if route == nil {
 		return ops
@@ -617,6 +626,28 @@ func classRoutedHookClaimOps(ops hookClaimOps, route *hookClaimClassRoute) hookC
 			return route.listContinuation(rootID, group)
 		default:
 			return siblings, nil
+		}
+	}
+
+	// The root-step read escalates exactly like the continuation list above, on
+	// EMPTY: a store that holds none of the root's steps says nothing about
+	// whether the binding does.
+	ops.ListRootSteps = func(ctx context.Context, dir string, env []string, rootID string) ([]beads.Bead, error) {
+		if route.knownResident(rootID) {
+			return route.listRootSteps(rootID)
+		}
+		steps, err := base.ListRootSteps(ctx, dir, env, rootID)
+		if err != nil || len(steps) > 0 {
+			return steps, err
+		}
+		held, probeErr := route.holds(rootID)
+		switch {
+		case probeErr != nil:
+			return nil, probeErr
+		case held:
+			return route.listRootSteps(rootID)
+		default:
+			return steps, nil
 		}
 	}
 
