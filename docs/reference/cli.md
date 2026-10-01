@@ -4721,7 +4721,8 @@ whether it is installed and logged in.
 This is the same probe the supervisor serves at GET /v0/city/&#123;cityName&#125;/readiness,
 and --json emits that route's response body plus the CLI's "ok": true field.
 It probes the host's CLI logins directly, so it needs neither a city nor a
-running supervisor.
+running supervisor. Inside a city, each provider's probe also sees the env the
+city configures for it ([providers.&lt;name&gt;.env]), as its sessions do.
 
 Statuses: configured, needs_auth, not_installed, invalid_configuration,
 probe_error.
