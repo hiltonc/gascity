@@ -7,6 +7,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -347,7 +349,7 @@ func TestCmdStatusReadinessJSONEmitsRouteBody(t *testing.T) {
 	var gotItems string
 	var gotFresh bool
 	old := statusReadinessProbe
-	statusReadinessProbe = func(_ context.Context, items string, fresh bool) (api.ReadinessResponse, error) {
+	statusReadinessProbe = func(_ context.Context, _ *config.City, items string, fresh bool) (api.ReadinessResponse, error) {
 		gotItems, gotFresh = items, fresh
 		return want, nil
 	}
@@ -371,7 +373,7 @@ func TestCmdStatusReadinessJSONEmitsRouteBody(t *testing.T) {
 
 func TestCmdStatusReadinessText(t *testing.T) {
 	old := statusReadinessProbe
-	statusReadinessProbe = func(context.Context, string, bool) (api.ReadinessResponse, error) {
+	statusReadinessProbe = func(context.Context, *config.City, string, bool) (api.ReadinessResponse, error) {
 		return api.ReadinessResponse{Items: map[string]api.ReadinessItem{
 			"codex": {Name: "codex", Kind: api.ProbeKindProvider, DisplayName: "Codex", Status: api.ProbeStatusNotInstalled},
 		}}, nil
@@ -403,9 +405,63 @@ func TestCmdStatusReadinessRejectsUnknownItems(t *testing.T) {
 	}
 }
 
+// gc status readiness inside a city probes claude with the city's
+// [providers.claude.env]. The gateway vars live only in city.toml, as on a host
+// where neither the supervisor nor an SSH shell exports them. (bgc-15s)
+func TestCmdStatusReadinessUsesCityProviderEnv(t *testing.T) {
+	home := t.TempDir()
+	userBin := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(userBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	loggedOut := "#!/bin/sh\nprintf '%s\\n' '{\"loggedIn\":false,\"authMethod\":\"none\",\"apiProvider\":\"firstParty\"}'\n"
+	if err := os.WriteFile(filepath.Join(userBin, "claude"), []byte(loggedOut), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	for _, key := range []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "GC_CITY", "GC_CITY_PATH", "GC_CITY_ROOT"} {
+		t.Setenv(key, "")
+	}
+
+	const providers = "[providers.claude]\nbase = \"builtin:claude\"\n"
+	cases := []struct {
+		name string
+		toml string
+		want string
+	}{
+		{
+			name: "gateway in city provider env",
+			toml: providers + "[providers.claude.env]\nANTHROPIC_BASE_URL = \"http://127.0.0.1:3456\"\nANTHROPIC_API_KEY = \"teamclaude-localhost\"\n",
+			want: api.ProbeStatusConfigured,
+		},
+		{name: "city provider without env", toml: providers, want: api.ProbeStatusNeedsAuth},
+		{name: "no city", want: api.ProbeStatusNeedsAuth},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.toml != "" {
+				city := t.TempDir()
+				writeCityTOMLForRoute(t, city, "[workspace]\nname = \"readiness\"\n\n[beads]\nprovider = \"file\"\n\n"+tc.toml)
+				t.Setenv("GC_CITY", city)
+			}
+			var stdout, stderr bytes.Buffer
+			if code := cmdStatusReadiness(context.Background(), "claude", true, true, &stdout, &stderr); code != 0 {
+				t.Fatalf("cmdStatusReadiness = %d, want 0; stderr=%s", code, stderr.String())
+			}
+			var got api.ReadinessResponse
+			if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+				t.Fatalf("stdout is not the readiness route body: %v\n%s", err, stdout.String())
+			}
+			if status := got.Items["claude"].Status; status != tc.want {
+				t.Fatalf("claude status = %q, want %q (%s)", status, tc.want, got.Items["claude"].Detail)
+			}
+		})
+	}
+}
+
 func TestCmdStatusReadinessProbeFailure(t *testing.T) {
 	old := statusReadinessProbe
-	statusReadinessProbe = func(context.Context, string, bool) (api.ReadinessResponse, error) {
+	statusReadinessProbe = func(context.Context, *config.City, string, bool) (api.ReadinessResponse, error) {
 		return api.ReadinessResponse{}, errors.New("workspace home unavailable")
 	}
 	t.Cleanup(func() { statusReadinessProbe = old })
