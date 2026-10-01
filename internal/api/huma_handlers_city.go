@@ -66,7 +66,7 @@ func (s *Server) humaHandleProviderReadiness(ctx context.Context, input *Provide
 		return nil, apierr.InvalidRequest.Msg(err.Error())
 	}
 
-	resp, err := buildReadinessResponse(ctx, providers, input.Fresh)
+	resp, err := buildReadinessResponse(ctx, providers, input.Fresh, cityProviderProbeEnvs(s.state.Config()))
 	if err != nil {
 		return nil, apierr.Internal.Msg(err.Error())
 	}
@@ -88,7 +88,7 @@ func (s *Server) humaHandleProviderReadiness(ctx context.Context, input *Provide
 
 // humaHandleReadiness is the Huma-typed handler for GET /v0/readiness.
 func (s *Server) humaHandleReadiness(ctx context.Context, input *ReadinessInput) (*ReadinessOutput, error) {
-	resp, err := ProbeReadiness(ctx, input.Items, input.Fresh)
+	resp, err := ProbeCityReadiness(ctx, s.state.Config(), input.Items, input.Fresh)
 	if err != nil {
 		var invalid *InvalidReadinessItemsError
 		if errors.As(err, &invalid) {
