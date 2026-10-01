@@ -207,6 +207,9 @@ func ProcessControl(store beads.Store, bead beads.Bead, opts ProcessOptions) (Co
 	if root.ID != "" {
 		opts.gateRoot = &root
 	}
+	if result, halted, err := haltControl(store, bead, opts); halted || err != nil {
+		return result, err
+	}
 
 	switch bead.Metadata[beadmeta.KindMetadataKey] {
 	case beadmeta.KindRetry:
@@ -618,6 +621,14 @@ func closeScopeAsPassedWith(store beads.Store, snapshot scopeSnapshot, subject b
 			return store.SetMetadataBatch(bodyID, metadata)
 		}); err != nil {
 			return fmt.Errorf("%s: propagating scope metadata: %w", traceID, err)
+		}
+		return nil
+	}
+	if member, halted := snapshot.haltedMember(); halted {
+		if err := tracePhaseErr(opts, traceID, "close-body-halted", func() error {
+			return haltScopeBody(store, bodyID, member, metadata, closeBody)
+		}); err != nil {
+			return fmt.Errorf("%s: halting scope body: %w", bodyID, err)
 		}
 		return nil
 	}
@@ -1105,6 +1116,7 @@ func processWorkflowFinalize(store beads.Store, bead beads.Bead, opts ProcessOpt
 		return ControlResult{}, fmt.Errorf("%s: missing gc.root_bead_id", bead.ID)
 	}
 
+	failHalts := opts.failHalts()
 	outcome, err := resolveFinalizeOutcome(store, bead, opts)
 	if err != nil {
 		if errors.Is(err, errFinalizePending) {
@@ -1118,6 +1130,7 @@ func processWorkflowFinalize(store beads.Store, bead beads.Bead, opts ProcessOpt
 	// request that spawned a rig-scope mol-adopt-pr-v2 workflow) don't accumulate
 	// as orphans. Failures intentionally leave parent sources open so a human
 	// can investigate via list - the bead IS the audit handle.
+	rootClose := map[string]string{beadmeta.OutcomeMetadataKey: outcome}
 	switch outcome {
 	case beadmeta.OutcomePass:
 		if err := preflightSourceBeadChain(store, rootID, opts); err != nil {
@@ -1142,8 +1155,17 @@ func processWorkflowFinalize(store beads.Store, bead beads.Bead, opts ProcessOpt
 		// PASS arm clears all three as it closes the parent
 		// (propagateSourceBeadTerminalMetadata) so a succeeded parent never
 		// carries the failure it superseded.
-		if err := annotateSourceBeadFailure(store, rootID, resolveFinalizeFailureDiagnostics(store, bead, opts), opts); err != nil {
+		diagnostics := resolveFinalizeFailureDiagnostics(store, bead, opts)
+		if err := annotateSourceBeadFailure(store, rootID, diagnostics, opts); err != nil {
 			return ControlResult{}, recordWorkflowFinalizeError(store, bead, fmt.Errorf("%s: marking failed source bead: %w", rootID, err))
+		}
+		// [workflows] fail_halts: name the failed step on the root too. Under
+		// the switch the root can fail over a step that is no blocker of the
+		// finalizer, so nothing else on the root would say why.
+		if failHalts {
+			for key, value := range diagnostics {
+				rootClose[key] = value
+			}
 		}
 	}
 	// Close the root BEFORE the finalize bead. If the root close fails and
@@ -1151,7 +1173,7 @@ func processWorkflowFinalize(store beads.Store, bead beads.Bead, opts ProcessOpt
 	// next serve cycle will retry. Source-chain propagation is preflighted first
 	// so retryable scan failures keep the root live for singleton scans, but
 	// source beads are not mutated until the root is durably closed.
-	if err := setOutcomeAndClose(store, rootID, outcome); err != nil {
+	if err := updateMetadataAndClose(store, rootID, rootClose); err != nil {
 		if errors.Is(err, beads.ErrNotFound) {
 			if closeErr := setOutcomeAndClose(store, bead.ID, beadmeta.OutcomeMissingRoot); closeErr != nil {
 				return ControlResult{}, recordWorkflowFinalizeError(store, bead, fmt.Errorf("%s: closing orphaned finalizer (root %s missing): %w", bead.ID, rootID, closeErr))
@@ -2098,6 +2120,8 @@ func resolveBlockedOutcome(store beads.Store, beadID string) (string, error) {
 // terminalAbortScopeFailureMember returns the direct member whose terminal
 // gc.on_fail=abort_scope failure fails the whole workflow, so callers can both
 // decide the outcome and name the culprit in the domain parent's failure stamp.
+// With [workflows] fail_halts any member whose terminal outcome is fail
+// counts, abort_scope or not (terminalStepFailure).
 func terminalAbortScopeFailureMember(store beads.Store, rootID, finalizerID string, opts ProcessOptions) (beads.Bead, bool, error) {
 	all, err := rootViewMembers(store, rootID, opts)
 	if err != nil {
@@ -2107,7 +2131,7 @@ func terminalAbortScopeFailureMember(store beads.Store, rootID, finalizerID stri
 		if candidate.ID == finalizerID {
 			continue
 		}
-		if terminalAbortScopeFailure(candidate) {
+		if terminalAbortScopeFailure(candidate) || (opts.failHalts() && terminalStepFailure(candidate)) {
 			return candidate, true, nil
 		}
 	}
