@@ -68,6 +68,7 @@ upstream takes it. As of 2026-10-01, rebased onto upstream/main `4b26deb7c`
 | `110078ed4` | `fix(hook,controller)`: a workflow root with nothing ready for the claimant is not a launch. Extends `4df2f23b2`: `gc hook --claim` and the controller's default scale check also skip a routed root that has live steps, none of them ready work routed to the claimant (open, unassigned, not deferred, off every dispatch hold, not blocked by another live step of the root). This closes the gap between steps, where a drain-acked worker's released root was re-claimed by the next session on its route: 266 claims across 63 Dispatch roots on 2026-10-01, Apple and portable alike. A root with no live steps (root-only molecule) is still a launch, and so is a fresh root whose first step is ready here. An unrouted step and a blocker outside the root count as ready; a failed step read fails OPEN. `workflowRootSkipReason` replaces `workflowRootHeldStep` in `cmd/gc/workflow_root_held.go`; touches upstream-owned `cmd/gc/cmd_hook_claim.go` and `build_desired_state.go` (bgc-jt6h). |
 | `f6506c792` | `perf(bd)`: `gc bd` composes city.toml once per invocation, where `gc bd --rig X show` composed it six times and an auto-detected one up to ten. `resolveBdCity` resolves with a new `cityOnly` context mode (skips `rigFromCwdDir`'s rig decoration, two full loads); `doBd` loads with the no-refresh loader (full loader as fallback) and passes its cfg to `resolveBdBinaryForScopeWithConfig` and the new `bdOneShotRuntimeEnv` / `bdOneShotRuntimeEnvForRig`, whose city projection reads the workspace bd pin and the hosted binding from it (old signatures still read the file, for long-lived callers), and offers it to the CLI storage-routes memo, which takes it only for a city with no `[storage]` section. A positional subject of show/update/close/reopen/delete/heartbeat whose prefix one scope carries routes there without opening the store; flag values, other verbs' positionals, unknown flags and shared prefixes keep the probe. The passthrough's exec now also writes the `GC_BD_TRACE` line (`beads.TraceBDPassthrough`). `cityConfigLoads` counts compositions; `TestDoBdLoadsCityConfigOnce` pins one. Instructions on the-beast: `gc bd --rig show` 1724M -> 725M, auto-detected 2308M -> 718M, against `gc version` 618M. Touches upstream-owned `cmd/gc/cmd_bd.go`, `bd_env.go`, `cli_storage_routes.go`, `cmd_agent.go`, `main.go` and `internal/beads/bdstore.go` (bgc-vpn7). |
 | `d47d5e438` | `perf(cli)`: `version`, `completion`, `login`, `logout` and `whoami` skip pack discovery (`rootCommandSkipsPackDiscovery`), so `gc version` inside a city costs what it does outside one (0.29s -> 0.055s CPU, median of 21). None reads city config and packs cannot shadow a core command; the completion scripts are byte-identical in and out of a city. `help`, bare `gc`, `--help`/`-h` and `__complete` keep discovery, because the root usage and dynamic completion list pack bindings. gc has no `--version` flag. Touches upstream-owned `cmd/gc/root_argv.go` (one `case` line and its comment) and `root_argv_test.go`, whose ambient-args test now uses `status` as its ordinary command (bgc-zfi5). |
+| `fe9f3dff3` | `build`: `make build-release` builds gc as upstream's `.goreleaser.yml` ships it (`CGO_ENABLED=0`, `-trimpath`, `-ldflags "-s -w"`) and signs it, refusing on macOS without `GC_SIGN_IDENTITY`; `make install-release` installs that binary through `install` without rebuilding it. Two new targets in upstream-owned `Makefile`, nothing else touched. See "Build and install" (bgc-70k2). |
 | `131ed2681` | Regenerates the embedded dashboard bundle and re-baselines the resource census (+1 call in +1 file over upstream) for upstream `4b26deb7c`. Build output only; redo it on every rebase (see below). |
 
 **`e789fd70a` carries committed conflict markers, and `38efa4272` removes them
@@ -238,10 +239,38 @@ treated as one that does not exist yet.
 
 ## Build and install
 
-    ICU=$(brew --prefix icu4c)
-    export CGO_CPPFLAGS="-I$ICU/include" CGO_LDFLAGS="-L$ICU/lib"
-    make build           # -> bin/gc, signed for macOS
-    make install         # -> $GOPATH/bin/gc, NOT brew's prefix
+    export GC_SIGN_IDENTITY="Apple Development: apple@crosswaterbridge.com (HSMS46GP35)"
+    make build-release   # -> bin/gc, CGO_ENABLED=0 -trimpath -s -w, signed
+    make install-release # -> $GOPATH/bin/gc, NOT brew's prefix
+
+This is the binary we roll out. It is built the way upstream's `.goreleaser.yml`
+ships gc: no cgo, `-trimpath`, `-ldflags "-s -w"`. Against `make build` on the
+same commit (the-beast, 2026-10-02) it is 129MB instead of 269MB, links no
+Homebrew `icu4c` dylib, and `gc version` in the city costs about 0.29s CPU and
+60MB RSS a call instead of 0.31s and 83MB. No ICU exports are needed to build it.
+
+**Set `GC_SIGN_IDENTITY` explicitly.** `build-release` refuses to run on macOS
+without it. Left to auto-detect, `scripts/sign-darwin-local.sh` picks a
+different team on the-beast. A different team is a different designated
+requirement, so every host would lose its Full Disk Access grant. `codesign -dv
+bin/gc` must show `TeamIdentifier=X352NFZ594`.
+
+**What a no-cgo gc cannot do: open an embedded-Dolt store in process.** The
+beads library's no-cgo `OpenBestAvailable` refuses embedded mode. gc never
+depends on it. Preflight's `dolt_mode_safe` check already sends every embedded
+scope to per-call `bd`, a failed native open falls back to `bd` too, and `bd` is
+its own binary. Every store gc opens on the three hosts is in server mode
+(checked 2026-10-02, bgc-70k2). The one embedded store found,
+`~/Developer/hilton-gas-city/iOS/.beads` on the-studio, belongs to no scope: the
+iOS rig lives at `~/Developer/iOS`.
+
+Under `-trimpath`, `go version -m` omits `-ldflags`. Read provenance from `gc
+version --long` instead. `go version -m` still shows `CGO_ENABLED=0`, which tells
+a release build apart from a `make build`.
+
+`make build` and `make install` are still the cgo build, which is what `go test`
+compiles by default. `install-release` runs `install` without letting it
+rebuild, so everything below about `~/.local/bin/gc` applies to it too.
 
 `make install` leaves `/opt/homebrew/bin/gc` and the Cellar alone, so
 `brew upgrade gascity` is unaffected. It does NOT leave `~/.local/bin/gc` alone,
@@ -282,10 +311,15 @@ The host-shaped caveat is personal-gas-city's mayor, same day. This is the
 sentence someone reaches for while something is already broken, so it is worth
 being exactly right.
 
-The ICU flags matter for `go test` and not for `make build`, because the
-Makefile already sets them and a bare `go test` does not inherit them. Without
-them the test build fails on `unicode/regex.h` from the Dolt go-icu-regex cgo
-dependency.
+A bare cgo `go test` still needs the ICU flags, because the Makefile sets them
+and a bare `go test` does not inherit them. Without them the test build fails on
+`unicode/regex.h` from the Dolt go-icu-regex cgo dependency:
+
+    ICU=$(brew --prefix icu4c)
+    export CGO_CPPFLAGS="-I$ICU/include" CGO_LDFLAGS="-L$ICU/lib"
+
+Or test what we ship, which needs no ICU: `CGO_ENABLED=0 go test ./cmd/gc
+./internal/beads/...`.
 
 ## Verifying a patch before installing
 
