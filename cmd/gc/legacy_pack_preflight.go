@@ -93,6 +93,7 @@ func ensureBundledLockedRemoteImportsCached(cityPath string, verifier *synthetic
 		if verifier.Valid(cachePath, repository, imp.commit) {
 			continue
 		}
+		config.InvalidateLoadMemo() // the cache is about to be rewritten
 		if _, err := packman.EnsureRepoInCache(cityPath, imp.source, imp.commit); err != nil {
 			return fmt.Errorf("caching bundled import %q from packs.lock: %w", imp.source, err)
 		}

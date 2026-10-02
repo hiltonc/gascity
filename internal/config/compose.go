@@ -142,6 +142,10 @@ func LoadWithIncludes(fs fsys.FS, path string, extraIncludes ...string) (*City, 
 
 // LoadWithIncludesOptions loads a city.toml with the supplied load options.
 func LoadWithIncludesOptions(fs fsys.FS, path string, opts LoadOptions, extraIncludes ...string) (*City, *Provenance, error) {
+	return loadWithIncludesMemo(fs, path, opts, extraIncludes, loadWithIncludesOptions)
+}
+
+func loadWithIncludesOptions(fs fsys.FS, path string, opts LoadOptions, extraIncludes ...string) (*City, *Provenance, error) {
 	// Convention trees are hashed before the load reads them so an edit that
 	// lands mid-load cannot be stamped with a revision newer than the
 	// content loaded (see conventionRevisionInputs).
