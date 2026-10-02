@@ -212,6 +212,16 @@ func newBDExecTrace(start time.Time, dir, name string, args []string) func(statu
 	}
 }
 
+// TraceBDPassthrough records one bd invocation that ran outside the store's
+// runner on both traces: the GC_BD_TRACE line execCommandRunner writes and the
+// GC_BD_TRACE_JSON record. `gc bd` hands bd the operator's own stdin, stdout
+// and stderr, which execCommandRunner cannot do because it buffers them, so
+// without this its calls were missing from the GC_BD_TRACE log.
+func TraceBDPassthrough(source, dir, name string, args []string, start time.Time, exitCode int, err error) {
+	newBDExecTrace(start, dir, name, args)("done", err)
+	TraceBDCall(source, dir, args, start, exitCode, err)
+}
+
 // recordBDExecTelemetry emits the structured JSONL trace (bdtrace.go) and the
 // telemetry RecordBDCall for a completed "bd" invocation; it is a no-op for any
 // other command. The trace exit code is the child's exit status, or -1 when the

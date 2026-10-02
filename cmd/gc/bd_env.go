@@ -95,34 +95,53 @@ func bdContextCommandRunnerForCity(cityPath string) beads.CommandRunner {
 // Returning "" means no pin was configured anywhere, and the caller keeps its
 // own ambient executable lookup.
 func workspacePinnedBdBinary(cityPath string) (string, error) {
-	pinned, err := workspacePinnedBdBinaryOptional(cityPath)
+	return workspacePinnedBdBinaryWithConfig(cityPath, nil)
+}
+
+// workspacePinnedBdBinaryWithConfig is workspacePinnedBdBinary reading the pin
+// from cfg, the city config a one-shot command has already loaded. A nil cfg
+// loads city.toml. Long-lived callers pass nil: their config can be older than
+// the file, and the pin is read where it is used.
+func workspacePinnedBdBinaryWithConfig(cityPath string, cfg *config.City) (string, error) {
+	if cfg == nil {
+		loaded, ok, err := loadWorkspacePinConfig(cityPath)
+		if err != nil || !ok {
+			return "", err
+		}
+		cfg = loaded
+	}
+	pinned, err := workspacePinnedBdBinaryFromConfig(cfg)
 	if err != nil {
 		return "", err
 	}
 	if pinned != "" {
 		return pinned, nil
 	}
-	// This re-stats and re-parses the city.toml that
-	// workspacePinnedBdBinaryOptional already read, solely to re-answer whether
-	// workspace.env configured a PATH at all. The duplicate is deliberate: it
-	// keeps the optional resolver's contract to a single answer ("which bd is
-	// pinned") rather than returning an intermediate signal that exists only
-	// for this one strict caller. Both loads use the no-refresh loader, which
-	// omits the managed-provider-shim rewrite the full loader performs, so what
-	// repeats here is a parse and not a side effect.
-	if _, err := os.Stat(filepath.Join(cityPath, "city.toml")); errors.Is(err, os.ErrNotExist) {
-		return "", nil
-	} else if err != nil {
-		return "", err
-	}
-	cfg, err := loadCityConfigWithoutBuiltinPackRefresh(cityPath, io.Discard)
-	if err != nil {
-		return "", err
-	}
 	if _, configured := cfg.Workspace.Env["PATH"]; configured {
 		return "", fmt.Errorf("workspace.env PATH is configured but contains no executable bd at an absolute path")
 	}
 	return "", nil
+}
+
+// loadWorkspacePinConfig loads city.toml for a pin lookup. ok is false, with
+// no error, when the city has no city.toml.
+//
+// Resolving an executable is an environment-only operation. Use the
+// no-refresh loader here: the full loader rewrites the generated managed
+// provider shim as a config-load side effect, which can race an in-flight
+// lifecycle operation and replace a caller's already-selected provider
+// entrypoint.
+func loadWorkspacePinConfig(cityPath string) (*config.City, bool, error) {
+	if _, err := os.Stat(filepath.Join(cityPath, "city.toml")); errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	} else if err != nil {
+		return nil, false, err
+	}
+	cfg, err := loadCityConfigWithoutBuiltinPackRefresh(cityPath, io.Discard)
+	if err != nil {
+		return nil, false, err
+	}
+	return cfg, true, nil
 }
 
 // workspacePinnedBdBinaryOptional resolves an explicitly configured bd
@@ -148,20 +167,16 @@ func workspacePinnedBdBinary(cityPath string) (string, error) {
 // mind when changing either: this function decides whether a pin exists,
 // that one only applies a pin already decided here.
 func workspacePinnedBdBinaryOptional(cityPath string) (string, error) {
-	if _, err := os.Stat(filepath.Join(cityPath, "city.toml")); errors.Is(err, os.ErrNotExist) {
-		return "", nil
-	} else if err != nil {
+	cfg, ok, err := loadWorkspacePinConfig(cityPath)
+	if err != nil || !ok {
 		return "", err
 	}
-	// Resolving an executable is an environment-only operation. Use the
-	// no-refresh loader here: the full loader rewrites the generated managed
-	// provider shim as a config-load side effect, which can race an in-flight
-	// lifecycle operation and replace a caller's already-selected provider
-	// entrypoint.
-	cfg, err := loadCityConfigWithoutBuiltinPackRefresh(cityPath, io.Discard)
-	if err != nil {
-		return "", err
-	}
+	return workspacePinnedBdBinaryFromConfig(cfg)
+}
+
+// workspacePinnedBdBinaryFromConfig is workspacePinnedBdBinaryOptional over a
+// config already in hand.
+func workspacePinnedBdBinaryFromConfig(cfg *config.City) (string, error) {
 	env := expandEnvMap(cfg.Workspace.Env)
 	if raw := strings.TrimSpace(env["BD_BIN"]); raw != "" {
 		if !filepath.IsAbs(raw) {
@@ -242,13 +257,20 @@ var errBdNotOnPath = errors.New("bd not found in PATH")
 // but unresolvable pin is returned verbatim rather than masked as a missing
 // binary.
 func resolveBdBinaryForScope(cityPath, scopeRoot string) (string, error) {
+	return resolveBdBinaryForScopeWithConfig(cityPath, nil, scopeRoot)
+}
+
+// resolveBdBinaryForScopeWithConfig is resolveBdBinaryForScope reading the
+// workspace pin from cfg, the city config a one-shot command has already
+// loaded. A nil cfg loads city.toml; see workspacePinnedBdBinaryWithConfig.
+func resolveBdBinaryForScopeWithConfig(cityPath string, cfg *config.City, scopeRoot string) (string, error) {
 	bound, err := scopeStoreIsExternallyBound(cityPath, scopeRoot)
 	if err != nil {
 		return "", err
 	}
 	usesCityBackend := samePath(cityPath, scopeRoot) || !scopeOverridesCityBackend(cityPath, scopeRoot)
 	if bound || usesCityBackend {
-		pinned, err := workspacePinnedBdBinary(cityPath)
+		pinned, err := workspacePinnedBdBinaryWithConfig(cityPath, cfg)
 		if err != nil {
 			return "", err
 		}
@@ -657,10 +679,17 @@ func applyCompleteNonDoltStorageBindingEnv(env map[string]string, cityPath, scop
 // the exact hosted beads-workspace storage selector, gc installs its fixed
 // bridge to the credential-provider protocol.
 func applyHostedBeadsCredentialEnv(env map[string]string, cityPath string) error {
+	return applyHostedBeadsCredentialEnvWithConfig(env, cityPath, nil)
+}
+
+// applyHostedBeadsCredentialEnvWithConfig is applyHostedBeadsCredentialEnv
+// answering the hosted-binding question from cfg, the city config a one-shot
+// command has already loaded. A nil cfg asks the memoized probe.
+func applyHostedBeadsCredentialEnvWithConfig(env map[string]string, cityPath string, cfg *config.City) error {
 	if env == nil {
 		return nil
 	}
-	selected, err := citySelectsHostedBeadsCredentialProvider(cityPath)
+	selected, err := citySelectsHostedBeadsCredentialProviderWithConfig(cityPath, cfg)
 	if err != nil {
 		return err
 	}
@@ -831,6 +860,15 @@ func resetHostedCredentialProbeCache() {
 	})
 }
 
+// citySelectsHostedBeadsCredentialProviderWithConfig answers from cfg when the
+// caller has already loaded the city config, and otherwise asks the probe.
+func citySelectsHostedBeadsCredentialProviderWithConfig(cityPath string, cfg *config.City) (bool, error) {
+	if cfg != nil {
+		return configSelectsHostedBeadsCredentialProvider(cfg), nil
+	}
+	return citySelectsHostedBeadsCredentialProvider(cityPath)
+}
+
 func citySelectsHostedBeadsCredentialProvider(cityPath string) (bool, error) {
 	cityConfigPath := filepath.Join(cityPath, "city.toml")
 	before, ok := statHostedCredentialProbeSource(cityConfigPath)
@@ -848,6 +886,7 @@ func citySelectsHostedBeadsCredentialProvider(cityPath string) (bool, error) {
 		}
 		hostedCredentialProbeCache.Delete(key)
 	}
+	cityConfigLoads.Add(1)
 	cfg, prov, err := config.LoadWithIncludesOptions(fsys.OSFS{}, cityConfigPath, hostedCredentialProbeLoad)
 	hostedCredentialProbeLoads.Add(1)
 	if err != nil {
@@ -1831,11 +1870,30 @@ func bdRuntimeEnvForRigWithErrorRecovery(cityPath string, cfg *config.City, rigP
 }
 
 func bdRuntimeEnvForRigWithErrorRecoveryContext(ctx context.Context, cityPath string, cfg *config.City, rigPath string, allowRecovery bool) (map[string]string, error) {
+	return bdRuntimeEnvForRigScoped(ctx, cityPath, cfg, rigPath, allowRecovery, false)
+}
+
+// bdOneShotRuntimeEnvForRig is bdRuntimeEnvForRigWithError for a one-shot
+// command whose cfg was loaded from city.toml for this invocation: the city
+// projection under the rig reads the workspace bd pin and the hosted binding
+// from cfg instead of loading the file again. See bdOneShotRuntimeEnv.
+func bdOneShotRuntimeEnvForRig(cityPath string, cfg *config.City, rigPath string) (map[string]string, error) {
+	return bdRuntimeEnvForRigScoped(context.Background(), cityPath, cfg, rigPath, true, true)
+}
+
+// bdRuntimeEnvForRigScoped builds a rig's bd env. oneShotConfig says cfg is
+// current enough to stand in for city.toml in the city projection; long-lived
+// callers pass false, because the cfg they hold can be older than the file.
+func bdRuntimeEnvForRigScoped(ctx context.Context, cityPath string, cfg *config.City, rigPath string, allowRecovery, oneShotConfig bool) (map[string]string, error) {
 	cached, stamp, ok := cachedProxiedScopeRuntimeEnv(cityPath, rigPath)
 	if ok {
 		return cached, nil
 	}
-	env, cityErr := bdRuntimeEnvWithErrorRecoveryContext(ctx, cityPath, allowRecovery)
+	var loaded *config.City
+	if oneShotConfig {
+		loaded = cfg
+	}
+	env, cityErr := bdRuntimeEnvForCityConfig(ctx, cityPath, loaded, allowRecovery)
 	// The city projection carries the shared-server opt-out when the CITY is
 	// proxied. It belongs to the rig only if the rig is proxied too (re-added
 	// below); a direct or external rig keeps bd's own resolution.
@@ -1980,12 +2038,26 @@ func bdRuntimeEnvWithErrorRecovery(cityPath string, allowRecovery bool) (map[str
 }
 
 func bdRuntimeEnvWithErrorRecoveryContext(ctx context.Context, cityPath string, allowRecovery bool) (map[string]string, error) {
+	return bdRuntimeEnvForCityConfig(ctx, cityPath, nil, allowRecovery)
+}
+
+// bdOneShotRuntimeEnv is bdRuntimeEnvWithError for a one-shot command that
+// loaded cfg from city.toml for this invocation. The workspace bd pin and the
+// hosted-binding check each loaded the file again; they read cfg instead.
+func bdOneShotRuntimeEnv(cityPath string, cfg *config.City) (map[string]string, error) {
+	return bdRuntimeEnvForCityConfig(context.Background(), cityPath, cfg, true)
+}
+
+// bdRuntimeEnvForCityConfig builds the city bd env. loaded, when non-nil, is
+// a config the caller loaded for this invocation and stands in for city.toml;
+// nil reads the file.
+func bdRuntimeEnvForCityConfig(ctx context.Context, cityPath string, loaded *config.City, allowRecovery bool) (map[string]string, error) {
 	cached, stamp, ok := cachedProxiedScopeRuntimeEnv(cityPath, cityPath)
 	if ok {
 		return cached, nil
 	}
 	env := cityRuntimeEnvMapForCity(cityPath)
-	if err := applyWorkspacePinnedBdBinary(env, cityPath); err != nil {
+	if err := applyWorkspacePinnedBdBinaryWithConfig(env, cityPath, loaded); err != nil {
 		return env, err
 	}
 	env["BEADS_DIR"] = filepath.Join(cityPath, ".beads")
@@ -2030,7 +2102,7 @@ func bdRuntimeEnvWithErrorRecoveryContext(ctx context.Context, cityPath string, 
 	if !cityUsesBdStoreContract(cityPath) {
 		return env, nil
 	}
-	if err := applyHostedBeadsCredentialEnv(env, cityPath); err != nil {
+	if err := applyHostedBeadsCredentialEnvWithConfig(env, cityPath, loaded); err != nil {
 		return env, err
 	}
 	if scopeBackendIsDoltlite(cityPath, cityPath) {
@@ -2159,10 +2231,23 @@ func cityRuntimeProcessEnvWithError(cityPath string) ([]string, error) {
 // scripts must use the same schema-compatible executable before any worker
 // session exists.
 func applyWorkspacePinnedBdBinary(env map[string]string, cityPath string) error {
+	return applyWorkspacePinnedBdBinaryWithConfig(env, cityPath, nil)
+}
+
+// applyWorkspacePinnedBdBinaryWithConfig is applyWorkspacePinnedBdBinary
+// reading the pin from cfg, the city config a one-shot command has already
+// loaded. A nil cfg loads city.toml.
+func applyWorkspacePinnedBdBinaryWithConfig(env map[string]string, cityPath string, cfg *config.City) error {
 	if env == nil {
 		return nil
 	}
-	pinned, err := workspacePinnedBdBinaryOptional(cityPath)
+	var pinned string
+	var err error
+	if cfg != nil {
+		pinned, err = workspacePinnedBdBinaryFromConfig(cfg)
+	} else {
+		pinned, err = workspacePinnedBdBinaryOptional(cityPath)
+	}
 	if err != nil {
 		return err
 	}
