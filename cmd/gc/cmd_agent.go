@@ -28,6 +28,13 @@ import (
 // (ga-237xpr) — tests assert on this counter to guard against a regression.
 var loadCityConfigCalls atomic.Int64
 
+// cityConfigLoads counts every composition of city.toml (the file, its
+// includes and its packs) by the loaders a one-shot gc bd reaches: the full and
+// prematerialized loaders here, the hosted-credential probe and the CLI
+// storage-routes resolver. loadCityConfigCalls counts the full loader alone.
+// TestDoBdLoadsCityConfigOnce asserts on it.
+var cityConfigLoads atomic.Int64
+
 const agentAddPromptScaffold = `You are the {{ .AgentName }} agent.
 
 Describe what this agent should do here.
@@ -63,6 +70,7 @@ func loadCityConfigFS(fs fsys.FS, tomlPath string, warningWriter ...io.Writer) (
 	if err := ensureBuiltinPacksForConfigLoad(fs, tomlPath, resolveLoadCityConfigWarningWriter(warningWriter...)); err != nil {
 		return nil, err
 	}
+	cityConfigLoads.Add(1)
 	cfg, prov, err := config.LoadWithIncludesOptions(fs, tomlPath, skipRevisionSnapshot)
 	if err != nil {
 		return nil, err
@@ -94,6 +102,7 @@ func loadCityConfigWithoutBuiltinPackRefresh(cityPath string, warningWriter ...i
 // only in skipping the refresh; opts is what separates a blocking load from an
 // advisory one.
 func loadPrematerializedCityConfig(fs fsys.FS, tomlPath string, opts config.LoadOptions, warnings io.Writer) (*config.City, error) {
+	cityConfigLoads.Add(1)
 	cfg, prov, err := config.LoadWithIncludesOptions(fs, tomlPath, opts)
 	if err != nil {
 		return nil, err
