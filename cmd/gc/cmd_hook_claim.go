@@ -212,9 +212,9 @@ type hookClaimOps struct {
 	Claim              hookClaimFunc
 	ListContinuation   hookListContinuationFunc
 	AssignContinuation hookAssignContinuationFunc
-	// ListRootSteps lists the in-progress steps of a workflow root (the beads
-	// whose gc.root_bead_id names it). It answers whether a routed root is a
-	// running workflow that must not be claimed (gsc-tf857).
+	// ListRootSteps lists the live steps of a workflow root (the beads whose
+	// gc.root_bead_id names it). It answers whether a routed root has anything
+	// left to launch, or must not be claimed (gsc-tf857, bgc-jt6h).
 	ListRootSteps hookListRootStepsFunc
 	DrainAck      hookDrainAckFunc
 	// DrainPending reports whether the session bead named by sessionID is
@@ -1017,9 +1017,10 @@ func mergeHookClaimCandidateMetadata(candidate, claimed beads.Bead) beads.Bead {
 }
 
 // skipHeldHookWorkflowRoot reports whether candidate is a routed workflow root
-// that must not be claimed because one of its steps is already held in
-// progress (gsc-tf857): the workflow is running, and the root would hand this
-// session a launch fallback with nothing left to launch.
+// with nothing left to launch for this session: one of its steps is already
+// held in progress (gsc-tf857), or none of its live steps is ready work routed
+// here (bgc-jt6h). Either way the root would hand this session a launch
+// fallback it can only drain from.
 //
 // A failed step read fails OPEN and the root is claimed as it was before this
 // check existed, the same trade the controller's demand count makes: a store
@@ -1033,15 +1034,17 @@ func skipHeldHookWorkflowRoot(ctx context.Context, candidate beads.Bead, opts ho
 	if strings.TrimSpace(candidate.Assignee) != "" && !opts.AutoReclaimStaleClaims {
 		return false
 	}
-	step, held, err := workflowRootHeldStep(candidate, func(rootID string) ([]beads.Bead, error) {
+	reason, err := workflowRootSkipReason(candidate, func(rootID string) ([]beads.Bead, error) {
 		return ops.ListRootSteps(ctx, dir, opts.Env, rootID)
-	})
+	}, func(step beads.Bead) bool {
+		return hookClaimMatchesRoute(step, opts.RouteTargets)
+	}, ops.nowOrWallClock())
 	switch {
 	case err != nil:
 		fmt.Fprintf(stderr, "gc hook --claim: reading the steps of workflow root %s: %v; offering it unchecked\n", candidate.ID, err) //nolint:errcheck
 		return false
-	case held:
-		fmt.Fprintf(stderr, "gc hook --claim: skipping workflow root %s: its step %s is in progress under %s\n", candidate.ID, step.ID, strings.TrimSpace(step.Assignee)) //nolint:errcheck
+	case reason != "":
+		fmt.Fprintf(stderr, "gc hook --claim: skipping workflow root %s: %s\n", candidate.ID, reason) //nolint:errcheck
 		return true
 	}
 	return false

@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/beads"
 )
@@ -74,7 +76,7 @@ func tf857ClaimOpts() hookClaimOptions {
 	}
 }
 
-func TestWorkflowRootHeldStep(t *testing.T) {
+func TestWorkflowRootSkipReason(t *testing.T) {
 	root := tf857Root(tf857LiveRoot)
 	held := tf857Step(tf857LiveStep, tf857LiveRoot, "in_progress", "bgc-wisp-vpe9u", tf857Pool)
 	list := func(steps ...beads.Bead) workflowRootStepLister {
@@ -85,44 +87,81 @@ func TestWorkflowRootHeldStep(t *testing.T) {
 			return steps, nil
 		}
 	}
+	readyHere := tf857Step("s-ready", tf857LiveRoot, "open", "", tf857Pool)
+	elsewhere := tf857Step("s-other", tf857LiveRoot, "open", "", "GasCityDispatch/run-operator")
 	for _, tc := range []struct {
-		name   string
-		root   beads.Bead
-		list   workflowRootStepLister
-		wantID string
+		name string
+		root beads.Bead
+		list workflowRootStepLister
+		want string
 	}{
-		{name: "a step in progress under a session holds the root", root: root, list: list(held), wantID: tf857LiveStep},
-		{name: "no steps in progress", root: root, list: list()},
-		{name: "an in-progress step with no assignee does not hold it", root: root, list: list(tf857Step("s-1", tf857LiveRoot, "in_progress", "", tf857Pool))},
-		{name: "an open step does not hold it", root: root, list: list(tf857Step("s-1", tf857LiveRoot, "open", "bgc-wisp-vpe9u", tf857Pool))},
+		{name: "a step in progress under a session holds the root", root: root, list: list(held), want: "its step " + tf857LiveStep + " is in progress under bgc-wisp-vpe9u"},
+		{name: "no live steps is a launch", root: root, list: list()},
+		{name: "a ready step routed here is a launch", root: root, list: list(readyHere, elsewhere)},
+		{name: "an unrouted ready step is a launch", root: root, list: list(beads.Bead{ID: "s-1", Status: "open", Metadata: map[string]string{"gc.root_bead_id": tf857LiveRoot}})},
+		{name: "a step blocked by another root's bead is a launch", root: root, list: list(jt6hWithDeps(readyHere, jt6hBlocks("s-ready", "gcd-other")))},
+		{name: "an in-progress step with no assignee does not hold it", root: root, list: list(tf857Step("s-1", tf857LiveRoot, "in_progress", "", tf857Pool)), want: "none of its 1 open steps is ready for this route"},
+		{name: "only steps routed elsewhere", root: root, list: list(elsewhere), want: "none of its 1 open steps is ready for this route"},
+		{name: "a step routed here but assigned", root: root, list: list(tf857Step("s-1", tf857LiveRoot, "open", "bgc-wisp-vpe9u", tf857Pool)), want: "none of its 1 open steps is ready for this route"},
+		{name: "a step routed here but blocked by a live step", root: root, list: list(jt6hWithDeps(readyHere, jt6hBlocks("s-ready", "s-other")), elsewhere), want: "none of its 2 open steps is ready for this route"},
+		{name: "a step routed here but on a dispatch hold", root: root, list: list(jt6hWithLabels(readyHere, "hold:mayor")), want: "none of its 1 open steps is ready for this route"},
+		{name: "a step routed here but deferred", root: root, list: list(jt6hDeferred(readyHere)), want: "none of its 1 open steps is ready for this route"},
 		// A control bead stays OPEN while the dispatcher works it, so open
 		// cannot tell "being worked" from "waiting", and every graph root has
-		// an open finalizer from launch on.
-		{name: "an open control bead does not hold it", root: root, list: list(beads.Bead{ID: "s-1", Status: "open", Assignee: "control-dispatcher", Metadata: map[string]string{"gc.root_bead_id": tf857LiveRoot, "gc.kind": "workflow-finalize"}})},
-		{name: "another root's step in a superset answer does not hold it", root: root, list: list(tf857Step("s-1", "gcd-other", "in_progress", "bgc-wisp-vpe9u", tf857Pool))},
-		{name: "the root itself in the answer does not hold it", root: root, list: list(beads.Bead{ID: tf857LiveRoot, Status: "in_progress", Assignee: "x", Metadata: map[string]string{"gc.root_bead_id": tf857LiveRoot}})},
-		{name: "an ordinary bead is never a held root", root: beads.Bead{ID: tf857LiveRoot, Status: "open"}, list: func(string) ([]beads.Bead, error) {
+		// an open finalizer from launch on. It neither holds the root nor is
+		// work for a pool.
+		{name: "an open control bead neither holds nor launches it", root: root, list: list(beads.Bead{ID: "s-1", Status: "open", Metadata: map[string]string{"gc.root_bead_id": tf857LiveRoot, "gc.kind": "workflow-finalize"}}), want: "none of its 1 open steps is ready for this route"},
+		{name: "another root's step in a superset answer is ignored", root: root, list: list(tf857Step("s-1", "gcd-other", "in_progress", "bgc-wisp-vpe9u", tf857Pool))},
+		{name: "a closed step in a superset answer is ignored", root: root, list: list(tf857Step("s-1", tf857LiveRoot, "closed", "", "GasCityDispatch/run-operator"))},
+		{name: "the root itself in the answer is ignored", root: root, list: list(beads.Bead{ID: tf857LiveRoot, Status: "in_progress", Assignee: "x", Metadata: map[string]string{"gc.root_bead_id": tf857LiveRoot}})},
+		{name: "an ordinary bead is never skipped", root: beads.Bead{ID: tf857LiveRoot, Status: "open"}, list: func(string) ([]beads.Bead, error) {
 			t.Fatal("listed steps of a bead that is not a workflow root")
 			return nil, nil
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			step, ok, err := workflowRootHeldStep(tc.root, tc.list)
+			got, err := workflowRootSkipReason(tc.root, tc.list, tf857RoutedHere, tf857Now)
 			if err != nil {
-				t.Fatalf("workflowRootHeldStep: %v", err)
+				t.Fatalf("workflowRootSkipReason: %v", err)
 			}
-			if ok != (tc.wantID != "") || step.ID != tc.wantID {
-				t.Fatalf("workflowRootHeldStep = (%q, %v), want (%q, %v)", step.ID, ok, tc.wantID, tc.wantID != "")
+			if got != tc.want {
+				t.Fatalf("workflowRootSkipReason = %q, want %q", got, tc.want)
 			}
 		})
 	}
 	t.Run("a failed read is returned", func(t *testing.T) {
 		boom := errors.New("store down")
-		_, ok, err := workflowRootHeldStep(root, func(string) ([]beads.Bead, error) { return nil, boom })
-		if !errors.Is(err, boom) || ok {
-			t.Fatalf("workflowRootHeldStep = (%v, %v), want (false, %v)", ok, err, boom)
+		got, err := workflowRootSkipReason(root, func(string) ([]beads.Bead, error) { return nil, boom }, tf857RoutedHere, tf857Now)
+		if !errors.Is(err, boom) || got != "" {
+			t.Fatalf("workflowRootSkipReason = (%q, %v), want (\"\", %v)", got, err, boom)
 		}
 	})
+}
+
+var tf857Now = time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
+
+func tf857RoutedHere(step beads.Bead) bool {
+	return hookClaimMatchesRoute(step, []string{tf857Pool})
+}
+
+func jt6hBlocks(issueID, dependsOnID string) beads.Dep {
+	return beads.Dep{IssueID: issueID, DependsOnID: dependsOnID, Type: "blocks"}
+}
+
+func jt6hWithDeps(b beads.Bead, deps ...beads.Dep) beads.Bead {
+	b.Dependencies = append(slices.Clone(b.Dependencies), deps...)
+	return b
+}
+
+func jt6hWithLabels(b beads.Bead, labels ...string) beads.Bead {
+	b.Labels = append(slices.Clone(b.Labels), labels...)
+	return b
+}
+
+func jt6hDeferred(b beads.Bead) beads.Bead {
+	until := tf857Now.Add(time.Hour)
+	b.DeferUntil = &until
+	return b
 }
 
 // 11:57Z and 09:41Z/10:40Z: a root routed to the pool is not claimable while a
@@ -320,5 +359,149 @@ func TestDefaultScaleCheckSkipsWorkflowRootHeldThroughItsStep(t *testing.T) {
 	}
 	if got := count(); got != 0 {
 		t.Fatalf("root held through its step counts %d, want 0", got)
+	}
+}
+
+// The bgc-jt6h shapes from 2026-10-01: Dispatch do-work-publish-first roots
+// claimed and dropped over and over with nothing held, on both routes.
+const (
+	// 23:21Z / 00:15Z: gcd-935h24's implement had closed. Its only open steps
+	// were close-source-anchor (a run-operator's) and workflow-finalize (the
+	// control dispatcher's), so five portable workers in turn claimed it,
+	// found nothing to run, and drained.
+	jt6hLateRoot = "gcd-935h24"
+	// 13:19Z-13:31Z: gcd-xwry0b was claimed before its implement could be,
+	// while the implement still waited on a step routed elsewhere.
+	jt6hEarlyRoot   = "gcd-xwry0b"
+	jt6hRunOperator = "GasCityDispatch/run-operator"
+	jt6hControl     = "core.control-dispatcher"
+)
+
+func jt6hFinalize(rootID string, blockedBy ...string) beads.Bead {
+	step := beads.Bead{
+		ID:     rootID + "-finalize",
+		Status: "open",
+		Type:   "task",
+		Metadata: map[string]string{
+			"gc.root_bead_id": rootID,
+			"gc.routed_to":    jt6hControl,
+			"gc.kind":         "workflow-finalize",
+		},
+	}
+	for _, id := range blockedBy {
+		step = jt6hWithDeps(step, jt6hBlocks(step.ID, id))
+	}
+	return step
+}
+
+// A routed root none of whose live steps is ready work for this session is
+// passed over, and the claim moves on to the next routed row.
+func TestDoHookClaimSkipsWorkflowRootWithNothingReadyHere(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		rootID string
+		steps  []beads.Bead
+	}{
+		{name: "implement closed, only another route's step and the finalizer left", rootID: jt6hLateRoot, steps: []beads.Bead{
+			tf857Step("gcd-anchor", jt6hLateRoot, "open", "", jt6hRunOperator),
+			jt6hFinalize(jt6hLateRoot, "gcd-anchor"),
+		}},
+		{name: "implement waiting on a step routed elsewhere", rootID: jt6hEarlyRoot, steps: []beads.Bead{
+			tf857Step("gcd-prepare", jt6hEarlyRoot, "open", "", jt6hRunOperator),
+			jt6hWithDeps(tf857Step("gcd-implement", jt6hEarlyRoot, "open", "", tf857Pool), jt6hBlocks("gcd-implement", "gcd-prepare")),
+			jt6hFinalize(jt6hEarlyRoot, "gcd-implement"),
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			next := beads.Bead{ID: "gcd-next", Status: "open", Type: "task", Metadata: map[string]string{"gc.routed_to": tf857Pool}}
+			var claimed []string
+			ops := hookClaimOps{
+				Runner: func(string, string) (string, error) { return tf857Rows(t, tf857Root(tc.rootID), next), nil },
+				ListRootSteps: func(_ context.Context, _ string, _ []string, rootID string) ([]beads.Bead, error) {
+					if rootID != tc.rootID {
+						return nil, nil
+					}
+					return tc.steps, nil
+				},
+				Claim: func(_ context.Context, _ string, _ []string, beadID, assignee string) (beads.Bead, bool, error) {
+					claimed = append(claimed, beadID)
+					return beads.Bead{ID: beadID, Status: "in_progress", Assignee: assignee, Metadata: next.Metadata}, true, nil
+				},
+			}
+			var stdout, stderr bytes.Buffer
+			if code := doHookClaim("bd ready --json", "/tmp/work", tf857ClaimOpts(), ops, &stdout, &stderr); code != 0 {
+				t.Fatalf("doHookClaim = %d, want 0; stderr=%s", code, stderr.String())
+			}
+			if got := strings.Join(claimed, ","); got != "gcd-next" {
+				t.Fatalf("claimed %q, want only gcd-next; stderr=%s", got, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), "skipping workflow root "+tc.rootID+": none of its") {
+				t.Fatalf("stderr = %q, want the skipped root named", stderr.String())
+			}
+		})
+	}
+}
+
+// The first claimant of a fresh workflow root still launches it: its first
+// step is ready and routed here, so the root is claimed exactly as before.
+func TestDoHookClaimLaunchesAFreshWorkflowRoot(t *testing.T) {
+	implement := tf857Step("gcd-implement", jt6hEarlyRoot, "open", "", tf857Pool)
+	steps := []beads.Bead{implement, jt6hFinalize(jt6hEarlyRoot, implement.ID)}
+	var claimed []string
+	ops := hookClaimOps{
+		Runner: func(string, string) (string, error) { return tf857Rows(t, tf857Root(jt6hEarlyRoot)), nil },
+		ListRootSteps: func(_ context.Context, _ string, _ []string, rootID string) ([]beads.Bead, error) {
+			if rootID != jt6hEarlyRoot {
+				t.Fatalf("listed steps of %q, want %q", rootID, jt6hEarlyRoot)
+			}
+			return steps, nil
+		},
+		Claim: func(_ context.Context, _ string, _ []string, beadID, assignee string) (beads.Bead, bool, error) {
+			claimed = append(claimed, beadID)
+			root := tf857Root(beadID)
+			root.Status, root.Assignee = "in_progress", assignee
+			return root, true, nil
+		},
+	}
+	var stdout, stderr bytes.Buffer
+	if code := doHookClaim("bd ready --json", "/tmp/work", tf857ClaimOpts(), ops, &stdout, &stderr); code != 0 {
+		t.Fatalf("doHookClaim = %d, want 0; stderr=%s", code, stderr.String())
+	}
+	if got := strings.Join(claimed, ","); got != jt6hEarlyRoot {
+		t.Fatalf("claimed %q, want the root %s; stderr=%s", got, jt6hEarlyRoot, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "skipping workflow root") {
+		t.Fatalf("stderr = %q, want the fresh root offered", stderr.String())
+	}
+}
+
+// The controller counts a routed root as capacity demand only while one of its
+// live steps is ready work for the template; otherwise a seat spawned for it
+// could only drain.
+func TestDefaultScaleCheckCountsWorkflowRootOnlyWithReadyWorkHere(t *testing.T) {
+	store := beads.NewMemStore()
+	root, err := store.Create(tf857Root(""))
+	if err != nil {
+		t.Fatalf("create root: %v", err)
+	}
+	rootDemanded := func() bool {
+		t.Helper()
+		_, demand, _, errs := defaultScaleCheckCountsAndDemand(nil, []defaultScaleCheckTarget{{template: tf857Pool, storeKey: "rig:gcd", store: store}})
+		if len(errs) != 0 {
+			t.Fatalf("defaultScaleCheckCountsAndDemand errs = %v", errs)
+		}
+		return slices.Contains(demand[tf857Pool].WorkBeadIDs, root.ID)
+	}
+	if _, err := store.Create(tf857Step("", root.ID, "open", "", jt6hRunOperator)); err != nil {
+		t.Fatalf("create anchor: %v", err)
+	}
+	if rootDemanded() {
+		t.Fatalf("root whose only live step is a run-operator's counts as %s demand", tf857Pool)
+	}
+	if _, err := store.Create(tf857Step("", root.ID, "open", "", tf857Pool)); err != nil {
+		t.Fatalf("create implement: %v", err)
+	}
+	if !rootDemanded() {
+		t.Fatalf("root with a ready %s step does not count as demand (a launch is demand)", tf857Pool)
 	}
 }

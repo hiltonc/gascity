@@ -2123,11 +2123,16 @@ func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCh
 			if !servable {
 				continue
 			}
-			// A workflow root whose step a session already holds is a running
-			// workflow, not launch demand: gc hook --claim refuses it, so a
-			// seat spawned for it could only drain (gsc-tf857). A failed step
-			// read counts the root as before rather than hiding demand.
-			if _, held, heldErr := workflowRootHeldStep(b, storeWorkflowRootStepLister(group.store)); heldErr == nil && held {
+			// A workflow root whose step a session already holds, or none of
+			// whose live steps is ready work for this template, is not launch
+			// demand: gc hook --claim refuses it, so a seat spawned for it
+			// could only drain (gsc-tf857, bgc-jt6h). A failed step read counts
+			// the root as before rather than hiding demand.
+			routedHere := func(step beads.Bead) bool {
+				stepTemplate, ok := demandServableForTemplates(cfg, step, map[string]struct{}{template: {}})
+				return ok && stepTemplate == template
+			}
+			if reason, skipErr := workflowRootSkipReason(b, storeWorkflowRootStepLister(group.store), routedHere, time.Now()); skipErr == nil && reason != "" {
 				continue
 			}
 			seen := countedBeads[template]
