@@ -41,6 +41,7 @@ var ControlKinds = []string{
 	KindDrain,
 	KindScopeCheck,
 	KindWorkflowFinalize,
+	KindStartGate,
 }
 
 // IsControlKind reports whether kind is a member of ControlKinds.
@@ -57,8 +58,9 @@ func IsControlKind(kind string) bool {
 // frozen step-spec sidecars (bookkeeping, not work); the remaining members are
 // control kinds whose terminal scope reconciliation is owned by the control
 // runtime (fanout reconciles its enclosing scope on close, scope-check IS the
-// reconciler, workflow-finalize runs at root level, and check beads are closed
-// by their owning ralph control, which reconciles). KindRetry and KindRalph
+// reconciler, workflow-finalize runs at root level, start-gate runs before any
+// member exists, and check beads are closed by their owning ralph control,
+// which reconciles). KindRetry and KindRalph
 // stay non-exempt on purpose: their controls pair with scope-checks in
 // addition to their own close-time reconciliation (NDI redundancy), and the
 // scope-check's isRetryAttemptSubject branch depends on that pairing.
@@ -87,6 +89,7 @@ var ScopeCheckExemptKinds = []string{
 	KindCheck,
 	KindDrain,
 	KindSpec,
+	KindStartGate,
 }
 
 // IsScopeCheckExemptKind reports whether kind is a member of
@@ -121,11 +124,12 @@ var WorkflowTopologyKinds = []string{
 // GraphContractMetadataKinds lists the gc.kind values that, when HAND-WRITTEN
 // in step metadata, imply graph.v2 semantics and therefore trigger the formula
 // compiler requirement (formula.metadataRequiresGraphContract derives from
-// this set). It is exactly StructuralGraphKinds ∪ (ControlKinds \ {fanout}):
-// the fanout exclusion is intentional — that kind is engine-minted from
+// this set). It is exactly StructuralGraphKinds ∪ (ControlKinds \ {fanout,
+// start-gate}): the exclusions are intentional — fanout is engine-minted from
 // [steps.on_complete], which formula validation catches via struct-field
-// checks (commit 2531b9440), so it is covered by EngineMintedOnlyKinds
-// instead (hand-writing it is a validation error, not a contract trigger).
+// checks (commit 2531b9440), and start-gate is added at launch, so both are
+// covered by EngineMintedOnlyKinds instead (hand-writing either is a
+// validation error, not a contract trigger).
 // KindDrain appears in both detection paths (struct field and metadata) as
 // belt-and-suspenders from PR #2784. TestKindSetRelationships pins this
 // composition.
@@ -144,9 +148,10 @@ var GraphContractMetadataKinds = []string{
 }
 
 // EngineMintedOnlyKinds lists the gc.kind values that only the formula
-// compiler may mint: fanout control beads are expanded from the
-// [steps.on_complete] authoring surface (formula ApplyGraphControls), and no
-// hand-authoring surface exists for them. Hand-writing these values in step
+// engine may mint: fanout control beads are expanded from the
+// [steps.on_complete] authoring surface (formula ApplyGraphControls), and a
+// start-gate is added at launch from the source bead's blockers
+// (molecule.GateRecipe); no hand-authoring surface exists for either. Hand-writing these values in step
 // metadata is rejected by formula validation (the behavior owner is
 // Formula.Validate via validateEngineMintedKindMetadata, ga-cjg11s) —
 // otherwise the bead would pass validation and the legacy routing path would
@@ -155,4 +160,5 @@ var GraphContractMetadataKinds = []string{
 // this composition.
 var EngineMintedOnlyKinds = []string{
 	KindFanout,
+	KindStartGate,
 }

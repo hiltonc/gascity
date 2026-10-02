@@ -37,6 +37,12 @@ type Options struct {
 	// correct before the recipe becomes visible to workers.
 	ExternalDeps []ExternalDep
 
+	// Gates holds already-existing beads the recipe waits on before it
+	// starts. ApplyGates turns them into one start bead (see GateRecipe);
+	// callers that route the recipe apply them first, and Instantiate
+	// applies any left. Only IssueID, DependsOnID and Type are read.
+	Gates []beads.Dep
+
 	// ParentID attaches the molecule to an existing bead. When set, the
 	// root bead's ParentID is set to this value.
 	ParentID string
@@ -830,6 +836,10 @@ func Instantiate(ctx context.Context, store beads.Store, recipe *formula.Recipe,
 	}
 	if len(recipe.Steps) == 0 {
 		return nil, fmt.Errorf("recipe %q has no steps", recipe.Name)
+	}
+	opts, err := ApplyGates(recipe, opts)
+	if err != nil {
+		return nil, err
 	}
 	if !opts.nativeStepTopologyPrepared {
 		recipe = recipeWithNativeStepDependencies(recipe)

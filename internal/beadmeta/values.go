@@ -22,6 +22,11 @@ const (
 	KindDrain            = "drain"
 	KindScopeCheck       = "scope-check"
 	KindWorkflowFinalize = "workflow-finalize"
+	// KindStartGate marks the start bead of a workflow launched from a source
+	// bead with open blockers: it carries those blockers as its own deps, the
+	// workflow's entry steps and root wait on it, and the control dispatcher
+	// closes it once they are satisfied (bgc-acn).
+	KindStartGate = "start-gate"
 
 	// Structural graph-node kinds: compiled into graphs, never dispatched as
 	// control beads (the dispatch switch hard-errors on them).
