@@ -1064,7 +1064,8 @@ func metadataRequiresGraphContract(metadata map[string]string) bool {
 // formula-package judgment. TestEngineMintedAuthoringSurfacesCoverEngineMintedOnlyKinds
 // keeps the two in lockstep.
 var engineMintedAuthoringSurfaces = map[string]string{
-	beadmeta.KindFanout: "[steps.on_complete]",
+	beadmeta.KindFanout:    "[steps.on_complete]",
+	beadmeta.KindStartGate: "a blocks dependency on the bead the formula is slung onto",
 }
 
 // validateEngineMintedKindMetadata rejects hand-written gc.kind values that
