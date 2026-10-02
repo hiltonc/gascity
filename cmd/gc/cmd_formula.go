@@ -904,11 +904,18 @@ store, copy them into the binding with
 						if err != nil {
 							return fmt.Errorf("attach bead %s: %w", attach, err)
 						}
+						// The workflow waits for the attached bead's blockers, as a
+						// sling of it does (bgc-acn).
+						blockers, err := sourceworkflow.ReadSourceBlockers(store, store, attach)
+						if err != nil {
+							return err
+						}
 						result, err = molecule.Instantiate(cmd.Context(), store, recipe, molecule.Options{
 							Title:            title,
 							Vars:             cookVars,
 							IdempotencyKey:   graphRootKey,
 							PriorityOverride: cloneFormulaCookPriority(source.Priority),
+							Gates:            blockers.Gates,
 						})
 						if err != nil {
 							if cleanupErr := closeFormulaCookFailedGraphV2Roots(store, recipe); cleanupErr != nil {
@@ -917,6 +924,14 @@ store, copy them into the binding with
 							return err
 						}
 						emitFormulaCookExecutionFacts(store, store, cityPath, result, stderr)
+						if len(blockers.Gates) > 0 && result.Created > 0 {
+							fmt.Fprintf(stderr, "gc formula cook: workflow %s waits for %d open blocker(s) of %s\n", result.RootID, len(blockers.Gates), attach) //nolint:errcheck // best-effort stderr
+						}
+						if len(blockers.Unprojected) > 0 && result.Created > 0 {
+							if err := store.SetMetadata(result.RootID, beadmeta.SourceUnprojectedBlockersMetadataKey, strings.Join(blockers.Unprojected, ",")); err != nil {
+								return fmt.Errorf("recording unresolvable blockers on %s: %w", result.RootID, err)
+							}
+						}
 						return ensureFormulaCookAttachDep(store, attach, result.RootID)
 					})
 					if err != nil {

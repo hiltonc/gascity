@@ -417,6 +417,12 @@ readiness barrier is gone, though `mc-xp7` would also need
 sets. Routing decides _which_ queue a bead appears in; readiness decides
 _whether_ it appears at all.
 
+The same holds when you sling a formula onto a blocked bead. The workflow's
+steps are what agents claim, so each one is created waiting on the bead's open
+blockers, and none of them appears in a work query until those blockers close.
+The blockers are read once, at sling time: a blocker added to the bead after
+the workflow launched does not hold it.
+
 This is the "pull" model: agents check for work instead of having it pushed.
 
 ## The bead store
