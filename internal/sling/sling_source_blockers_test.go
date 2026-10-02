@@ -48,8 +48,9 @@ func blockedSourceBead(t *testing.T, store beads.Store, blockerStatus string) (s
 }
 
 // A formula slung onto a blocked bead must not be Ready work until the bead's
-// blockers close: its steps are what a pool claims and counts as demand
-// (bgc-acn).
+// blockers close: its steps are what a pool claims and counts as demand. The
+// workflow waits on one start bead that carries the blockers, and that bead is
+// the only thing to come up when they close (bgc-acn).
 func TestSlingGraphFormulaOnBlockedBeadWaitsForItsBlockers(t *testing.T) {
 	deps := graphV2ConvoyFirstSlingTestConfig(t)
 	source, blocker := blockedSourceBead(t, deps.Store, "open")
@@ -69,12 +70,45 @@ func TestSlingGraphFormulaOnBlockedBeadWaitsForItsBlockers(t *testing.T) {
 		t.Fatalf("BeadWarnings = %q, want a note naming blocker %s", result.BeadWarnings, blocker.ID)
 	}
 
+	// One start bead holds the blocker; the root waits on it too.
+	starts, err := deps.Store.List(beads.ListQuery{Metadata: map[string]string{beadmeta.KindMetadataKey: beadmeta.KindStartGate, beadmeta.RootBeadIDMetadataKey: result.WorkflowID}})
+	if err != nil || len(starts) != 1 {
+		t.Fatalf("start beads = %+v (err %v), want one", starts, err)
+	}
+	start := starts[0]
+	if !strings.Contains(start.Title, blocker.ID) {
+		t.Errorf("start bead title %q does not name blocker %s", start.Title, blocker.ID)
+	}
+	if !dependsOn(t, deps.Store, start.ID, blocker.ID) {
+		t.Fatalf("start bead %s does not depend on blocker %s", start.ID, blocker.ID)
+	}
+	if !dependsOn(t, deps.Store, result.WorkflowID, start.ID) {
+		t.Fatalf("root %s does not wait on start bead %s", result.WorkflowID, start.ID)
+	}
+	if !containsSubstring(result.BeadWarnings, "bd dep add "+start.ID) {
+		t.Errorf("BeadWarnings = %q, want the command that adds a blocker to start bead %s", result.BeadWarnings, start.ID)
+	}
+
 	if err := deps.Store.Close(blocker.ID); err != nil {
 		t.Fatal(err)
 	}
-	if ready := readyWorkflowBeadIDs(t, deps.Store, result.WorkflowID); len(ready) == 0 {
-		t.Fatalf("no workflow bead Ready after %s closed", blocker.ID)
+	if ready := readyWorkflowBeadIDs(t, deps.Store, result.WorkflowID); len(ready) != 1 || ready[0] != start.ID {
+		t.Fatalf("workflow beads Ready after %s closed = %v, want only the start bead %s", blocker.ID, ready, start.ID)
 	}
+}
+
+func dependsOn(t *testing.T, store beads.Store, issueID, dependsOnID string) bool {
+	t.Helper()
+	deps, err := store.DepList(issueID, "down")
+	if err != nil {
+		t.Fatalf("DepList(%s): %v", issueID, err)
+	}
+	for _, dep := range deps {
+		if dep.DependsOnID == dependsOnID && beads.IsReadyBlockingDependencyType(dep.Type) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestSlingGraphFormulaOnBeadWithClosedBlockerIsReadyAtOnce(t *testing.T) {
@@ -88,6 +122,9 @@ func TestSlingGraphFormulaOnBeadWithClosedBlockerIsReadyAtOnce(t *testing.T) {
 	}
 	if ready := readyWorkflowBeadIDs(t, deps.Store, result.WorkflowID); len(ready) == 0 {
 		t.Fatal("no workflow bead Ready although the source's only blocker is closed")
+	}
+	if starts, err := deps.Store.List(beads.ListQuery{Metadata: map[string]string{beadmeta.KindMetadataKey: beadmeta.KindStartGate}}); err != nil || len(starts) != 0 {
+		t.Fatalf("start beads = %+v (err %v), want none for a bead with no open blocker", starts, err)
 	}
 	if len(result.BeadWarnings) != 0 {
 		t.Fatalf("BeadWarnings = %q, want none", result.BeadWarnings)

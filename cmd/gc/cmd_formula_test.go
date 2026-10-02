@@ -1784,7 +1784,24 @@ title = "Do work for {{convoy_id}}"
 	if err := store.Close(blocker.ID); err != nil {
 		t.Fatalf("close blocker: %v", err)
 	}
-	if ready := readyInWorkflow(); len(ready) == 0 {
-		t.Fatalf("no workflow bead Ready after %s closed", blocker.ID)
+	// Only the start bead comes up, and it is routed to the control
+	// dispatcher like the workflow's finalizer, so no worker claims it.
+	ready := readyInWorkflow()
+	if len(ready) != 1 {
+		t.Fatalf("workflow beads Ready after %s closed = %v, want only the start bead", blocker.ID, ready)
+	}
+	start, err := store.Get(ready[0])
+	if err != nil {
+		t.Fatalf("get start bead: %v", err)
+	}
+	if start.Metadata["gc.kind"] != "start-gate" {
+		t.Fatalf("Ready workflow bead %s has gc.kind %q, want start-gate", start.ID, start.Metadata["gc.kind"])
+	}
+	finalizers, err := store.List(beads.ListQuery{Metadata: map[string]string{"gc.kind": "workflow-finalize", "gc.root_bead_id": rootID}})
+	if err != nil || len(finalizers) != 1 {
+		t.Fatalf("finalizers = %+v (err %v), want one", finalizers, err)
+	}
+	if got, want := start.Metadata["gc.routed_to"], finalizers[0].Metadata["gc.routed_to"]; got == "" || got != want {
+		t.Fatalf("start bead gc.routed_to = %q, want the control dispatcher route %q", got, want)
 	}
 }

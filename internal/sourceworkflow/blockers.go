@@ -6,13 +6,15 @@ package sourceworkflow
 // an open blocker. A formula sling routes the workflow's steps instead, and they
 // carry none of the source bead's dependencies, so a blocked bead's workflow was
 // Ready the moment it launched and the blockers held nothing (bgc-acn). The
-// launch paths read the blockers here and gate every step on them at create
-// time (molecule.Options.Gates), so the workflow stays out of every ready query
-// and pool demand count until they close, with no session spawned or held.
+// launch paths read the blockers here and hand them to molecule.GateRecipe,
+// which creates one start bead that waits on them and makes the workflow's
+// root and entry steps wait on that bead. The workflow stays out of every
+// ready query and pool demand count until they close, with no session spawned
+// or held, and the control dispatcher then closes the start bead.
 //
-// The gates are copied once, at launch. A blocker added to the source bead
-// afterwards does not reach a workflow already running; add it to the
-// workflow's steps by hand, or re-sling with --force.
+// The blockers are read once, at launch. A blocker added to the source bead
+// afterwards does not reach a workflow already running; add it to the start
+// bead instead (bd dep add <start bead> <blocker>).
 
 import (
 	"errors"

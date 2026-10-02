@@ -30,6 +30,20 @@ func noteSourceBlockers(deps SlingDeps, mResult *molecule.Result, sourceBeadID s
 		}
 	}
 	result.BeadWarnings = append(result.BeadWarnings, sourceBlockerNotes("workflow "+mResult.RootID, "waits", sourceBeadID, blockers)...)
+	if startID := startGateBeadID(mResult); startID != "" {
+		result.BeadWarnings = append(result.BeadWarnings, fmt.Sprintf("note: start bead %s holds the workflow; to hold it on another bead too: bd dep add %s <blocker>", startID, startID))
+	}
+}
+
+// startGateBeadID is the start bead molecule.GateRecipe added to a workflow,
+// or "" when it was not gated.
+func startGateBeadID(mResult *molecule.Result) string {
+	for stepID, beadID := range mResult.IDMapping {
+		if strings.HasSuffix(stepID, molecule.StartGateStepSuffix) {
+			return beadID
+		}
+	}
+	return ""
 }
 
 // sourceBlockerNotes renders what blockers do to subject, a workflow that
