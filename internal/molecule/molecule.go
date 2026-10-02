@@ -37,6 +37,12 @@ type Options struct {
 	// correct before the recipe becomes visible to workers.
 	ExternalDeps []ExternalDep
 
+	// Gates holds already-existing beads that gate the whole recipe: each
+	// becomes an ExternalDep of its Type (default "blocks") on every step,
+	// so nothing the recipe creates reads Ready until each gate is
+	// satisfied. Only DependsOnID and Type are read.
+	Gates []beads.Dep
+
 	// ParentID attaches the molecule to an existing bead. When set, the
 	// root bead's ParentID is set to this value.
 	ParentID string
@@ -835,6 +841,10 @@ func Instantiate(ctx context.Context, store beads.Store, recipe *formula.Recipe,
 		recipe = recipeWithNativeStepDependencies(recipe)
 		opts.nativeStepTopologyPrepared = true
 	}
+	if len(opts.Gates) > 0 {
+		opts.ExternalDeps = append(append([]ExternalDep(nil), opts.ExternalDeps...), gateExternalDeps(recipe, opts.Gates, opts.ExternalDeps)...)
+		opts.Gates = nil
+	}
 	if !opts.DeferAssignees && IsGraphApplyEnabled() {
 		if applier, ok := beads.GraphApplyFor(store); ok {
 			result, err := instantiateViaGraphApply(ctx, applier, recipe, opts)
@@ -1347,6 +1357,43 @@ func recipeParentDeps(deps []formula.RecipeDep) map[string]string {
 		}
 	}
 	return parents
+}
+
+// gateExternalDeps expands Options.Gates into one ExternalDep per gate on every
+// recipe step, skipping any edge existing already names.
+func gateExternalDeps(recipe *formula.Recipe, gates []beads.Dep, existing []ExternalDep) []ExternalDep {
+	var deps []ExternalDep
+	seen := make(map[string]bool, len(existing))
+	for _, dep := range existing {
+		seen[dep.StepID+"\x00"+dep.DependsOnID+"\x00"+externalDepType(dep.Type)] = true
+	}
+	for _, step := range recipe.Steps {
+		stepID := strings.TrimSpace(step.ID)
+		if stepID == "" {
+			continue
+		}
+		for _, gate := range gates {
+			gateID := strings.TrimSpace(gate.DependsOnID)
+			if gateID == "" {
+				continue
+			}
+			key := stepID + "\x00" + gateID + "\x00" + externalDepType(gate.Type)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			deps = append(deps, ExternalDep{StepID: stepID, DependsOnID: gateID, Type: externalDepType(gate.Type)})
+		}
+	}
+	return deps
+}
+
+// externalDepType is an ExternalDep's effective type: "blocks" when unset.
+func externalDepType(t string) string {
+	if t == "" {
+		return "blocks"
+	}
+	return t
 }
 
 func groupExternalDeps(deps []ExternalDep) (map[string][]ExternalDep, error) {

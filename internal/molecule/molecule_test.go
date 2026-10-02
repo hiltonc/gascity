@@ -3816,3 +3816,71 @@ func TestInstantiate_DeferredStepsStayGate(t *testing.T) {
 		t.Errorf("deferred step.Type = %q, want %q", b.Type, "gate")
 	}
 }
+
+func gatedTestRecipe() *formula.Recipe {
+	return &formula.Recipe{
+		Name: "wf",
+		Steps: []formula.RecipeStep{
+			{ID: "wf", Title: "Workflow", Type: "task", IsRoot: true, Metadata: map[string]string{"gc.kind": "workflow"}},
+			{ID: "wf.step", Title: "Work", Type: "task"},
+		},
+		Deps: []formula.RecipeDep{
+			{StepID: "wf.step", DependsOnID: "wf", Type: "parent-child"},
+		},
+	}
+}
+
+func TestInstantiateGatesEveryStepOnEachGate(t *testing.T) {
+	store := beads.NewMemStore()
+	prev := IsGraphApplyEnabled()
+	SetGraphApplyEnabled(false)
+	t.Cleanup(func() { SetGraphApplyEnabled(prev) })
+
+	blocker, err := store.Create(beads.Bead{Title: "Blocker", Type: "task"})
+	if err != nil {
+		t.Fatalf("create blocker: %v", err)
+	}
+	waiter, err := store.Create(beads.Bead{Title: "Waited on", Type: "task"})
+	if err != nil {
+		t.Fatalf("create waiter: %v", err)
+	}
+
+	result, err := Instantiate(context.Background(), store, gatedTestRecipe(), Options{
+		Gates: []beads.Dep{
+			{DependsOnID: blocker.ID},
+			{DependsOnID: waiter.ID, Type: "waits-for"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Instantiate: %v", err)
+	}
+
+	for _, id := range []string{result.RootID, result.IDMapping["wf.step"]} {
+		assertStoreDep(t, store, id, blocker.ID, "blocks")
+		assertStoreDep(t, store, id, waiter.ID, "waits-for")
+	}
+}
+
+func TestInstantiateGraphApplyGatesEveryStep(t *testing.T) {
+	store := &graphApplySpyStore{MemStore: beads.NewMemStore()}
+	blocker, err := store.Create(beads.Bead{Title: "Blocker", Type: "task"})
+	if err != nil {
+		t.Fatalf("create blocker: %v", err)
+	}
+	prev := IsGraphApplyEnabled()
+	SetGraphApplyEnabled(true)
+	t.Cleanup(func() { SetGraphApplyEnabled(prev) })
+
+	// A gate that repeats an explicit ExternalDep adds no second edge.
+	if _, err := Instantiate(context.Background(), store, gatedTestRecipe(), Options{
+		ExternalDeps: []ExternalDep{{StepID: "wf.step", DependsOnID: blocker.ID, Type: "blocks"}},
+		Gates:        []beads.Dep{{DependsOnID: blocker.ID, Type: "blocks"}},
+	}); err != nil {
+		t.Fatalf("Instantiate: %v", err)
+	}
+	if store.plan == nil {
+		t.Fatal("ApplyGraphPlan was not called")
+	}
+	assertGraphPlanEdgeCount(t, store.plan, "wf", "", blocker.ID, "blocks", 1)
+	assertGraphPlanEdgeCount(t, store.plan, "wf.step", "", blocker.ID, "blocks", 1)
+}

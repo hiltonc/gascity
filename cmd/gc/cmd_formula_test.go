@@ -1698,3 +1698,93 @@ formulas_dir = "beta-formulas"
 		t.Errorf("--rig nope error = %v, want rig not found", err)
 	}
 }
+
+// A graph.v2 workflow cooked onto a blocked bead waits for that bead's
+// blockers, as a sling of it does (bgc-acn).
+func TestFormulaCookAttachGraphV2WaitsForTheAttachedBeadsBlockers(t *testing.T) {
+	formulatest.EnableV2ForTest(t)
+	t.Setenv("GC_HOME", t.TempDir())
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("GC_SESSION", "fake")
+	t.Setenv("GC_BEADS", "file")
+	t.Setenv("GC_DOLT", "skip")
+
+	cityDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cityDir, "city.toml"), []byte(withBuiltinProviderAliasesTOMLForTest(`
+[workspace]
+name = "my-city"
+provider = "claude"
+
+[daemon]
+formula_v2 = true
+`, "claude")+testControlDispatcherAgentTOML("")), 0o644); err != nil {
+		t.Fatalf("write city.toml: %v", err)
+	}
+	formulaDir := filepath.Join(cityDir, "formulas")
+	if err := os.MkdirAll(formulaDir, 0o755); err != nil {
+		t.Fatalf("mkdir formulas: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(formulaDir, "graph-work.formula.toml"), []byte(`
+formula = "graph-work"
+version = 2
+contract = "graph.v2"
+
+[[steps]]
+id = "step"
+title = "Do work for {{convoy_id}}"
+`), 0o644); err != nil {
+		t.Fatalf("write formula: %v", err)
+	}
+	t.Chdir(cityDir)
+	t.Setenv("GC_CITY_PATH", cityDir)
+	store, err := openStoreAtForCity(cityDir, cityDir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	blocker, err := store.Create(beads.Bead{Title: "blocker", Type: "task"})
+	if err != nil {
+		t.Fatalf("create blocker: %v", err)
+	}
+	source, err := store.Create(beads.Bead{Title: "target", Type: "task"})
+	if err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	if err := store.DepAdd(source.ID, blocker.ID, "blocks"); err != nil {
+		t.Fatalf("block source: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd := newFormulaCookCmd(&stdout, &stderr)
+	cmd.SetArgs([]string{"graph-work", "--attach", source.ID, "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("formula cook: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	roots, err := store.List(beads.ListQuery{Metadata: map[string]string{"gc.kind": "workflow"}})
+	if err != nil || len(roots) != 1 {
+		t.Fatalf("workflow roots = %+v (err %v), want one", roots, err)
+	}
+	rootID := roots[0].ID
+	readyInWorkflow := func() []string {
+		t.Helper()
+		ready, err := store.Ready()
+		if err != nil {
+			t.Fatalf("Ready: %v", err)
+		}
+		var ids []string
+		for _, b := range ready {
+			if b.ID == rootID || b.Metadata["gc.root_bead_id"] == rootID {
+				ids = append(ids, b.ID)
+			}
+		}
+		return ids
+	}
+	if ready := readyInWorkflow(); len(ready) != 0 {
+		t.Fatalf("workflow beads Ready while %s is open: %v", blocker.ID, ready)
+	}
+	if err := store.Close(blocker.ID); err != nil {
+		t.Fatalf("close blocker: %v", err)
+	}
+	if ready := readyInWorkflow(); len(ready) == 0 {
+		t.Fatalf("no workflow bead Ready after %s closed", blocker.ID)
+	}
+}
