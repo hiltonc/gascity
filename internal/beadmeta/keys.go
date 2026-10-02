@@ -259,11 +259,16 @@ const (
 	SourceBeadIDMetadataKey     = "gc.source_bead_id"
 	SourceStepSpecMetadataKey   = "gc.source_step_spec"
 	SourceStoreRefMetadataKey   = "gc.source_store_ref"
-	SpawnedCountMetadataKey     = "gc.spawned_count"
-	SpecForMetadataKey          = "gc.spec_for"
-	SpecForRefMetadataKey       = "gc.spec_for_ref"
-	StderrMetadataKey           = "gc.stderr"
-	StdoutMetadataKey           = "gc.stdout"
+	// SourceUnprojectedBlockersMetadataKey records, on a workflow root launched
+	// from a source bead, the source's open blockers the workflow could not wait
+	// on because the workflow's store cannot resolve them. The workflow runs
+	// without those constraints. Comma-separated bead ids (bgc-acn).
+	SourceUnprojectedBlockersMetadataKey = "gc.source_unprojected_blockers"
+	SpawnedCountMetadataKey              = "gc.spawned_count"
+	SpecForMetadataKey                   = "gc.spec_for"
+	SpecForRefMetadataKey                = "gc.spec_for_ref"
+	StderrMetadataKey                    = "gc.stderr"
+	StdoutMetadataKey                    = "gc.stdout"
 	// StepDefinedEmittedMetadataKey records, on a graph.v2 physical step bead,
 	// that its execution.step_defined fact has already been emitted AND
 	// acknowledged durable. The level-triggered projector restates the full
@@ -608,6 +613,7 @@ var KnownMetadataKeys = []string{
 	SourceBeadIDMetadataKey,
 	SourceStepSpecMetadataKey,
 	SourceStoreRefMetadataKey,
+	SourceUnprojectedBlockersMetadataKey,
 	SpawnedCountMetadataKey,
 	SpecForMetadataKey,
 	SpecForRefMetadataKey,

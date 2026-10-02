@@ -151,6 +151,13 @@ func preflight(opts SlingOpts, deps SlingDeps, querier BeadQuerier) (SlingResult
 		} else if opts.OnFormula != "" {
 			result.Method = "on-formula"
 		}
+		if !opts.IsFormula && !opts.InlineText && usesFormulaBackedRoute(opts) {
+			if blockers, err := readSourceBlockers(deps, opts.BeadOrFormula); err != nil {
+				result.BeadWarnings = append(result.BeadWarnings, fmt.Sprintf("warning: could not read %s's blockers: %v", opts.BeadOrFormula, err))
+			} else {
+				result.BeadWarnings = append(result.BeadWarnings, sourceBlockerNotes("the workflow", "would wait", opts.BeadOrFormula, blockers)...)
+			}
+		}
 		return result, nil
 	}
 
@@ -595,10 +602,15 @@ func attachFormulaToBead(opts SlingOpts, deps SlingDeps, querier BeadQuerier, be
 			if err != nil {
 				return result, fmt.Errorf("instantiating %s %q on %s: %w", errLabel, formulaName, beadID, err)
 			}
+			blockers, err := readSourceBlockers(deps, beadID)
+			if err != nil {
+				return result, fmt.Errorf("instantiating %s %q on %s: %w", errLabel, formulaName, beadID, err)
+			}
 			mResult, err := InstantiateSlingFormula(context.Background(), formulaName, searchPaths, molecule.Options{
 				Title:            opts.Title,
 				Vars:             formulaVars,
 				PriorityOverride: BeadPriorityOverride(deps.Store, graphInv.InputConvoy),
+				Gates:            blockers.Gates,
 			}, "", opts.ScopeKind, opts.ScopeRef, a, deps, opts.Force)
 			if err != nil {
 				return result, fmt.Errorf("instantiating %s %q on %s: %w", errLabel, formulaName, beadID, err)
@@ -620,6 +632,7 @@ func attachFormulaToBead(opts SlingOpts, deps SlingDeps, querier BeadQuerier, be
 			// not gc.source_bead_id), so doStartGraphWorkflow's own restamp
 			// never covers it. Stamp the work bead here instead.
 			restampWorkBeadRouting(deps, beadID, a, &wfResult)
+			noteSourceBlockers(deps, mResult, beadID, blockers, &wfResult)
 			return wfResult, wfErr
 		})
 		if lockedErr != nil || fellBackToPlainRoute {
@@ -1667,15 +1680,29 @@ func attachBatchFormula(ctx context.Context, opts SlingOpts, deps SlingDeps, chi
 		return result, nil
 	}
 	runGraph := func() (pendingSourceWorkflowLaunch, error) {
+		blockers, err := readSourceBlockers(deps, child.ID)
+		if err != nil {
+			return pendingSourceWorkflowLaunch{}, fmt.Errorf("instantiating %s %q on %s: %w", formulaLabel, formulaName, child.ID, err)
+		}
 		mResult, err := InstantiateSlingFormula(ctx, formulaName, SlingFormulaSearchPaths(deps, a), molecule.Options{
 			Title:            opts.Title,
 			Vars:             childVars,
 			PriorityOverride: ClonePriorityPtr(child.Priority),
+			Gates:            blockers.Gates,
 		}, child.ID, opts.ScopeKind, opts.ScopeRef, a, deps)
 		if err != nil {
 			return pendingSourceWorkflowLaunch{}, fmt.Errorf("instantiating %s %q on %s: %w", formulaLabel, formulaName, child.ID, err)
 		}
-		return pendingGraphWorkflowLaunch(mResult.RootID, child.ID, a, method, formulaName, deps), nil
+		launch := pendingGraphWorkflowLaunch(mResult.RootID, child.ID, a, method, formulaName, deps)
+		start := launch.finalize
+		launch.finalize = func() (SlingResult, error) {
+			result, err := start()
+			if err == nil {
+				noteSourceBlockers(deps, mResult, child.ID, blockers, &result)
+			}
+			return result, err
+		}
+		return launch, nil
 	}
 	if !isGraph {
 		return run()
