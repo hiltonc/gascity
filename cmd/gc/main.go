@@ -548,12 +548,24 @@ type contextResolutionMode struct {
 	// pack-command closures the user later runs, so a cheaper-but-different
 	// answer would end up executing pack code against the wrong city.
 	advisory bool
+
+	// cityOnly marks an authoritative resolution whose caller reads only the
+	// city path. It skips the rig decoration, which loads the whole city
+	// config to name a rig, and changes nothing else: the city is found and
+	// waited for exactly as an authoritative resolution finds it.
+	cityOnly bool
 }
 
 // authoritativeResolution is the mode for anything the user actually typed: it
 // waits for whatever it needs. Named rather than spelled as a bare
 // contextResolutionMode{} so the choice reads as deliberate at the call site.
 var authoritativeResolution contextResolutionMode
+
+// cityPathResolution is authoritativeResolution for a caller that discards the
+// rig name. `gc bd` resolves its own store scope from its args, GC_RIG and the
+// cwd, so the rig the context chain would name is two config loads it never
+// reads.
+var cityPathResolution = contextResolutionMode{cityOnly: true}
 
 // resolvedContext holds the result of city+rig resolution.
 type resolvedContext struct {
@@ -1116,11 +1128,12 @@ func rigFromCwd(cityPath string, mode contextResolutionMode) string {
 // rigFromCwdDir matches cwd against registered rigs in a city's config.
 //
 // This is pure decoration: it loads the whole city config to produce a rig
-// name, and an advisory resolution's caller only wants the city path. Skipping
-// it there is what keeps discovery off the repo-cache lock entirely, rather
-// than merely making its acquisition non-blocking.
+// name, and an advisory or city-only resolution's caller only wants the city
+// path. Skipping it for advisory resolution is what keeps discovery off the
+// repo-cache lock entirely, rather than merely making its acquisition
+// non-blocking.
 func rigFromCwdDir(cityPath, cwd string, mode contextResolutionMode) string {
-	if mode.advisory {
+	if mode.advisory || mode.cityOnly {
 		return ""
 	}
 	cfg, err := loadCityConfig(cityPath, io.Discard)
