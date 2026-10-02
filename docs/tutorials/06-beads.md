@@ -417,6 +417,20 @@ readiness barrier is gone, though `mc-xp7` would also need
 sets. Routing decides _which_ queue a bead appears in; readiness decides
 _whether_ it appears at all.
 
+The same holds when you sling a formula onto a blocked bead. The workflow's
+steps are what agents claim, so the workflow is created with one extra bead, a
+start bead titled for what it waits on (`Wait for mc-a4l (blockers of
+mc-xp7)`). The start bead depends on the bead's open blockers, and the
+workflow's first steps depend on the start bead, so none of them appears in a
+work query, and no agent is started for them, until those blockers close. Then
+the control dispatcher closes the start bead and the workflow begins. `gc sling`
+prints the start bead's ID.
+
+The blockers are read once, at sling time. A blocker you add to the original
+bead later does not hold a workflow that already launched. Add it to the start
+bead instead, with `bd dep add <start-bead> <blocker>`. Once the start bead has
+closed, the workflow has started and a new dependency on it holds nothing.
+
 This is the "pull" model: agents check for work instead of having it pushed.
 
 ## The bead store

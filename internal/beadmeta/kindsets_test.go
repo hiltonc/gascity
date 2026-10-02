@@ -12,7 +12,7 @@ import (
 func TestControlKindsExact(t *testing.T) {
 	want := []string{
 		KindRetry, KindRalph, KindCheck, KindRetryEval, KindFanout,
-		KindDrain, KindScopeCheck, KindWorkflowFinalize,
+		KindDrain, KindScopeCheck, KindWorkflowFinalize, KindStartGate,
 	}
 	if !slices.Equal(ControlKinds, want) {
 		t.Errorf("ControlKinds = %v, want %v", ControlKinds, want)
@@ -38,7 +38,9 @@ func TestControlKindsExact(t *testing.T) {
 //     anchors topology — never two of those), except KindScope which is both a
 //     structural node and a topology anchor;
 //   - the graph-contract metadata trigger is exactly the structural kinds plus
-//     the control kinds minus {fanout}. The fanout exclusion is INTENTIONAL
+//     the control kinds minus {fanout, start-gate}. Both exclusions are
+//     engine-minted kinds (start-gate is added at launch by
+//     molecule.GateRecipe, bgc-acn). The fanout exclusion is INTENTIONAL
 //     (commit 2531b9440): that kind is engine-minted from the
 //     [steps.on_complete] authoring surface, which formula validation catches
 //     via struct-field checks, so hand-written metadata coverage is not
@@ -78,7 +80,7 @@ func TestKindSetRelationships(t *testing.T) {
 	var derived []string
 	derived = append(derived, StructuralGraphKinds...)
 	for _, k := range ControlKinds {
-		if k == KindFanout {
+		if k == KindFanout || k == KindStartGate {
 			continue
 		}
 		derived = append(derived, k)
@@ -87,7 +89,7 @@ func TestKindSetRelationships(t *testing.T) {
 	got := slices.Clone(GraphContractMetadataKinds)
 	slices.Sort(got)
 	if !slices.Equal(got, derived) {
-		t.Errorf("GraphContractMetadataKinds = %v\nwant StructuralGraphKinds ∪ (ControlKinds \\ {fanout}) = %v", got, derived)
+		t.Errorf("GraphContractMetadataKinds = %v\nwant StructuralGraphKinds ∪ (ControlKinds \\ {fanout, start-gate}) = %v", got, derived)
 	}
 }
 
