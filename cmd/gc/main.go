@@ -164,6 +164,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if code, delegated := delegateToExternalCommand(args, stderr); delegated {
 		return code
 	}
+	defer enableConfigLoadMemoForArgs(args)()
 	lifecycle := openProductMetricsInvocationLifecycle(args)
 	defer lifecycle.Close()
 	return runWithRootCommandOptionsAndLifecycle(args, stdout, stderr, rootCommandOptionsForArgs(args), lifecycle)
@@ -220,6 +221,7 @@ func runWithRootCommandOptionsAndLifecycle(args []string, stdout, stderr io.Writ
 	if options.discoverPackCommands {
 		materializePackCommandTreeForArgs(root, args, execStdout, stderr)
 	}
+	confirmConfigLoadMemoCommand(root, args)
 	announceClientIdentity(root, args)
 	lifecycleBinding := bindProductMetricsInvocationLifecycle(root, args, lifecycle)
 	classification := lifecycleBinding.classification

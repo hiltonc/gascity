@@ -70,6 +70,11 @@ func EnsureBuiltinRuntimeAssets(cityPath string, warningWriter io.Writer) error 
 	// cache tree's stat fingerprint is unchanged, so that guarantee no longer
 	// re-reads every cached pack file on every config load.
 	if state.ready {
+		// A one-shot command with the config memo on already proved the
+		// caches in this process; it composes once, so recheck nothing.
+		if config.LoadMemoEnabled() {
+			return nil
+		}
 		warm := newWarmSyntheticCacheVerifier()
 		if requiredBuiltinSourcesUsable(cityPath, warm) && lockedBundledImportsUsable(cityPath, warm) {
 			return nil
@@ -267,6 +272,7 @@ func ensureRequiredBuiltinSourcesCached(cityPath string, verifier *syntheticCach
 		if verifier.Valid(cachePath, repository, commit) {
 			continue
 		}
+		config.InvalidateLoadMemo() // the cache is about to be rewritten
 		if _, err := packman.EnsureRepoInCache(cityPath, source, commit); err != nil {
 			return fmt.Errorf("caching bundled %s pack: %w", name, err)
 		}
@@ -360,6 +366,7 @@ func pruneRetiredSystemPacks(cityPath string, warningWriter io.Writer) {
 		warnLegacySystemPacksPreserved(cityPath, warningWriter)
 		return
 	}
+	config.InvalidateLoadMemo() // a composition may have read the retired packs
 	if err := os.RemoveAll(root); err != nil {
 		emitBuiltinRuntimeWarning(warningWriter, fmt.Errorf("pruning retired %s: %w", citylayout.SystemPacksRoot, err))
 	}
