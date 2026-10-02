@@ -113,6 +113,21 @@ ifeq ($(shell uname),Darwin)
 	@scripts/sign-darwin-local.sh $(BUILD_DIR)/$(BINARY)
 endif
 
+## build-release: compile gc as upstream's .goreleaser.yml ships it (no cgo, -trimpath, -s -w), signed with GC_SIGN_IDENTITY
+.PHONY: build-release install-release
+build-release:
+ifeq ($(shell uname),Darwin)
+	@test -n "$$GC_SIGN_IDENTITY" || { echo "build-release: set GC_SIGN_IDENTITY; an auto-detected identity can change the signing team and drop every host's TCC grants" >&2; exit 1; }
+endif
+	CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags "-s -w $(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY) ./cmd/gc
+ifeq ($(shell uname),Darwin)
+	@scripts/sign-darwin-local.sh $(BUILD_DIR)/$(BINARY)
+endif
+
+## install-release: build-release, then install that binary the way `install` does
+install-release: build-release
+	@$(MAKE) --no-print-directory -o build install
+
 ## check-self-contained: assert the built gc binary is self-contained (Linux/Nix ICU rpath).
 ## Only enforced when the Nix/Flox ICU block above fired (_NIX_ICU_DEV set):
 ## on those hosts a binary without an ICU RUNPATH loads interactively (the
