@@ -866,6 +866,17 @@ store, copy them into the binding with
 							return fmt.Errorf("validate runtime vars: %w", err)
 						}
 						graphRootKey := stampFormulaCookGraphV2Root(recipe, args[0], inv.InputConvoy, cookVars)
+						// The workflow waits for the attached bead's blockers, as a
+						// sling of it does. The start bead is a control, so it is
+						// added before routing (bgc-acn).
+						blockers, err := sourceworkflow.ReadSourceBlockers(store, store, attach)
+						if err != nil {
+							return err
+						}
+						gated, err := molecule.ApplyGates(recipe, molecule.Options{Gates: blockers.Gates})
+						if err != nil {
+							return err
+						}
 						if err := decorateFormulaCookGraphV2Recipe(recipe, cookVars, storeRef, scope.rig, store, loadedCityName(cfg, cityPath), cityPath, cfg); err != nil {
 							return fmt.Errorf("decorate formulas v2 recipe: %w", err)
 						}
@@ -909,6 +920,7 @@ store, copy them into the binding with
 							Vars:             cookVars,
 							IdempotencyKey:   graphRootKey,
 							PriorityOverride: cloneFormulaCookPriority(source.Priority),
+							ExternalDeps:     gated.ExternalDeps,
 						})
 						if err != nil {
 							if cleanupErr := closeFormulaCookFailedGraphV2Roots(store, recipe); cleanupErr != nil {
@@ -917,6 +929,14 @@ store, copy them into the binding with
 							return err
 						}
 						emitFormulaCookExecutionFacts(store, store, cityPath, result, stderr)
+						if len(blockers.Gates) > 0 && result.Created > 0 {
+							fmt.Fprintf(stderr, "gc formula cook: workflow %s waits for %d open blocker(s) of %s\n", result.RootID, len(blockers.Gates), attach) //nolint:errcheck // best-effort stderr
+						}
+						if len(blockers.Unprojected) > 0 && result.Created > 0 {
+							if err := store.SetMetadata(result.RootID, beadmeta.SourceUnprojectedBlockersMetadataKey, strings.Join(blockers.Unprojected, ",")); err != nil {
+								return fmt.Errorf("recording unresolvable blockers on %s: %w", result.RootID, err)
+							}
+						}
 						return ensureFormulaCookAttachDep(store, attach, result.RootID)
 					})
 					if err != nil {
