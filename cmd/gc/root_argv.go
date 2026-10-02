@@ -25,9 +25,17 @@ func rootCommandOptionsForArgs(args []string) rootCommandOptions {
 // resolve to a pack binding. Pack discovery only adds city-config and pack
 // loading work; each command still performs its normal scope and config
 // resolution when it runs.
+//
+// version, completion, login, logout, and whoami read no city config at all:
+// version prints build metadata, completion emits a static script that calls
+// back into `gc __complete` for every candidate, and the login trio talks only
+// to the hosted service. help is deliberately absent, as are a bare `gc` and
+// --help: the root usage lists every mounted pack binding, and `gc help
+// <binding>` describes one, so their output depends on the city.
 func rootCommandSkipsPackDiscovery(command string) bool {
 	switch command {
-	case "metrics", "bd", "git-credential", "dolt-state", "dolt-config", "bd-store-bridge":
+	case "metrics", "bd", "git-credential", "dolt-state", "dolt-config", "bd-store-bridge",
+		"version", "completion", "login", "logout", "whoami":
 		return true
 	default:
 		return false
