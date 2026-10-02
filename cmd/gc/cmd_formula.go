@@ -866,6 +866,17 @@ store, copy them into the binding with
 							return fmt.Errorf("validate runtime vars: %w", err)
 						}
 						graphRootKey := stampFormulaCookGraphV2Root(recipe, args[0], inv.InputConvoy, cookVars)
+						// The workflow waits for the attached bead's blockers, as a
+						// sling of it does. The start bead is a control, so it is
+						// added before routing (bgc-acn).
+						blockers, err := sourceworkflow.ReadSourceBlockers(store, store, attach)
+						if err != nil {
+							return err
+						}
+						gated, err := molecule.ApplyGates(recipe, molecule.Options{Gates: blockers.Gates})
+						if err != nil {
+							return err
+						}
 						if err := decorateFormulaCookGraphV2Recipe(recipe, cookVars, storeRef, scope.rig, store, loadedCityName(cfg, cityPath), cityPath, cfg); err != nil {
 							return fmt.Errorf("decorate formulas v2 recipe: %w", err)
 						}
@@ -904,18 +915,12 @@ store, copy them into the binding with
 						if err != nil {
 							return fmt.Errorf("attach bead %s: %w", attach, err)
 						}
-						// The workflow waits for the attached bead's blockers, as a
-						// sling of it does (bgc-acn).
-						blockers, err := sourceworkflow.ReadSourceBlockers(store, store, attach)
-						if err != nil {
-							return err
-						}
 						result, err = molecule.Instantiate(cmd.Context(), store, recipe, molecule.Options{
 							Title:            title,
 							Vars:             cookVars,
 							IdempotencyKey:   graphRootKey,
 							PriorityOverride: cloneFormulaCookPriority(source.Priority),
-							Gates:            blockers.Gates,
+							ExternalDeps:     gated.ExternalDeps,
 						})
 						if err != nil {
 							if cleanupErr := closeFormulaCookFailedGraphV2Roots(store, recipe); cleanupErr != nil {
