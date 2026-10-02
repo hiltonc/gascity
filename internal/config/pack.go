@@ -2015,7 +2015,7 @@ func cachedPackDoctors(cache *packLoadCache, topoDir string) []DiscoveredDoctor 
 // bundled imports.
 func isOSFileSystem(fs fsys.FS) bool {
 	switch fs.(type) {
-	case fsys.OSFS, *fsys.OSFS:
+	case fsys.OSFS, *fsys.OSFS, *readRecordingFS:
 		return true
 	default:
 		return false
