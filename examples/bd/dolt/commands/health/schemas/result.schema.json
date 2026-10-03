@@ -138,6 +138,9 @@
           },
           "age_sec": {
             "type": "integer"
+          },
+          "oldgen_bytes": {
+            "type": "integer"
           }
         },
         "additionalProperties": true

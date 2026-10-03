@@ -67,3 +67,35 @@ gain_drift_is_additive_only() {
   [ "$_gd_seen" = "1" ] || return 1
   return 0
 }
+
+# drift_removes_no_rows <db> <from_head> <to_head> <space-separated tables>
+# Returns 0 iff no listed table lost a row between <from> and <to>: its content
+# diff may hold `added` and `modified` rows (a proven concurrent writer's
+# INSERT/UPDATE folded into the flatten) but zero `removed`. This is the
+# same-count drift proof: a writer's UPDATE is exactly a modified row, so the
+# additive-only proof above can never pass for it. Fails closed on an empty
+# table list, a missing endpoint, an invalid table name, a probe failure or a
+# non-numeric result.
+drift_removes_no_rows() {
+  _dr_db="$1"
+  _dr_from="$2"
+  _dr_to="$3"
+  _dr_tables="$4"
+  [ -n "$_dr_from" ] && [ -n "$_dr_to" ] || return 1
+  _dr_seen=0
+  for _dr_t in $_dr_tables; do
+    _dr_seen=1
+    valid_table_name "$_dr_t" || return 1
+    if ! _dr_removed=$(query_single_cell "$_dr_db" \
+      "row-loss diff probe failed for table=$_dr_t" \
+      "SELECT COUNT(*) FROM DOLT_DIFF('$_dr_from', '$_dr_to', '$_dr_t') WHERE diff_type = 'removed'"); then
+      return 1
+    fi
+    case "$_dr_removed" in
+      0) ;;
+      *) return 1 ;;
+    esac
+  done
+  [ "$_dr_seen" = "1" ] || return 1
+  return 0
+}

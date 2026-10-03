@@ -344,6 +344,20 @@ full GC in the same cycle. Any probe failure, deleted or modified row, drift
 outside the proved set, or any other reason keeps the marker and blocks GC.
 You do not need to clear these by hand — check the compactor log first.
 
+Post-flatten verification reads the flatten's own commit (the read-only
+revision database `<database>/<flatten_head>`), not the live database, so a
+bead write that commits after the flatten cannot drift it. Such a write is
+logged as `concurrent write committed after the flatten` and only defers full
+GC to the next run. The one writer that can still explain drift is one that
+committed between the preflight snapshot and the flatten's reset, because the
+flatten absorbs it. For same-row-count drift the compactor then also needs a
+`DOLT_DIFF` with zero `removed` rows (added and modified rows are the writer's).
+
+A standing quarantine shows up in `gc dolt health` (and its `quarantine` JSON
+array) and in the `Dolt health advisory` mail from the doctor order, each with
+its age and the database's `oldgen` size. That size is the store the quarantine
+keeps every later compact and `--gc-only` from collecting.
+
 Quarantine markers also carry structured evidence. New markers include the
 database name, the preflight/flatten/post-verify HEADs, preflight and
 postflight database value hashes when available, `integrity_table_drift` for

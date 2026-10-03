@@ -41,6 +41,7 @@ go_library(
         "assets/scripts/_notify.sh",
         "assets/scripts/advisory_state.sh",
         "assets/scripts/compact-gain-drift-proof.sh",
+        "assets/scripts/compact_quarantine.sh",
         "assets/scripts/latency.sh",
         "assets/scripts/mol-dog-backup.sh",
         "assets/scripts/mol-dog-doctor.sh",

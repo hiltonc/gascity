@@ -2085,6 +2085,8 @@ func TestHealthScriptSurfacesQuarantineInJSON(t *testing.T) {
 	// A concurrent compaction leaves transient siblings in this same
 	// directory; only the real marker may appear in the report.
 	writeQuarantineTransients(t, cityPath, "hq")
+	// The quarantine strands oldgen (bgc-wabb), so its size is reported too.
+	writeOldgenFixture(t, filepath.Join(cityPath, ".beads", "dolt", "hq"), 64*1024)
 
 	// No live server: lsof/nc/dolt fail so the bounded probe is skipped and the
 	// filesystem-only quarantine scan is exercised in isolation. JSON mode
@@ -2116,6 +2118,7 @@ func TestHealthScriptSurfacesQuarantineInJSON(t *testing.T) {
 			DB     string `json:"db"`
 			Reason string `json:"reason"`
 			AgeSec int    `json:"age_sec"`
+			Oldgen int64  `json:"oldgen_bytes"`
 		} `json:"quarantine"`
 	}
 	if err := json.Unmarshal(out, &report); err != nil {
@@ -2135,6 +2138,22 @@ func TestHealthScriptSurfacesQuarantineInJSON(t *testing.T) {
 	// RFC3339 created_at was parsed (not the mtime fallback to ~0).
 	if q.AgeSec < 3600 || q.AgeSec > 86400 {
 		t.Errorf("quarantine age_sec = %d, want ~7200 (created_at 2h ago parsed)", q.AgeSec)
+	}
+	if q.Oldgen < 64*1024 {
+		t.Errorf("quarantine oldgen_bytes = %d, want >= 65536 (the oldgen fixture)", q.Oldgen)
+	}
+}
+
+// writeOldgenFixture puts size bytes of archive data in dbDir's oldgen, the
+// store a quarantine keeps the compactor from ever collecting.
+func writeOldgenFixture(t *testing.T, dbDir string, size int) {
+	t.Helper()
+	oldgen := filepath.Join(dbDir, ".dolt", "noms", "oldgen")
+	if err := os.MkdirAll(oldgen, 0o755); err != nil {
+		t.Fatalf("mkdir oldgen: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(oldgen, "archive"), make([]byte, size), 0o644); err != nil {
+		t.Fatalf("write oldgen fixture: %v", err)
 	}
 }
 
@@ -2192,6 +2211,9 @@ func TestHealthScriptQuarantineHumanExitCode(t *testing.T) {
 		}
 		if !strings.Contains(s, "held 2d") {
 			t.Errorf("output missing day-scale age (held 2d...):\n%s", s)
+		}
+		if !strings.Contains(s, "oldgen 0K)") {
+			t.Errorf("output missing oldgen size:\n%s", s)
 		}
 	})
 

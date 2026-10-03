@@ -1,5 +1,6 @@
 #!/bin/sh
-# Unit test for gain_drift_is_additive_only (Option A preservation proof, #2846).
+# Unit test for gain_drift_is_additive_only (Option A preservation proof, #2846)
+# and drift_removes_no_rows (same-count writer proof, bgc-wabb).
 # Lib under test: examples/bd/dolt/assets/scripts/compact-gain-drift-proof.sh
 #
 # Stubs the run.sh-provided dependencies (query_single_cell, valid_table_name)
@@ -91,6 +92,31 @@ if gain_drift_is_additive_only db H1 "" "issues"; then no "missing to-head -> qu
 # 10. invalid table name -> fail closed
 reset; stub_count_issues=0; STUB_INVALID_TABLE=issues
 if gain_drift_is_additive_only db H1 H2 "issues"; then no "invalid table name -> quarantine"; else ok "invalid table name -> quarantine"; fi
+
+# drift_removes_no_rows: the same stub answers its removed-row count
+# (WHERE diff_type = 'removed'), so stub_count_<table> is that count here.
+
+# 11. modified/added rows but none removed -> a writer's UPDATE (defer)
+reset; stub_count_issues=0
+if drift_removes_no_rows db H1 H2 "issues"; then ok "no removed rows -> defer"; else no "no removed rows -> defer"; fi
+
+# 12. a removed row -> loss (quarantine)
+reset; stub_count_issues=1
+if drift_removes_no_rows db H1 H2 "issues"; then no "removed row -> quarantine"; else ok "removed row -> quarantine"; fi
+
+# 13. one of two tables lost a row -> quarantine
+reset; stub_count_issues=0; stub_count_mail=1
+if drift_removes_no_rows db H1 H2 "issues mail"; then no "mixed removed -> quarantine"; else ok "mixed removed -> quarantine"; fi
+
+# 14. probe failure, empty result, empty list, missing head -> fail closed
+reset; STUB_FAIL_TABLE=issues
+if drift_removes_no_rows db H1 H2 "issues"; then no "removed probe failure -> quarantine"; else ok "removed probe failure -> quarantine"; fi
+reset; STUB_EMPTY_TABLE=issues
+if drift_removes_no_rows db H1 H2 "issues"; then no "removed empty result -> quarantine"; else ok "removed empty result -> quarantine"; fi
+reset
+if drift_removes_no_rows db H1 H2 ""; then no "removed empty list -> quarantine"; else ok "removed empty list -> quarantine"; fi
+reset
+if drift_removes_no_rows db "" H2 "issues"; then no "removed missing head -> quarantine"; else ok "removed missing head -> quarantine"; fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

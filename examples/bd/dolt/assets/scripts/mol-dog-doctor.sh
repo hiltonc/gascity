@@ -2,7 +2,8 @@
 # mol-dog-doctor — probe Dolt server health and report findings.
 #
 # Converted from the former mol-dog-doctor formula. All checks are read-only: SQL probe,
-# PROCESSLIST count, disk usage, orphan DB detection, backup artifact freshness.
+# PROCESSLIST count, disk usage, orphan DB detection, backup artifact freshness,
+# compaction quarantine markers.
 # No LLM judgment needed — runs inline in the controller.
 #
 # Runs as an exec order (no LLM, no agent, no wisp).
@@ -21,6 +22,7 @@ PACK_DIR="${GC_PACK_DIR:-$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/../.." 
 . "$PACK_DIR/assets/scripts/latency.sh"
 . "$PACK_DIR/assets/scripts/advisory_state.sh"
 . "$PACK_DIR/assets/scripts/_notify.sh"
+. "$PACK_DIR/assets/scripts/compact_quarantine.sh"
 
 PORT="$GC_DOLT_PORT"
 HOST="${GC_DOLT_HOST:-127.0.0.1}"
@@ -216,9 +218,33 @@ if [ -n "$BACKUP_STALE_ITEMS" ]; then
     BACKUP_STALE="$BACKUP_STALE [WARN: backup freshness: $BACKUP_STALE_ITEMS]"
 fi
 
+# Compaction quarantine: a quarantined db is skipped by every compact and
+# --gc-only run, so its oldgen grows until someone clears the marker. The
+# compactor mails once when it quarantines; this repeats it where the latency
+# it causes is already being reported (bgc-wabb: gcd sat two days, 6.7G of
+# oldgen, while these advisories showed 770-1390ms with no cause named).
+QUARANTINE_COUNT=0
+QUARANTINE_DBS=""
+QUARANTINE_ITEMS=""
+while IFS='|' read -r q_db q_reason q_age_sec q_oldgen_kb; do
+    [ -n "$q_db" ] || continue
+    QUARANTINE_COUNT=$((QUARANTINE_COUNT + 1))
+    QUARANTINE_DBS="${QUARANTINE_DBS}${q_db},"
+    q_item="$q_db held $(human_duration "$q_age_sec"), oldgen $(human_kb "$q_oldgen_kb"): $q_reason"
+    if [ -n "$QUARANTINE_ITEMS" ]; then
+        QUARANTINE_ITEMS="$QUARANTINE_ITEMS; $q_item"
+    else
+        QUARANTINE_ITEMS="$q_item"
+    fi
+done < <(compact_quarantine_scan "$PACK_STATE_DIR/compact-quarantine" "$DOLT_DATA_DIR")
+QUARANTINE_WARN=""
+if [ "$QUARANTINE_COUNT" -gt 0 ]; then
+    QUARANTINE_WARN=" [WARN: compaction quarantine, auto-GC blocked: $QUARANTINE_ITEMS — see gc dolt compact output for the recovery steps]"
+fi
+
 # --- Step 3: Compose report and escalate if critical ---
 
-WARNINGS="${LATENCY_WARN}${CONN_WARN}${ORPHAN_WARN}${BACKUP_STALE}"
+WARNINGS="${LATENCY_WARN}${CONN_WARN}${ORPHAN_WARN}${BACKUP_STALE}${QUARANTINE_WARN}"
 if [ -n "$WARNINGS" ]; then
     # Dedup (#3409): key on which conditions are active — not their tick-volatile
     # values (exact latency ms, connection count, backup age) — and re-send only
@@ -230,6 +256,9 @@ if [ -n "$WARNINGS" ]; then
     if [ -n "$CONN_WARN" ]; then ADVISORY_SIG="${ADVISORY_SIG}conn "; fi
     if [ -n "$ORPHAN_WARN" ]; then ADVISORY_SIG="${ADVISORY_SIG}orphan "; fi
     if [ -n "$BACKUP_STALE" ]; then ADVISORY_SIG="${ADVISORY_SIG}backup "; fi
+    # Keyed on WHICH dbs are quarantined (not their age or size), so a newly
+    # quarantined db re-alerts and a standing one does not every tick.
+    if [ -n "$QUARANTINE_WARN" ]; then ADVISORY_SIG="${ADVISORY_SIG}quarantine:${QUARANTINE_DBS} "; fi
     if advisory_changed "$ADVISORY_SIG" "$ADVISORY_STATE_FILE"; then
         # Sweep superseded advisories before the fresh send: the new advisory
         # carries the full current status block, so older snapshots (and any
@@ -242,7 +271,8 @@ if [ -n "$WARNINGS" ]; then
             "Latency: ${LATENCY_MS}ms${LATENCY_WARN}
 Connections: ${CONN_COUNT}/${CONN_MAX}${CONN_WARN}
 Disk: ${DISK_USAGE}
-Orphan DBs: ${ORPHAN_COUNT}${ORPHAN_WARN}${BACKUP_STALE}"; then
+Orphan DBs: ${ORPHAN_COUNT}${ORPHAN_WARN}${BACKUP_STALE}
+Compaction quarantine: ${QUARANTINE_COUNT}${QUARANTINE_WARN}"; then
             advisory_record "$ADVISORY_SIG" "$ADVISORY_STATE_FILE"
         fi
     fi
@@ -257,6 +287,6 @@ else
     advisory_clear "$ADVISORY_STATE_FILE"
 fi
 
-SUMMARY="doctor — server: ok, latency: ${LATENCY_MS}ms, conns: ${CONN_COUNT}/${CONN_MAX}, disk: ${DISK_USAGE}, orphans: ${ORPHAN_COUNT}"
+SUMMARY="doctor — server: ok, latency: ${LATENCY_MS}ms, conns: ${CONN_COUNT}/${CONN_MAX}, disk: ${DISK_USAGE}, orphans: ${ORPHAN_COUNT}, quarantined: ${QUARANTINE_COUNT}"
 dolt_notify_done "$SUMMARY"
 echo "doctor: $SUMMARY"
