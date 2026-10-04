@@ -111,6 +111,10 @@ func TestWorkflowRootSkipReason(t *testing.T) {
 		// an open finalizer from launch on. It neither holds the root nor is
 		// work for a pool.
 		{name: "an open control bead neither holds nor launches it", root: root, list: list(beads.Bead{ID: "s-1", Status: "open", Metadata: map[string]string{"gc.root_bead_id": tf857LiveRoot, "gc.kind": "workflow-finalize"}}), want: "none of its 1 open steps is ready for this route"},
+		// bgc-3q3y: a step-spec sidecar and a scope latch are unrouted and stay
+		// open for most of a workflow's life, but neither is work.
+		{name: "an open step-spec sidecar is not a launch", root: root, list: list(q3ySpec(tf857LiveRoot)), want: "none of its 1 open steps is ready for this route"},
+		{name: "an open scope latch is not a launch", root: root, list: list(beads.Bead{ID: "s-1", Status: "open", Metadata: map[string]string{"gc.root_bead_id": tf857LiveRoot, "gc.kind": "scope"}}), want: "none of its 1 open steps is ready for this route"},
 		{name: "another root's step in a superset answer is ignored", root: root, list: list(tf857Step("s-1", "gcd-other", "in_progress", "bgc-wisp-vpe9u", tf857Pool))},
 		{name: "a closed step in a superset answer is ignored", root: root, list: list(tf857Step("s-1", tf857LiveRoot, "closed", "", "GasCityDispatch/run-operator"))},
 		{name: "the root itself in the answer is ignored", root: root, list: list(beads.Bead{ID: tf857LiveRoot, Status: "in_progress", Assignee: "x", Metadata: map[string]string{"gc.root_bead_id": tf857LiveRoot}})},

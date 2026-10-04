@@ -27,6 +27,16 @@ package main
 //
 // So both readers of pool demand ask the same question here: the controller
 // before it counts a root as demand, and gc hook --claim before it claims one.
+//
+// A root that was claimed anyway keeps coming back (bgc-3q3y). While a session
+// holds a root, its work query serves the root's ready steps and, when there
+// are none, the root itself, and it never reaches fresh pool demand. On
+// 2026-10-04 bgc-wisp-82lkwea took Dispatch's gcd-40pr2a at launch, a
+// run-operator took its first step, and every gc hook --claim for the next
+// three hours handed 82lkwea the root as existing_assignment. So gc hook --claim
+// asks the same question of a root it already holds: it serves the root only
+// while the root is the work, and otherwise claims the ready step or gives the
+// root back.
 
 import (
 	"fmt"
@@ -83,7 +93,7 @@ func workflowRootSkipReason(root beads.Bead, list workflowRootStepLister, routed
 	if step, held := heldWorkflowRootStep(steps); held {
 		return fmt.Sprintf("its step %s is in progress under %s", step.ID, strings.TrimSpace(step.Assignee)), nil
 	}
-	if len(steps) == 0 || hasReadyWorkflowRootStep(steps, routedHere, now) {
+	if len(steps) == 0 || len(readyWorkflowRootSteps(steps, routedHere, now)) > 0 {
 		return "", nil
 	}
 	return fmt.Sprintf("none of its %d open steps is ready for this route", len(steps)), nil
@@ -122,7 +132,7 @@ func heldWorkflowRootStep(steps []beads.Bead) (beads.Bead, bool) {
 	return beads.Bead{}, false
 }
 
-// hasReadyWorkflowRootStep reports whether a step is ready work the claimant
+// readyWorkflowRootSteps returns the steps that are ready work the claimant
 // could be served: open, unassigned, not deferred, off every dispatch hold,
 // routed to the claimant, and not blocked by another live step of the root.
 //
@@ -130,13 +140,19 @@ func heldWorkflowRootStep(steps []beads.Bead) (beads.Bead, bool) {
 // wrong "ready" only costs the loop this check exists to stop, while a wrong
 // "not ready" would keep a workflow from launching. An unrouted step counts as
 // the claimant's, as unrouted work is claimable by any route, unless it is a
-// control bead; and a blocker that is not a live step of this root (another
-// root's bead, or a row the store left out) counts as met.
-func hasReadyWorkflowRootStep(steps []beads.Bead, routedHere func(beads.Bead) bool, now time.Time) bool {
+// control bead or a sidecar; and a blocker that is not a live step of this root
+// (another root's bead, or a row the store left out) counts as met.
+//
+// A sidecar is a scope latch or a step-spec bead: bookkeeping, never work.
+// Both are unrouted and stay open for most of the workflow's life, so counting
+// them made every root with a step spec read as a launch for every route
+// (bgc-3q3y: gcd-40pr2a's spec gcd-rg41pd was open from launch to finalize).
+func readyWorkflowRootSteps(steps []beads.Bead, routedHere func(beads.Bead) bool, now time.Time) []beads.Bead {
 	live := make(map[string]struct{}, len(steps))
 	for _, step := range steps {
 		live[step.ID] = struct{}{}
 	}
+	var ready []beads.Bead
 	for _, step := range steps {
 		if !strings.EqualFold(strings.TrimSpace(step.Status), "open") ||
 			beads.IsDeferred(step, now) || hookCandidateBudgetDeferred(step, now) ||
@@ -144,7 +160,7 @@ func hasReadyWorkflowRootStep(steps []beads.Bead, routedHere func(beads.Bead) bo
 			continue
 		}
 		if strings.TrimSpace(step.Metadata[beadmeta.RoutedToMetadataKey]) == "" {
-			if beadmeta.IsControlKind(strings.TrimSpace(step.Metadata[beadmeta.KindMetadataKey])) {
+			if workflowRootStepIsNotWork(step) {
 				continue
 			}
 		} else if !routedHere(step) {
@@ -153,9 +169,16 @@ func hasReadyWorkflowRootStep(steps []beads.Bead, routedHere func(beads.Bead) bo
 		if workflowRootStepBlocked(step, live) {
 			continue
 		}
-		return true
+		ready = append(ready, step)
 	}
-	return false
+	return ready
+}
+
+// workflowRootStepIsNotWork reports whether step is a control bead or a
+// sidecar, which no pool is ever served.
+func workflowRootStepIsNotWork(step beads.Bead) bool {
+	kind := strings.TrimSpace(step.Metadata[beadmeta.KindMetadataKey])
+	return beadmeta.IsControlKind(kind) || kind == beadmeta.KindSpec || kind == beadmeta.KindScope
 }
 
 // workflowRootStepBlocked reports whether step waits on a live step of its
