@@ -87,7 +87,7 @@ type mailMessageSummary struct {
 	ID       string `json:"id"`
 	From     string `json:"from,omitempty"`
 	To       string `json:"to,omitempty"`
-	Subject  string `json:"subject,omitempty"`
+	Subject  string `json:"subject"`
 	ThreadID string `json:"thread_id,omitempty"`
 	ReplyTo  string `json:"reply_to,omitempty"`
 }
@@ -474,7 +474,7 @@ func renderMailArchiveSelection(matches []mail.Message, results []mail.ArchiveRe
 			return 0
 		}
 		for _, msg := range matches {
-			fmt.Fprintf(stdout, "Would archive message %s\t%s\n", msg.ID, msg.Subject) //nolint:errcheck // best-effort stdout
+			fmt.Fprintf(stdout, "Would archive message %s\t%s\n", msg.ID, mailSubjectDisplay(msg.Subject)) //nolint:errcheck // best-effort stdout
 		}
 		return 0
 	}
@@ -2166,7 +2166,7 @@ func doMailInboxTargetWithJSON(mp mailInboxReader, target resolvedMailTarget, js
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "ID\tFROM\tSUBJECT\tBODY") //nolint:errcheck // best-effort stdout
 	for _, m := range messages {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", m.ID, m.From, m.Subject, truncate(m.Body, 60)) //nolint:errcheck // best-effort stdout
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", m.ID, m.From, mailSubjectDisplay(m.Subject), truncate(m.Body, 60)) //nolint:errcheck // best-effort stdout
 	}
 	tw.Flush() //nolint:errcheck // best-effort stdout
 	return 0
@@ -2702,7 +2702,7 @@ func doMailThreadWithJSON(mp mail.Provider, args []string, jsonOut bool, stdout,
 		if m.Read {
 			readStr = "✓"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", m.ID, m.From, m.To, m.Subject, //nolint:errcheck // best-effort stdout
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", m.ID, m.From, m.To, mailSubjectDisplay(m.Subject), //nolint:errcheck // best-effort stdout
 			m.CreatedAt.Format("2006-01-02 15:04"), readStr)
 	}
 	tw.Flush() //nolint:errcheck // best-effort stdout
@@ -2854,6 +2854,19 @@ func printMessage(m mail.Message, stdout io.Writer) {
 	if m.Body != "" {
 		w(fmt.Sprintf("Body:     %s", m.Body))
 	}
+}
+
+// mailNoSubjectPlaceholder labels a message with no subject in human-readable
+// listings. It is display only: machine-readable output reports "".
+const mailNoSubjectPlaceholder = "(no subject)"
+
+// mailSubjectDisplay returns subject, or [mailNoSubjectPlaceholder] when it is
+// empty.
+func mailSubjectDisplay(subject string) string {
+	if subject == "" {
+		return mailNoSubjectPlaceholder
+	}
+	return subject
 }
 
 // truncate shortens s to n characters, appending "..." if truncated.

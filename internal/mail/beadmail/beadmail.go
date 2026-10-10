@@ -30,6 +30,7 @@ const (
 	fromDisplayMetadataKey   = mail.FromDisplayMetadataKey
 	toSessionIDMetadataKey   = mail.ToSessionIDMetadataKey
 	toDisplayMetadataKey     = mail.ToDisplayMetadataKey
+	subjectEmptyMetadataKey  = mail.SubjectEmptyMetadataKey
 
 	// messageBeadType is the bead Type every mail message carries. It is the
 	// single confined spelling of the message-bead class marker.
@@ -179,11 +180,8 @@ func (p *Provider) sendWithExtraMetadata(from, to, subject, body string, extra m
 	labels := []string{"thread:" + threadID}
 
 	title := subject
-	if title == "" && body != "" {
-		title = strings.SplitN(body, "\n", 2)[0]
-		if len(title) > 80 {
-			title = title[:77] + "..."
-		}
+	if title == "" {
+		title, metadata = subjectlessTitle(body, metadata)
 	}
 
 	b, err := p.createMessageBead(title, body, from, to, labels, metadata)
@@ -707,8 +705,15 @@ func (p *Provider) Reply(id, from, subject, body string) (mail.Message, error) {
 
 	labels := []string{"thread:" + threadID, "reply-to:" + id}
 
+	var title string
+	if subject == "" && original.Metadata[subjectEmptyMetadataKey] == "true" {
+		title, metadata = subjectlessTitle(body, metadata)
+	} else {
+		title = deriveReplyTitle(subject, original.Title, body)
+	}
+
 	b, err := p.store.Create(beads.Bead{
-		Title:       deriveReplyTitle(subject, original.Title, body),
+		Title:       title,
 		Description: body,
 		Type:        messageBeadType,
 		Assignee:    to, // reply goes back to sender
@@ -779,14 +784,34 @@ func deriveReplyTitle(subject, originalTitle, body string) string {
 		}
 		return "Re: " + originalTitle
 	}
+	if snippet := bodySnippet(body); snippet != "" {
+		return snippet
+	}
+	return "(reply)"
+}
+
+// subjectlessTitle returns the bead title for a message with no subject and
+// metadata marking it so. bd requires a non-empty title, so the title is the
+// body's first line (or "(no subject)"), which [beadToMessage] never reports
+// as the subject.
+func subjectlessTitle(body string, metadata map[string]string) (string, map[string]string) {
+	if metadata == nil {
+		metadata = make(map[string]string, 1)
+	}
+	metadata[subjectEmptyMetadataKey] = "true"
+	if snippet := bodySnippet(body); snippet != "" {
+		return snippet, metadata
+	}
+	return "(no subject)", metadata
+}
+
+// bodySnippet returns body's first line, cut to 80 bytes.
+func bodySnippet(body string) string {
 	snippet := strings.SplitN(body, "\n", 2)[0]
 	if len(snippet) > 80 {
 		snippet = snippet[:77] + "..."
 	}
-	if snippet != "" {
-		return snippet
-	}
-	return "(reply)"
+	return snippet
 }
 
 // Thread returns all messages sharing a thread ID, ordered by creation time.
@@ -1343,11 +1368,15 @@ func beadToMessage(b beads.Bead) mail.Message {
 	case "false":
 		read = false
 	}
+	subject := b.Title
+	if b.Metadata[subjectEmptyMetadataKey] == "true" {
+		subject = ""
+	}
 	return mail.Message{
 		ID:        b.ID,
 		From:      from,
 		To:        to,
-		Subject:   b.Title,
+		Subject:   subject,
 		Body:      b.Description,
 		CreatedAt: b.CreatedAt,
 		Read:      read,

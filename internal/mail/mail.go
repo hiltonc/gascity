@@ -44,6 +44,10 @@ const (
 	// sent through [DedupSender.SendDeduped]. Repeating notifiers (patrol
 	// orders, maintenance loops) use it to suppress duplicate alerts.
 	DedupKeyMetadataKey = "mail.dedup_key"
+	// SubjectEmptyMetadataKey ("true") marks a message sent with no subject.
+	// Its bead title is then a stand-in that bd requires, not the subject, so
+	// readers report the subject as "".
+	SubjectEmptyMetadataKey = "mail.subject_empty"
 )
 
 // Message represents a mail message between agents or humans.
