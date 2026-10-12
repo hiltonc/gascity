@@ -3733,10 +3733,9 @@ func TestFormatInjectOutputSubjectOnlyRendersSubjectAsMessage(t *testing.T) {
 	}
 }
 
-// TestFormatInjectOutputSubjectEqualToBodyRendersOnce guards the pre-existing
-// subject==body shape produced by the positional form: `gc mail send <to>
-// "text"` arrives with no subject, and beadmail.Send backfills the title from
-// the body, so Title and Description are identical.
+// TestFormatInjectOutputSubjectEqualToBodyRendersOnce guards the rendering of
+// a message whose subject and body happen to be the same string. The inject
+// path renders it once as "from X: message" rather than "[subject]: body".
 func TestFormatInjectOutputSubjectEqualToBodyRendersOnce(t *testing.T) {
 	out := formatInjectOutput([]mail.Message{
 		{ID: "gc-1", From: "human", To: "mayor", Subject: "Build is green", Body: "Build is green"},
@@ -3750,22 +3749,11 @@ func TestFormatInjectOutputSubjectEqualToBodyRendersOnce(t *testing.T) {
 	}
 }
 
-// TestPrintMessageKeepsBodyIdenticalToSubject pins the documented output of
-// the positional send. `gc mail send <to> "text"` supplies a body and no
-// subject, and beadmail.Send synthesizes the title from that body, so the two
-// fields hold the same string with the SUBJECT being the derived one.
-// Suppressing the Body line here would print only the synthesized field and
-// hide the one the user actually typed, which is the "content renders as
-// though it were lost" failure this command family exists to avoid.
-//
-// This duplicates cmd/gc/testdata/events.txtar:32 on purpose. That txtar runs
-// only under GC_FAST_UNIT=0, so a suppression reintroduced here would survive
-// the whole fast unit loop and surface only in CI.
-//
-// Note the injection path deliberately renders such a message ONCE (see
-// TestFormatInjectOutputSubjectEqualToBodyRendersOnce): it emits a single
-// "from X: message" line, where repeating the string is pure noise. The
-// labeled Subject/Body view is a different contract and shows both.
+// TestPrintMessageKeepsBodyIdenticalToSubject pins the labeled Subject/Body
+// view when the two fields happen to match. Suppressing the Body line would
+// hide the content the user actually typed. The injection path renders once
+// (see TestFormatInjectOutputSubjectEqualToBodyRendersOnce); the labeled
+// view shows both.
 func TestPrintMessageKeepsBodyIdenticalToSubject(t *testing.T) {
 	var out bytes.Buffer
 	printMessage(mail.Message{
@@ -4030,10 +4018,10 @@ func TestMailCheckInjectFormatsMessages(t *testing.T) {
 	if !strings.Contains(out, "2 unread message(s)") {
 		t.Errorf("stdout missing message count:\n%s", out)
 	}
-	if !strings.Contains(out, "gc-1 from mayor: Fix the auth bug") {
+	if !strings.Contains(out, "gc-1 from mayor [(no subject)]: Fix the auth bug") {
 		t.Errorf("stdout missing first message:\n%s", out)
 	}
-	if !strings.Contains(out, "gc-2 from polecat: PR #17 ready for review") {
+	if !strings.Contains(out, "gc-2 from polecat [(no subject)]: PR #17 ready for review") {
 		t.Errorf("stdout missing second message:\n%s", out)
 	}
 	if !strings.Contains(out, "gc mail read <id>") {
