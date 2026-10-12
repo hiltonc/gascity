@@ -3257,3 +3257,125 @@ func TestDrainUnitConvoyByKeyTakesOnlyAConvoy(t *testing.T) {
 		t.Fatalf("got %s found %t (%v), want %s", got.ID, found, err, unit.ID)
 	}
 }
+
+// recordingItemRootStore wraps a MemStore and records whether each
+// ListByMetadata call included the IncludeClosed option.
+type recordingItemRootStore struct {
+	*beads.MemStore
+	listCalls []listByMetadataCall
+}
+
+type listByMetadataCall struct {
+	filters       map[string]string
+	includeClosed bool
+}
+
+func (s *recordingItemRootStore) ListByMetadata(filters map[string]string, limit int, opts ...beads.QueryOpt) ([]beads.Bead, error) {
+	s.listCalls = append(s.listCalls, listByMetadataCall{
+		filters:       filters,
+		includeClosed: beads.HasOpt(opts, beads.IncludeClosed),
+	})
+	return s.MemStore.ListByMetadata(filters, limit, opts...)
+}
+
+func TestEnsureDrainItemRootSkipsClosedScanWhenLiveRootExists(t *testing.T) {
+	formulatest.EnableV2ForTest(t)
+	dir := t.TempDir()
+	writeDrainItemFormula(t, dir)
+	base := beads.NewMemStore()
+	store := &recordingItemRootStore{MemStore: base}
+
+	// Seed: a live (open) item root with the expected key.
+	itemRootKey := "drain-item-root:ctrl:0:member"
+	liveRoot, err := base.Create(beads.Bead{
+		Title: "live item root",
+		Type:  "task",
+		Metadata: map[string]string{
+			beadmeta.KindMetadataKey:            beadmeta.KindWorkflow,
+			beadmeta.FormulaContractMetadataKey: beadmeta.FormulaContractGraphV2,
+			beadmeta.ItemRootKeyMetadataKey:     itemRootKey,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	control := beads.Bead{ID: "ctrl", Metadata: map[string]string{
+		beadmeta.KindMetadataKey: beadmeta.KindDrain,
+	}}
+	unit := beads.Bead{ID: "unit"}
+	member := beads.Bead{ID: "member", Type: "task"}
+	row := &drainManifestRow{
+		Index:       0,
+		MemberID:    member.ID,
+		ItemRootKey: itemRootKey,
+	}
+
+	gotID, created, err := ensureDrainItemRoot(store, control, unit, member, 1, row, "drain-item", nil, nil, ProcessOptions{FormulaSearchPaths: []string{dir}})
+	if err != nil {
+		t.Fatalf("ensureDrainItemRoot: %v", err)
+	}
+	if created {
+		t.Fatal("created = true, want false (existing live root)")
+	}
+	if gotID != liveRoot.ID {
+		t.Fatalf("returned %q, want live root %q", gotID, liveRoot.ID)
+	}
+
+	// The live-first optimization means no ListByMetadata call with
+	// IncludeClosed when a live root satisfies the lookup.
+	for _, call := range store.listCalls {
+		if call.filters[beadmeta.ItemRootKeyMetadataKey] == itemRootKey && call.includeClosed {
+			t.Error("ListByMetadata used IncludeClosed despite a live root being available")
+		}
+	}
+}
+
+func TestEnsureDrainItemRootFallsBackToClosedRoot(t *testing.T) {
+	formulatest.EnableV2ForTest(t)
+	dir := t.TempDir()
+	writeDrainItemFormula(t, dir)
+	base := beads.NewMemStore()
+	store := &recordingItemRootStore{MemStore: base}
+
+	// Seed: a closed, non-failed item root with the expected key.
+	itemRootKey := "drain-item-root:ctrl:0:member"
+	closedRoot, err := base.Create(beads.Bead{
+		Title: "closed item root",
+		Type:  "task",
+		Metadata: map[string]string{
+			beadmeta.KindMetadataKey:            beadmeta.KindWorkflow,
+			beadmeta.FormulaContractMetadataKey: beadmeta.FormulaContractGraphV2,
+			beadmeta.ItemRootKeyMetadataKey:     itemRootKey,
+			beadmeta.OutcomeMetadataKey:         beadmeta.OutcomePass,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := base.Close(closedRoot.ID); err != nil {
+		t.Fatalf("close root: %v", err)
+	}
+
+	control := beads.Bead{ID: "ctrl", Metadata: map[string]string{
+		beadmeta.KindMetadataKey: beadmeta.KindDrain,
+	}}
+	unit := beads.Bead{ID: "unit"}
+	member := beads.Bead{ID: "member", Type: "task"}
+	row := &drainManifestRow{
+		Index:       0,
+		MemberID:    member.ID,
+		ItemRootKey: itemRootKey,
+	}
+
+	gotID, created, err := ensureDrainItemRoot(store, control, unit, member, 1, row, "drain-item", nil, nil, ProcessOptions{FormulaSearchPaths: []string{dir}})
+	if err != nil {
+		t.Fatalf("ensureDrainItemRoot: %v", err)
+	}
+	if created {
+		t.Fatal("created = true, want false (existing closed root)")
+	}
+	if gotID != closedRoot.ID {
+		t.Fatalf("returned %q, want closed root %q", gotID, closedRoot.ID)
+	}
+}
