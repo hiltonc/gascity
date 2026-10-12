@@ -97,6 +97,11 @@ const (
 	// transient per-parse garbage is returned to the OS without paying a full
 	// GC + scavenge on every short idle tick.
 	nudgePollFreeOSInterval = 30 * time.Second
+
+	// nudgePollDeliveredBackoffCap bounds the exponential backoff applied when
+	// consecutive delivered ticks keep finding the same item still due. Without
+	// a cap the backoff would eventually exceed the session's liveness timeout.
+	nudgePollDeliveredBackoffCap = 30 * time.Second
 )
 
 var errNudgeSessionFenceMismatch = errors.New("queued nudge session fence mismatch")
@@ -124,6 +129,7 @@ var (
 	nudgeObserveTarget                       = workerObserveNudgeTarget
 	nudgeWithdrawQueuedWaitNudges            = withdrawQueuedWaitNudges
 	nudgePollDeliverQueued                   = tryDeliverQueuedNudgesByPoller
+	nudgePollSleep                           = time.Sleep
 	nudgeWarningWriter             io.Writer = os.Stderr
 )
 
@@ -965,6 +971,7 @@ func cmdNudgePoll(args []string, sessionName string, interval, quiescence time.D
 	var missingSince time.Time
 	var lastFreeOS time.Time
 	var idleTicksSinceObserve int
+	var consecutiveDelivered int
 	for {
 		// Each tick that observes a changed beads.json re-parses the whole-file
 		// store, leaving several hundred MB of transient garbage. The soft
@@ -984,6 +991,14 @@ func cmdNudgePoll(args []string, sessionName string, interval, quiescence time.D
 		// whose session died while its queue sat empty still notices and
 		// exits instead of being immortalized (ga-8x82f4).
 		hasDue := nudgePollTargetHasDueWork(target, time.Now())
+		if !hasDue {
+			// Nothing due means the last delivery took, so the delivered
+			// backoff starts over: it is for an item that stays due across
+			// consecutive ticks, not for every delivery in the session's life.
+			// This sits before the idle fast path below so an idle tick that
+			// skips the observe still resets it.
+			consecutiveDelivered = 0
+		}
 		observeThisTick := hasDue
 		if !observeThisTick {
 			idleTicksSinceObserve++
@@ -992,7 +1007,7 @@ func cmdNudgePoll(args []string, sessionName string, interval, quiescence time.D
 			}
 		}
 		if !observeThisTick {
-			time.Sleep(interval)
+			nudgePollSleep(interval)
 			continue
 		}
 		idleTicksSinceObserve = 0
@@ -1017,7 +1032,7 @@ func cmdNudgePoll(args []string, sessionName string, interval, quiescence time.D
 				if missingSince.IsZero() {
 					missingSince = now
 				}
-				time.Sleep(interval)
+				nudgePollSleep(interval)
 				continue
 			}
 			return 1
@@ -1028,7 +1043,7 @@ func cmdNudgePoll(args []string, sessionName string, interval, quiescence time.D
 				if missingSince.IsZero() {
 					missingSince = now
 				}
-				time.Sleep(interval)
+				nudgePollSleep(interval)
 				continue
 			}
 			return 0
@@ -1037,7 +1052,7 @@ func cmdNudgePoll(args []string, sessionName string, interval, quiescence time.D
 		if !hasDue {
 			// Observed only to satisfy the idle-cadence liveness check above;
 			// the cheap gate already established there is nothing to deliver.
-			time.Sleep(interval)
+			nudgePollSleep(interval)
 			continue
 		}
 		delivered, pollErr := nudgePollDeliverQueued(target, store.Store, cliSessionStore(store.Store, target.cfg, target.cityPath), sp, quiescence, obs)
@@ -1045,8 +1060,11 @@ func cmdNudgePoll(args []string, sessionName string, interval, quiescence time.D
 			fmt.Fprintf(stderr, "gc nudge poll: %v\n", pollErr) //nolint:errcheck
 		}
 		if delivered {
+			consecutiveDelivered++
+			nudgePollSleep(nudgePollDeliveredBackoff(interval, consecutiveDelivered))
 			continue
 		}
+		consecutiveDelivered = 0
 		// Mirror dispatchAllQueuedNudges' skip accounting (nudge_dispatcher.go),
 		// gate included: "not-delivered" means this target HAD due queued work
 		// and still got nothing this tick -- most commonly
@@ -1067,8 +1085,31 @@ func cmdNudgePoll(args []string, sessionName string, interval, quiescence time.D
 				fmt.Fprintf(stderr, "gc nudge poll: recording dispatch skip counter: %v\n", recErr) //nolint:errcheck
 			}
 		}
-		time.Sleep(interval)
+		nudgePollSleep(interval)
 	}
+}
+
+// nudgePollDeliveredBackoff returns the sleep duration after a delivered tick.
+// The first delivery sleeps the base interval; consecutive deliveries where the
+// same item stays due apply exponential backoff capped at
+// nudgePollDeliveredBackoffCap, and never below the interval.
+func nudgePollDeliveredBackoff(interval time.Duration, consecutive int) time.Duration {
+	if consecutive <= 1 {
+		return interval
+	}
+	shift := consecutive - 1
+	if shift > 5 {
+		shift = 5
+	}
+	backoff := interval * time.Duration(1<<uint(shift))
+	if backoff > nudgePollDeliveredBackoffCap {
+		backoff = nudgePollDeliveredBackoffCap
+	}
+	if backoff < interval {
+		// The cap bounds the backoff, never the configured interval itself.
+		return interval
+	}
+	return backoff
 }
 
 // nudgePollTargetHasDueWork reports whether the queue currently holds work
