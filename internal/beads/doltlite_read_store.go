@@ -22,6 +22,7 @@ import (
 type DoltliteReadStore struct {
 	*BdStore
 	db              *sql.DB
+	columnCache     map[string]bool // keyed by "table\x00column"
 	orderRunMu      sync.Mutex
 	orderRunLastRun map[string]time.Time
 	orderRunOpen    map[string]bool
@@ -159,7 +160,7 @@ func NewDoltliteReadStore(dir string, backing *BdStore) (*DoltliteReadStore, err
 		_ = db.Close()
 		return nil, err
 	}
-	return &DoltliteReadStore{BdStore: backing, db: db}, nil
+	return &DoltliteReadStore{BdStore: backing, db: db, columnCache: make(map[string]bool)}, nil
 }
 
 // ReindexDoltliteStore rebuilds the DoltLite store's SQLite secondary indexes.
@@ -1583,14 +1584,20 @@ func (s *DoltliteReadStore) tableExists(name string) bool {
 // semantics, which would drop the whole wisps table from TierIssues and
 // misclassify no-history rows (#3449 review).
 func (s *DoltliteReadStore) tableHasColumn(table, column string) (bool, error) {
+	key := table + "\x00" + column
+	if has, ok := s.columnCache[key]; ok {
+		return has, nil
+	}
 	var found string
 	err := s.db.QueryRow(`SELECT name FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&found)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			s.columnCache[key] = false
 			return false, nil
 		}
 		return false, fmt.Errorf("doltlite probe %s.%s: %w", table, column, err)
 	}
+	s.columnCache[key] = true
 	return true, nil
 }
 

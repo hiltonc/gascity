@@ -1452,6 +1452,103 @@ func TestDoltliteCachingStoreLiveFastReadDoesNotEraseDependencyCache(t *testing.
 	}
 }
 
+func TestDoltliteColumnCacheAvoidsRepeatedProbes(t *testing.T) {
+	store, closeStore := newTestDoltliteReadStore(t)
+	defer closeStore()
+
+	// The schema has ephemeral and no_history columns.
+	has, err := store.tableHasColumn("issues", "ephemeral")
+	if err != nil {
+		t.Fatalf("first probe: %v", err)
+	}
+	if !has {
+		t.Fatal("issues.ephemeral should exist")
+	}
+
+	// Cache should be populated.
+	key := "issues\x00ephemeral"
+	cached, ok := store.columnCache[key]
+	if !ok {
+		t.Fatal("column cache should have entry after first probe")
+	}
+	if !cached {
+		t.Fatal("cached value should be true")
+	}
+
+	// Close the DB to prove the second call hits the cache, not the DB.
+	store.db.Close()
+
+	has2, err2 := store.tableHasColumn("issues", "ephemeral")
+	if err2 != nil {
+		t.Fatalf("cached probe should not error: %v", err2)
+	}
+	if !has2 {
+		t.Fatal("cached probe should return true")
+	}
+
+	// A column that does not exist should also be cached.
+	store2, closeStore2 := newTestDoltliteReadStore(t)
+	defer closeStore2()
+	has3, err3 := store2.tableHasColumn("issues", "nonexistent")
+	if err3 != nil {
+		t.Fatalf("absent column probe: %v", err3)
+	}
+	if has3 {
+		t.Fatal("nonexistent column should not exist")
+	}
+	absentKey := "issues\x00nonexistent"
+	if _, ok := store2.columnCache[absentKey]; !ok {
+		t.Fatal("absent column should be cached")
+	}
+}
+
+func TestDoltliteLegacySchemaColumnCacheNegative(t *testing.T) {
+	dir := t.TempDir()
+	beadsDir := filepath.Join(dir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir beads dir: %v", err)
+	}
+	meta := []byte(`{"backend":"doltlite","database":"doltlite","dolt_database":"hq"}`)
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), meta, 0o600); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+	dbDir := filepath.Join(beadsDir, "doltlite")
+	if err := os.MkdirAll(dbDir, 0o755); err != nil {
+		t.Fatalf("mkdir doltlite dir: %v", err)
+	}
+	dbPath := filepath.Join(dbDir, "hq.db")
+	db, err := sql.Open("sqlite", dbPath+"?_busy_timeout=10000")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	createLegacyTestDoltliteSchema(t, db)
+	db.Close()
+
+	store, err := NewDoltliteReadStore(dir, nil)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.db.Close()
+
+	has, err := store.tableHasColumn("issues", "ephemeral")
+	if err != nil {
+		t.Fatalf("legacy probe: %v", err)
+	}
+	if has {
+		t.Fatal("legacy schema should not have ephemeral column")
+	}
+
+	// Cache negative result.
+	store.db.Close()
+	has2, err2 := store.tableHasColumn("issues", "ephemeral")
+	if err2 != nil {
+		t.Fatalf("cached negative probe should not error: %v", err2)
+	}
+	if has2 {
+		t.Fatal("cached negative should return false")
+	}
+}
+
 func newTestDoltliteReadStore(t *testing.T) (*DoltliteReadStore, func()) {
 	t.Helper()
 	dir := t.TempDir()
