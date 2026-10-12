@@ -83,6 +83,7 @@ func sweepOrphanedOrderTrackingAtBoot(routes *storageRoutes, cityPath string, cf
 	// beads in the work ledger and half in the binding, and neither half alone
 	// reaches the threshold the pair clears.
 	warnIfClosedOrderTrackingBacklogLarge(stores, stderr)
+	warnIfClosedWispsPlaneBacklogLarge(workStore, stderr)
 }
 
 // reloadOrderDrainTimeout bounds how long config reload will wait for
@@ -212,6 +213,7 @@ type CityRuntime struct {
 	orderSweepWatchdogLast             time.Time
 	orderTrackingRetentionWatchdogLast time.Time
 	nudgeMailSweepWatchdogLast         time.Time
+	wispsPlaneRetentionWatchdogLast    time.Time
 	wispIndexMigrationApplied          bool
 
 	rec events.Recorder
@@ -2152,7 +2154,7 @@ func bulkDeleteMaxAge(_ *config.City) time.Duration {
 }
 
 // runOrderTrackingRetentionWatchdog deletes closed order-tracking beads that
-// are past their TTL (defaulting to 7d) and beyond the retain-10 floor, at
+// are past their TTL (defaulting to 24h) and beyond the retain-10 floor, at
 // most once every orderTrackingRetentionWatchdogInterval. It deletes at most
 // orderTrackingRetentionWatchdogDeleteBudget beads per invocation. The orders
 // lane runs it with its pass's config snapshot.
@@ -2191,6 +2193,12 @@ func (cr *CityRuntime) runOrderTrackingRetentionWatchdog(cfg *config.City, now t
 	}
 	if deleted > 0 && cr.stderr != nil {
 		fmt.Fprintf(cr.stderr, "%s: order-tracking retention watchdog: pruned %d closed bead(s)\n", cr.logPrefix, deleted) //nolint:errcheck // best-effort stderr
+	}
+	if deleted >= orderTrackingRetentionWatchdogDeleteBudget {
+		eligible, countErr := countClosedOrderTrackingRetentionEligible(stores, now, policy, nil)
+		if countErr == nil && eligible > 0 && cr.stderr != nil {
+			fmt.Fprintf(cr.stderr, "%s: order-tracking retention watchdog: %d eligible bead(s) remain after budget exhausted — backlog will drain over subsequent ticks\n", cr.logPrefix, eligible) //nolint:errcheck // best-effort stderr
+		}
 	}
 }
 
@@ -2243,7 +2251,7 @@ func warnIfClosedOrderTrackingBacklogLarge(stores []beads.Store, stderr io.Write
 	if truncated {
 		countStr = "≥" + countStr
 	}
-	fmt.Fprintf(stderr, "gc start: %s closed order-tracking beads detected — retention watchdog will prune automatically (7d TTL default; configure: [beads.policies.order_tracking].delete_after_close). For immediate cleanup: gc order sweep-tracking\n", countStr) //nolint:errcheck // best-effort stderr
+	fmt.Fprintf(stderr, "gc start: %s closed order-tracking beads detected — retention watchdog will prune automatically (24h TTL default; configure: [beads.policies.order_tracking].delete_after_close). For immediate cleanup: gc order sweep-tracking\n", countStr) //nolint:errcheck // best-effort stderr
 }
 
 // runNudgeMailSweepWatchdog closes stale nudge and mail beads, at most once
