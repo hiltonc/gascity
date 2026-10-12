@@ -23,6 +23,10 @@ const (
 	// order-tracking wisps/day plus nudge and session wisps, 1000 per 5min
 	// (288k/day) keeps up with any observed burst rate.
 	wispsPlaneRetentionDeleteBudget = 1000
+
+	// mailBeadType is the bead type mail is stored as (cmd_mail.go). The
+	// sweeps never delete it: closed mail addressed to a human is the archive.
+	mailBeadType = "message"
 )
 
 // wispsPlaneRetentionPolicy holds the per-category TTL for wisps-plane
@@ -51,7 +55,8 @@ func wispsPlaneRetentionPolicyForConfig(cfg *config.City) wispsPlaneRetentionPol
 
 // sweepClosedNudgeRetention deletes closed nudge beads past their TTL.
 // It lists closed beads with the gc:nudge label, filters by age, and deletes
-// each individually. The limit bounds total delete attempts per call.
+// each individually. The limit bounds total delete attempts per call. A
+// message bead is never deleted, even when it carries the nudge label.
 func sweepClosedNudgeRetention(store beads.Store, now time.Time, deleteAfterClose time.Duration, limit int) (int, error) {
 	if store == nil || deleteAfterClose <= 0 || limit <= 0 {
 		return 0, nil
@@ -71,6 +76,11 @@ func sweepClosedNudgeRetention(store beads.Store, now time.Time, deleteAfterClos
 	for _, c := range candidates {
 		if deleted >= limit {
 			break
+		}
+		if c.Type == mailBeadType {
+			// Never delete mail, whatever labels it carries: closed mail
+			// addressed to a human is that human's archive.
+			continue
 		}
 		if c.CreatedAt.IsZero() || !c.CreatedAt.Before(cutoff) {
 			continue
@@ -153,6 +163,9 @@ func countClosedWispsPlaneRetentionEligible(store beads.Store, now time.Time, po
 		})
 		if err == nil {
 			for _, c := range candidates {
+				if c.Type == mailBeadType {
+					continue
+				}
 				if !c.CreatedAt.IsZero() && c.CreatedAt.Before(nudgeCutoff) {
 					nudgeEligible++
 				}

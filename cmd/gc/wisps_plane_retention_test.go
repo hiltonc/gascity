@@ -186,7 +186,9 @@ func TestSweepClosedSessionRetention_SkipsSessionsWithChildren(t *testing.T) {
 
 // TestSweepRetention_NeverDeletesArchivedMail is the hard-constraint test from
 // the bead description: seed an archived message bead older than any retention
-// TTL and assert it survives both nudge and session retention sweeps.
+// TTL and assert it survives both nudge and session retention sweeps. The mail
+// also carries the nudge label, so what protects it is its type, not the
+// accident of which labels mail happens to carry.
 func TestSweepRetention_NeverDeletesArchivedMail(t *testing.T) {
 	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
 	ttl := 24 * time.Hour
@@ -197,7 +199,7 @@ func TestSweepRetention_NeverDeletesArchivedMail(t *testing.T) {
 		Type:      "message",
 		CreatedAt: now.Add(-720 * time.Hour),
 		UpdatedAt: now.Add(-720 * time.Hour),
-		Labels:    []string{"read", "to:alice", "from:bob"},
+		Labels:    []string{"read", "to:alice", "from:bob", nudgeBeadLabel},
 		Ephemeral: true,
 	}
 	nudgeBead := beads.Bead{
@@ -236,8 +238,9 @@ func TestSweepRetention_NeverDeletesArchivedMail(t *testing.T) {
 		t.Fatalf("session deleted = %d, want 1", sessionDeleted)
 	}
 
-	// The archived mail must still exist — the sweeps select only by label
-	// (gc:nudge) and type (session), so type=message beads are never matched.
+	// The archived mail must still exist: the session sweep selects type
+	// session, and the nudge sweep skips every message bead even when it
+	// matches the label.
 	if _, err := store.Get("mail-archived"); err != nil {
 		t.Fatalf("archived mail bead must survive both retention sweeps: %v", err)
 	}
