@@ -1,14 +1,21 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
 )
+
+func defaultSweepOpts(budget int) retentionSweepOpts {
+	return retentionSweepOpts{budget: budget, batchSize: 50}
+}
 
 func TestSweepClosedNudgeRetention_DeletesOldClosedNudgeBeads(t *testing.T) {
 	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
@@ -50,12 +57,12 @@ func TestSweepClosedNudgeRetention_DeletesOldClosedNudgeBeads(t *testing.T) {
 	}
 	store := beads.NewMemStoreFrom(100, seed, nil)
 
-	deleted, err := sweepClosedNudgeRetention(store, now, ttl, 1000)
+	result, err := sweepClosedNudgeRetention(store, now, ttl, defaultSweepOpts(1000))
 	if err != nil {
 		t.Fatalf("sweepClosedNudgeRetention: %v", err)
 	}
-	if deleted != 2 {
-		t.Fatalf("deleted = %d, want 2 (the two old closed nudges)", deleted)
+	if result.deleted != 2 {
+		t.Fatalf("deleted = %d, want 2 (the two old closed nudges)", result.deleted)
 	}
 	for _, id := range []string{"nudge-old-1", "nudge-old-2"} {
 		if _, err := store.Get(id); !errors.Is(err, beads.ErrNotFound) {
@@ -87,12 +94,15 @@ func TestSweepClosedNudgeRetention_HonorsBudget(t *testing.T) {
 	}
 	store := beads.NewMemStoreFrom(100, seed, nil)
 
-	deleted, err := sweepClosedNudgeRetention(store, now, ttl, 3)
+	result, err := sweepClosedNudgeRetention(store, now, ttl, defaultSweepOpts(3))
 	if err != nil {
 		t.Fatalf("sweepClosedNudgeRetention: %v", err)
 	}
-	if deleted != 3 {
-		t.Fatalf("deleted = %d, want 3 (budget limit)", deleted)
+	if result.deleted != 3 {
+		t.Fatalf("deleted = %d, want 3 (budget limit)", result.deleted)
+	}
+	if result.remaining != 7 {
+		t.Errorf("remaining = %d, want 7", result.remaining)
 	}
 }
 
@@ -130,12 +140,12 @@ func TestSweepClosedSessionRetention_DeletesOldClosedSessionBeads(t *testing.T) 
 	}
 	store := beads.NewMemStoreFrom(100, seed, nil)
 
-	deleted, err := sweepClosedSessionRetention(store, now, ttl, 1000)
+	result, err := sweepClosedSessionRetention(store, now, ttl, defaultSweepOpts(1000))
 	if err != nil {
 		t.Fatalf("sweepClosedSessionRetention: %v", err)
 	}
-	if deleted != 1 {
-		t.Fatalf("deleted = %d, want 1 (the old closed session)", deleted)
+	if result.deleted != 1 {
+		t.Fatalf("deleted = %d, want 1 (the old closed session)", result.deleted)
 	}
 	if _, err := store.Get("session-old-1"); !errors.Is(err, beads.ErrNotFound) {
 		t.Errorf("Get(session-old-1) = %v, want ErrNotFound", err)
@@ -172,23 +182,20 @@ func TestSweepClosedSessionRetention_SkipsSessionsWithChildren(t *testing.T) {
 	}
 	store := beads.NewMemStoreFrom(100, seed, nil)
 
-	deleted, err := sweepClosedSessionRetention(store, now, ttl, 1000)
+	result, err := sweepClosedSessionRetention(store, now, ttl, defaultSweepOpts(1000))
 	if err != nil {
 		t.Fatalf("sweepClosedSessionRetention: %v", err)
 	}
-	if deleted != 0 {
-		t.Fatalf("deleted = %d, want 0 (session with children must be skipped)", deleted)
+	if result.deleted != 0 {
+		t.Fatalf("deleted = %d, want 0 (session with children must be skipped)", result.deleted)
 	}
 	if _, err := store.Get("session-parent"); err != nil {
 		t.Fatalf("session-parent should survive: %v", err)
 	}
 }
 
-// TestSweepRetention_NeverDeletesArchivedMail is the hard-constraint test from
-// the bead description: seed an archived message bead older than any retention
-// TTL and assert it survives both nudge and session retention sweeps. The mail
-// also carries the nudge label, so what protects it is its type, not the
-// accident of which labels mail happens to carry.
+// TestSweepRetention_NeverDeletesArchivedMail verifies the hard constraint:
+// an archived message bead older than any retention TTL survives both sweeps.
 func TestSweepRetention_NeverDeletesArchivedMail(t *testing.T) {
 	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
 	ttl := 24 * time.Hour
@@ -222,47 +229,44 @@ func TestSweepRetention_NeverDeletesArchivedMail(t *testing.T) {
 
 	store := beads.NewMemStoreFrom(100, []beads.Bead{archivedMail, nudgeBead, sessionBead}, nil)
 
-	nudgeDeleted, err := sweepClosedNudgeRetention(store, now, ttl, 1000)
+	nudgeResult, err := sweepClosedNudgeRetention(store, now, ttl, defaultSweepOpts(1000))
 	if err != nil {
 		t.Fatalf("sweepClosedNudgeRetention: %v", err)
 	}
-	if nudgeDeleted != 1 {
-		t.Fatalf("nudge deleted = %d, want 1", nudgeDeleted)
+	if nudgeResult.deleted != 1 {
+		t.Fatalf("nudge deleted = %d, want 1", nudgeResult.deleted)
 	}
 
-	sessionDeleted, err := sweepClosedSessionRetention(store, now, ttl, 1000)
+	sessionResult, err := sweepClosedSessionRetention(store, now, ttl, defaultSweepOpts(1000))
 	if err != nil {
 		t.Fatalf("sweepClosedSessionRetention: %v", err)
 	}
-	if sessionDeleted != 1 {
-		t.Fatalf("session deleted = %d, want 1", sessionDeleted)
+	if sessionResult.deleted != 1 {
+		t.Fatalf("session deleted = %d, want 1", sessionResult.deleted)
 	}
 
-	// The archived mail must still exist: the session sweep selects type
-	// session, and the nudge sweep skips every message bead even when it
-	// matches the label.
 	if _, err := store.Get("mail-archived"); err != nil {
 		t.Fatalf("archived mail bead must survive both retention sweeps: %v", err)
 	}
 }
 
 func TestSweepClosedNudgeRetention_NilStoreIsNoop(t *testing.T) {
-	deleted, err := sweepClosedNudgeRetention(nil, time.Now(), 24*time.Hour, 100)
+	result, err := sweepClosedNudgeRetention(nil, time.Now(), 24*time.Hour, defaultSweepOpts(100))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if deleted != 0 {
-		t.Fatalf("deleted = %d, want 0", deleted)
+	if result.deleted != 0 {
+		t.Fatalf("deleted = %d, want 0", result.deleted)
 	}
 }
 
 func TestSweepClosedSessionRetention_NilStoreIsNoop(t *testing.T) {
-	deleted, err := sweepClosedSessionRetention(nil, time.Now(), 24*time.Hour, 100)
+	result, err := sweepClosedSessionRetention(nil, time.Now(), 24*time.Hour, defaultSweepOpts(100))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if deleted != 0 {
-		t.Fatalf("deleted = %d, want 0", deleted)
+	if result.deleted != 0 {
+		t.Fatalf("deleted = %d, want 0", result.deleted)
 	}
 }
 
@@ -343,5 +347,502 @@ func TestWispsPlaneRetentionPolicyForConfig_NilConfig(t *testing.T) {
 	}
 	if policy.sessionDeleteAfterClose != 0 {
 		t.Errorf("session TTL = %v, want 0 for nil config", policy.sessionDeleteAfterClose)
+	}
+}
+
+// --- New tests for time-bounding and batching ---
+
+// TestSweepStopsAtDeadline verifies that a retention sweep stops when the
+// clock reports a time past the deadline, even if eligible beads remain.
+// The test uses a fake clock that advances by 200ms per call, so a 500ms
+// deadline allows ~2 deletes before the sweep stops.
+func TestSweepStopsAtDeadline(t *testing.T) {
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	ttl := 24 * time.Hour
+
+	seed := make([]beads.Bead, 0, 20)
+	for i := 0; i < 20; i++ {
+		seed = append(seed, beads.Bead{
+			ID:        fmt.Sprintf("nudge-%02d", i),
+			Status:    "closed",
+			Type:      "chore",
+			CreatedAt: now.Add(-48 * time.Hour),
+			Labels:    []string{nudgeBeadLabel},
+			NoHistory: true,
+		})
+	}
+	store := beads.NewMemStoreFrom(100, seed, nil)
+
+	var calls atomic.Int64
+	fakeClock := func() time.Time {
+		n := calls.Add(1)
+		return now.Add(time.Duration(n) * 200 * time.Millisecond)
+	}
+
+	opts := retentionSweepOpts{
+		deadline:  now.Add(500 * time.Millisecond),
+		budget:    1000,
+		batchSize: 1,
+		clockFn:   fakeClock,
+	}
+
+	result, err := sweepClosedNudgeRetention(store, now, ttl, opts)
+	if err != nil {
+		t.Fatalf("sweepClosedNudgeRetention: %v", err)
+	}
+	if result.deleted >= 20 {
+		t.Fatalf("deleted = %d, want fewer than 20 (deadline should stop early)", result.deleted)
+	}
+	if !result.timedOut {
+		t.Fatal("timedOut = false, want true")
+	}
+	if result.remaining <= 0 {
+		t.Fatal("remaining should be > 0 after deadline stop")
+	}
+}
+
+// TestSweepBatchesDeletions verifies that deletions are batched rather
+// than done one at a time by checking that all eligible beads are removed
+// when using a batch size larger than 1.
+func TestSweepBatchesDeletions(t *testing.T) {
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	ttl := 24 * time.Hour
+
+	seed := make([]beads.Bead, 0, 10)
+	for i := 0; i < 10; i++ {
+		seed = append(seed, beads.Bead{
+			ID:        fmt.Sprintf("nudge-%02d", i),
+			Status:    "closed",
+			Type:      "chore",
+			CreatedAt: now.Add(-48 * time.Hour),
+			Labels:    []string{nudgeBeadLabel},
+			NoHistory: true,
+		})
+	}
+	store := beads.NewMemStoreFrom(100, seed, nil)
+
+	opts := retentionSweepOpts{
+		budget:    1000,
+		batchSize: 5,
+	}
+
+	result, err := sweepClosedNudgeRetention(store, now, ttl, opts)
+	if err != nil {
+		t.Fatalf("sweepClosedNudgeRetention: %v", err)
+	}
+	if result.deleted != 10 {
+		t.Fatalf("deleted = %d, want 10 (all eligible)", result.deleted)
+	}
+	if result.remaining != 0 {
+		t.Errorf("remaining = %d, want 0", result.remaining)
+	}
+}
+
+// TestWatchdogStartupUsesSmallBudget verifies the first watchdog pass after
+// startup uses the startup time budget, not the steady-state budget.
+func TestWatchdogStartupUsesSmallBudget(t *testing.T) {
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	ttl := 24 * time.Hour
+
+	seed := make([]beads.Bead, 0, 500)
+	for i := 0; i < 500; i++ {
+		seed = append(seed, beads.Bead{
+			ID:        fmt.Sprintf("nudge-%04d", i),
+			Status:    "closed",
+			Type:      "chore",
+			CreatedAt: now.Add(-48 * time.Hour),
+			Labels:    []string{nudgeBeadLabel},
+			NoHistory: true,
+		})
+	}
+	store := beads.NewMemStoreFrom(1000, seed, nil)
+
+	var deleteCalls atomic.Int64
+	fakeClock := func() time.Time {
+		n := deleteCalls.Add(1)
+		return now.Add(time.Duration(n) * 100 * time.Millisecond)
+	}
+
+	cfg := &config.City{
+		Beads: config.BeadsConfig{
+			Policies: map[string]config.BeadPolicyConfig{
+				"nudge":   {DeleteAfterClose: ttl.String()},
+				"session": {DeleteAfterClose: ttl.String()},
+			},
+		},
+	}
+	config.ApplyBeadPolicyDefaults(cfg)
+
+	var stderr bytes.Buffer
+	cr := &CityRuntime{
+		cfg:                            cfg,
+		logPrefix:                      "test",
+		stderr:                         &stderr,
+		standaloneCityStore:            store,
+		wispsPlaneRetentionClockFn:     fakeClock,
+		wispsPlaneRetentionStartupDone: false,
+	}
+
+	cr.runWispsPlaneRetentionWatchdog(cfg, now)
+
+	remaining := 0
+	for i := 0; i < 500; i++ {
+		if _, err := store.Get(fmt.Sprintf("nudge-%04d", i)); err == nil {
+			remaining++
+		}
+	}
+	if remaining == 0 {
+		t.Fatal("startup pass deleted all 500 beads; should have stopped early due to time budget")
+	}
+
+	if !cr.wispsPlaneRetentionStartupDone {
+		t.Fatal("wispsPlaneRetentionStartupDone should be true after first pass")
+	}
+
+	// Second pass should use the steady-state (larger) budget.
+	deleteCalls.Store(0)
+	cr.wispsPlaneRetentionWatchdogLast = time.Time{}
+	cr.runWispsPlaneRetentionWatchdog(cfg, now.Add(10*time.Minute))
+
+	remaining2 := 0
+	for i := 0; i < 500; i++ {
+		if _, err := store.Get(fmt.Sprintf("nudge-%04d", i)); err == nil {
+			remaining2++
+		}
+	}
+	if remaining2 >= remaining {
+		t.Fatalf("second pass deleted nothing (remaining: %d → %d), steady-state budget should have deleted more", remaining, remaining2)
+	}
+}
+
+// TestDeleteBatchedWithDeadline_DeadlineStopsBeforeBudget verifies that the
+// batched delete stops when the deadline expires even when count budget has
+// room.
+func TestDeleteBatchedWithDeadline_DeadlineStopsBeforeBudget(t *testing.T) {
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+
+	seed := make([]beads.Bead, 0, 100)
+	for i := 0; i < 100; i++ {
+		seed = append(seed, beads.Bead{
+			ID:        fmt.Sprintf("b-%03d", i),
+			Status:    "closed",
+			Type:      "chore",
+			NoHistory: true,
+		})
+	}
+	store := beads.NewMemStoreFrom(200, seed, nil)
+
+	var calls atomic.Int64
+	fakeClock := func() time.Time {
+		n := calls.Add(1)
+		return now.Add(time.Duration(n) * 300 * time.Millisecond)
+	}
+
+	ids := make([]string, 100)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("b-%03d", i)
+	}
+
+	opts := retentionSweepOpts{
+		deadline:  now.Add(1 * time.Second),
+		budget:    100,
+		batchSize: 1,
+		clockFn:   fakeClock,
+	}
+
+	deleted, timedOut, err := deleteBatchedWithDeadline(store, ids, opts)
+	if err != nil {
+		t.Fatalf("deleteBatchedWithDeadline: %v", err)
+	}
+	if !timedOut {
+		t.Fatal("timedOut = false, want true")
+	}
+	if deleted >= 100 {
+		t.Fatalf("deleted = %d, want < 100", deleted)
+	}
+	if deleted == 0 {
+		t.Fatal("deleted = 0, want > 0")
+	}
+}
+
+// TestRetentionSweepOpts_PastDeadline checks the deadline helper.
+func TestRetentionSweepOpts_PastDeadline(t *testing.T) {
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+
+	t.Run("zero deadline never expires", func(t *testing.T) {
+		opts := retentionSweepOpts{clockFn: func() time.Time { return now.Add(time.Hour) }}
+		if opts.pastDeadline() {
+			t.Fatal("zero deadline should never expire")
+		}
+	})
+
+	t.Run("before deadline", func(t *testing.T) {
+		opts := retentionSweepOpts{
+			deadline: now.Add(time.Second),
+			clockFn:  func() time.Time { return now },
+		}
+		if opts.pastDeadline() {
+			t.Fatal("should not be past deadline")
+		}
+	})
+
+	t.Run("at deadline", func(t *testing.T) {
+		opts := retentionSweepOpts{
+			deadline: now,
+			clockFn:  func() time.Time { return now },
+		}
+		if !opts.pastDeadline() {
+			t.Fatal("should be past deadline (at == past)")
+		}
+	})
+
+	t.Run("after deadline", func(t *testing.T) {
+		opts := retentionSweepOpts{
+			deadline: now,
+			clockFn:  func() time.Time { return now.Add(time.Millisecond) },
+		}
+		if !opts.pastDeadline() {
+			t.Fatal("should be past deadline")
+		}
+	})
+}
+
+// slowRetentionStore simulates a store whose round trips cost wall-clock time:
+// each Children or Delete call advances a shared fake clock. It hides any
+// BatchDeleter on the backing store, so deletes take the per-bead path.
+type slowRetentionStore struct {
+	beads.Store
+	clock         *fakeRetentionClock
+	childrenCost  time.Duration
+	deleteCost    time.Duration
+	childrenCalls atomic.Int64
+	deleteCalls   atomic.Int64
+}
+
+func (s *slowRetentionStore) Children(parentID string, opts ...beads.QueryOpt) ([]beads.Bead, error) {
+	s.childrenCalls.Add(1)
+	s.clock.advance(s.childrenCost)
+	return s.Store.Children(parentID, opts...)
+}
+
+func (s *slowRetentionStore) Delete(id string) error {
+	s.deleteCalls.Add(1)
+	s.clock.advance(s.deleteCost)
+	return s.Store.Delete(id)
+}
+
+type fakeRetentionClock struct {
+	start   time.Time
+	elapsed atomic.Int64
+}
+
+func (c *fakeRetentionClock) now() time.Time {
+	return c.start.Add(time.Duration(c.elapsed.Load()))
+}
+
+func (c *fakeRetentionClock) advance(d time.Duration) {
+	c.elapsed.Add(int64(d))
+}
+
+func agedClosedSessions(now time.Time, n int) []beads.Bead {
+	seed := make([]beads.Bead, 0, n)
+	for i := 0; i < n; i++ {
+		seed = append(seed, beads.Bead{
+			ID:        fmt.Sprintf("session-%04d", i),
+			Status:    "closed",
+			Type:      "session",
+			CreatedAt: now.Add(-48 * time.Hour),
+			UpdatedAt: now.Add(-48 * time.Hour),
+			Labels:    []string{"gc:session"},
+			NoHistory: true,
+		})
+	}
+	return seed
+}
+
+// TestSweepClosedSessionRetention_ChildrenLookupsStopAtDeadline pins that the
+// per-session children check is bounded by the pass deadline: a backlog of
+// closed sessions that all own children (so none is ever eligible) must not
+// cost one Children round trip per session before the deadline is consulted.
+func TestSweepClosedSessionRetention_ChildrenLookupsStopAtDeadline(t *testing.T) {
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	const sessions = 500
+
+	seed := agedClosedSessions(now, sessions)
+	for i := 0; i < sessions; i++ {
+		seed = append(seed, beads.Bead{
+			ID:        fmt.Sprintf("child-%04d", i),
+			Status:    "closed",
+			Type:      "task",
+			CreatedAt: now.Add(-48 * time.Hour),
+			ParentID:  fmt.Sprintf("session-%04d", i),
+		})
+	}
+	clock := &fakeRetentionClock{start: now}
+	store := &slowRetentionStore{
+		Store:        beads.NewMemStoreFrom(2000, seed, nil),
+		clock:        clock,
+		childrenCost: 100 * time.Millisecond,
+	}
+
+	opts := retentionSweepOpts{
+		deadline:  now.Add(time.Second),
+		budget:    1000,
+		batchSize: wispsPlaneRetentionBatchSize,
+		clockFn:   clock.now,
+	}
+	result, err := sweepClosedSessionRetention(store, now, 24*time.Hour, opts)
+	if err != nil {
+		t.Fatalf("sweepClosedSessionRetention: %v", err)
+	}
+	if got := store.childrenCalls.Load(); got != 10 {
+		t.Fatalf("Children calls = %d, want 10 (1s deadline / 100ms per lookup)", got)
+	}
+	if !result.timedOut {
+		t.Fatal("timedOut = false, want true")
+	}
+	if result.deleted != 0 {
+		t.Fatalf("deleted = %d, want 0 (every session owns a child)", result.deleted)
+	}
+	if result.remaining != sessions-10 {
+		t.Fatalf("remaining = %d, want %d (the sessions never examined)", result.remaining, sessions-10)
+	}
+}
+
+// TestSweepClosedSessionRetention_ChildrenLookupsStopAtBudget pins that the
+// children check stops once the pass has found budget-many eligible sessions.
+func TestSweepClosedSessionRetention_ChildrenLookupsStopAtBudget(t *testing.T) {
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	const sessions = 500
+
+	clock := &fakeRetentionClock{start: now}
+	store := &slowRetentionStore{
+		Store: beads.NewMemStoreFrom(1000, agedClosedSessions(now, sessions), nil),
+		clock: clock,
+	}
+
+	opts := retentionSweepOpts{
+		deadline:  now.Add(time.Second),
+		budget:    7,
+		batchSize: wispsPlaneRetentionBatchSize,
+		clockFn:   clock.now,
+	}
+	result, err := sweepClosedSessionRetention(store, now, 24*time.Hour, opts)
+	if err != nil {
+		t.Fatalf("sweepClosedSessionRetention: %v", err)
+	}
+	if got := store.childrenCalls.Load(); got != 7 {
+		t.Fatalf("Children calls = %d, want 7 (the delete budget)", got)
+	}
+	if result.deleted != 7 {
+		t.Fatalf("deleted = %d, want 7", result.deleted)
+	}
+	if result.timedOut {
+		t.Fatal("timedOut = true, want false (budget, not deadline, stopped the pass)")
+	}
+	if result.remaining != sessions-7 {
+		t.Fatalf("remaining = %d, want %d", result.remaining, sessions-7)
+	}
+}
+
+// TestSweepClosedSessionRetention_DeletesAcrossPagesWithinDeadline pins that
+// eligible sessions are deleted page by page as they are found, so a pass
+// whose deadline cuts the children check short still deletes the full pages
+// it already collected.
+func TestSweepClosedSessionRetention_DeletesAcrossPagesWithinDeadline(t *testing.T) {
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	const sessions = 100
+
+	clock := &fakeRetentionClock{start: now}
+	store := &slowRetentionStore{
+		Store:        beads.NewMemStoreFrom(1000, agedClosedSessions(now, sessions), nil),
+		clock:        clock,
+		childrenCost: 100 * time.Millisecond,
+	}
+
+	opts := retentionSweepOpts{
+		deadline:  now.Add(time.Second),
+		budget:    1000,
+		batchSize: 4,
+		clockFn:   clock.now,
+	}
+	result, err := sweepClosedSessionRetention(store, now, 24*time.Hour, opts)
+	if err != nil {
+		t.Fatalf("sweepClosedSessionRetention: %v", err)
+	}
+	if got := store.childrenCalls.Load(); got != 10 {
+		t.Fatalf("Children calls = %d, want 10", got)
+	}
+	if result.deleted != 8 {
+		t.Fatalf("deleted = %d, want 8 (two full pages of 4 before the deadline)", result.deleted)
+	}
+	if !result.timedOut {
+		t.Fatal("timedOut = false, want true")
+	}
+	if result.remaining != sessions-8 {
+		t.Fatalf("remaining = %d, want %d", result.remaining, sessions-8)
+	}
+}
+
+// TestDeleteBatchedWithDeadline_LiveDescendantsFallbackStopsAtDeadline pins
+// that the per-bead fallback taken when a page's batch delete is refused for
+// live descendants honors the pass deadline instead of retrying the whole page.
+func TestDeleteBatchedWithDeadline_LiveDescendantsFallbackStopsAtDeadline(t *testing.T) {
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	const page = 50
+
+	seed := make([]beads.Bead, 0, page+1)
+	ids := make([]string, 0, page)
+	for i := 0; i < page; i++ {
+		id := fmt.Sprintf("nudge-%02d", i)
+		ids = append(ids, id)
+		seed = append(seed, beads.Bead{
+			ID:        id,
+			Status:    "closed",
+			Type:      "chore",
+			CreatedAt: now.Add(-48 * time.Hour),
+			Labels:    []string{nudgeBeadLabel},
+			NoHistory: true,
+		})
+	}
+	// An open descendant of the last bead makes the set-level guard refuse the
+	// whole page, forcing the per-bead fallback.
+	seed = append(seed, beads.Bead{
+		ID:        "live-descendant",
+		Status:    "open",
+		Type:      "task",
+		CreatedAt: now.Add(-time.Hour),
+		Metadata:  map[string]string{beadmeta.RootBeadIDMetadataKey: ids[page-1]},
+	})
+	clock := &fakeRetentionClock{start: now}
+	store := &slowRetentionStore{
+		Store:      beads.NewMemStoreFrom(1000, seed, nil),
+		clock:      clock,
+		deleteCost: 2500 * time.Millisecond,
+	}
+
+	opts := retentionSweepOpts{
+		deadline:  now.Add(time.Second),
+		budget:    1000,
+		batchSize: page,
+		clockFn:   clock.now,
+	}
+	deleted, timedOut, err := deleteBatchedWithDeadline(store, ids, opts)
+	if err != nil {
+		t.Fatalf("deleteBatchedWithDeadline: %v", err)
+	}
+	if !timedOut {
+		t.Fatal("timedOut = false, want true")
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1 (one 2.5s delete exhausts the 1s deadline)", deleted)
+	}
+	if got := store.deleteCalls.Load(); got != 1 {
+		t.Fatalf("Delete calls = %d, want 1", got)
+	}
+	for _, id := range ids[1:] {
+		if _, err := store.Get(id); err != nil {
+			t.Fatalf("Get(%s) = %v, want the bead left for a later pass", id, err)
+		}
 	}
 }
