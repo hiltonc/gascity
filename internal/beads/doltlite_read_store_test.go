@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1449,6 +1450,47 @@ func TestDoltliteCachingStoreLiveFastReadDoesNotEraseDependencyCache(t *testing.
 	}
 	if len(after) != 1 || after[0].DependsOnID != "gc-parent" {
 		t.Fatalf("deps after fast read = %#v, want parent gc-parent", after)
+	}
+}
+
+// The supervisor's allocator legs list through one shared store at the same
+// time, so the first probes after open race to fill the column cache. With an
+// unguarded map this fails under -race (and can panic the supervisor with
+// "concurrent map writes").
+func TestDoltliteColumnCacheIsSafeForConcurrentProbes(t *testing.T) {
+	store, closeStore := newTestDoltliteReadStore(t)
+	defer closeStore()
+
+	const readers = 16
+	columns := []string{"ephemeral", "no_history", "nonexistent"}
+	errs := make(chan error, readers*len(columns))
+	var wg sync.WaitGroup
+	for range readers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for _, column := range columns {
+				has, err := store.tableHasColumn("issues", column)
+				if err != nil {
+					errs <- fmt.Errorf("issues.%s: %w", column, err)
+					return
+				}
+				if want := column != "nonexistent"; has != want {
+					errs <- fmt.Errorf("issues.%s: has=%v, want %v", column, has, want)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	for _, column := range columns {
+		if _, ok := store.columnCache["issues\x00"+column]; !ok {
+			t.Errorf("issues.%s should be cached after the concurrent probes", column)
+		}
 	}
 }
 

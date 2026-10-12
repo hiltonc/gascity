@@ -21,7 +21,11 @@ import (
 // Writes and less common operations delegate to the normal bd CLI store.
 type DoltliteReadStore struct {
 	*BdStore
-	db              *sql.DB
+	db *sql.DB
+	// columnMu guards columnCache. One store serves the supervisor's
+	// allocator legs, which list concurrently (allocator_backstop_lane.go),
+	// so the first probes after open race to fill the cache.
+	columnMu        sync.Mutex
 	columnCache     map[string]bool // keyed by "table\x00column"
 	orderRunMu      sync.Mutex
 	orderRunLastRun map[string]time.Time
@@ -1583,8 +1587,17 @@ func (s *DoltliteReadStore) tableExists(name string) bool {
 // the read instead of silently downgrading tier classification to legacy
 // semantics, which would drop the whole wisps table from TierIssues and
 // misclassify no-history rows (#3449 review).
+//
+// A snapshot's schema is immutable for the store's lifetime, so each probe
+// runs once per store and is memoized under columnMu; the lock is held
+// across the probe so concurrent first readers share one query.
 func (s *DoltliteReadStore) tableHasColumn(table, column string) (bool, error) {
 	key := table + "\x00" + column
+	s.columnMu.Lock()
+	defer s.columnMu.Unlock()
+	if s.columnCache == nil {
+		s.columnCache = make(map[string]bool)
+	}
 	if has, ok := s.columnCache[key]; ok {
 		return has, nil
 	}
