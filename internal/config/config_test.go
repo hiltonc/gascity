@@ -790,8 +790,42 @@ func TestApplyBeadPolicyDefaults_SetsOrderTrackingDefault(t *testing.T) {
 	if !ok {
 		t.Fatal("order_tracking policy not set after ApplyBeadPolicyDefaults")
 	}
-	if p.DeleteAfterClose != "7d" {
-		t.Errorf("order_tracking.delete_after_close = %q, want 7d", p.DeleteAfterClose)
+	if p.DeleteAfterClose != "24h" {
+		t.Errorf("order_tracking.delete_after_close = %q, want 24h", p.DeleteAfterClose)
+	}
+}
+
+func TestApplyBeadPolicyDefaults_SetsNudgeAndSessionDefaults(t *testing.T) {
+	cfg := &City{}
+	ApplyBeadPolicyDefaults(cfg)
+
+	for _, name := range []string{"nudge", "session"} {
+		p, ok := cfg.Beads.Policies[name]
+		if !ok {
+			t.Fatalf("%s policy not set after ApplyBeadPolicyDefaults", name)
+		}
+		if p.DeleteAfterClose != "24h" {
+			t.Errorf("%s.delete_after_close = %q, want 24h", name, p.DeleteAfterClose)
+		}
+	}
+}
+
+func TestApplyBeadPolicyDefaults_DoesNotOverrideExplicitNudgeOrSession(t *testing.T) {
+	cfg := &City{
+		Beads: BeadsConfig{
+			Policies: map[string]BeadPolicyConfig{
+				"nudge":   {DeleteAfterClose: "48h"},
+				"session": {DeleteAfterClose: "72h"},
+			},
+		},
+	}
+	ApplyBeadPolicyDefaults(cfg)
+
+	if p := cfg.Beads.Policies["nudge"]; p.DeleteAfterClose != "48h" {
+		t.Errorf("nudge.delete_after_close = %q, want 48h", p.DeleteAfterClose)
+	}
+	if p := cfg.Beads.Policies["session"]; p.DeleteAfterClose != "72h" {
+		t.Errorf("session.delete_after_close = %q, want 72h", p.DeleteAfterClose)
 	}
 }
 
@@ -826,8 +860,8 @@ func TestApplyBeadPolicyDefaults_PreservesOtherPolicies(t *testing.T) {
 		t.Errorf("control.delete_after_close = %q, want 24h (must be preserved)", control.DeleteAfterClose)
 	}
 	orderTracking := cfg.Beads.Policies["order_tracking"]
-	if orderTracking.DeleteAfterClose != "7d" {
-		t.Errorf("order_tracking.delete_after_close = %q, want 7d", orderTracking.DeleteAfterClose)
+	if orderTracking.DeleteAfterClose != "24h" {
+		t.Errorf("order_tracking.delete_after_close = %q, want 24h", orderTracking.DeleteAfterClose)
 	}
 }
 
@@ -842,8 +876,8 @@ func TestApplyBeadPolicyDefaults_StorageFieldPreserved(t *testing.T) {
 	ApplyBeadPolicyDefaults(cfg)
 
 	p := cfg.Beads.Policies["order_tracking"]
-	if p.DeleteAfterClose != "7d" {
-		t.Errorf("order_tracking.delete_after_close = %q, want 7d (default should be applied when only Storage is set)", p.DeleteAfterClose)
+	if p.DeleteAfterClose != "24h" {
+		t.Errorf("order_tracking.delete_after_close = %q, want 24h (default should be applied when only Storage is set)", p.DeleteAfterClose)
 	}
 	if p.Storage != BeadStorageNoHistory {
 		t.Errorf("order_tracking.storage = %q, want no_history (must be preserved)", p.Storage)

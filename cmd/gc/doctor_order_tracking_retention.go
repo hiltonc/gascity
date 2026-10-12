@@ -15,7 +15,7 @@ const (
 
 // orderTrackingRetentionCheck reports the count of closed order-tracking beads
 // in the city store and warns when retention sweeps are overdue. The controller
-// watchdog prunes these automatically (7d TTL default); the check surfaces
+// watchdog prunes these automatically (24h TTL default); the check surfaces
 // cities where the watchdog has not yet run or where the backlog is large enough
 // to be operationally visible. It is pure observability and never gates.
 type orderTrackingRetentionCheck struct {
@@ -88,7 +88,7 @@ func (c *orderTrackingRetentionCheck) Run(_ *doctor.CheckContext) *doctor.CheckR
 			countStr = "≥" + countStr
 		}
 		res.Status = doctor.StatusWarning
-		res.Message = fmt.Sprintf("%s closed order-tracking beads: retention watchdog will prune automatically (7d TTL default; configure [beads.policies.order_tracking].delete_after_close)", countStr)
+		res.Message = fmt.Sprintf("%s closed order-tracking beads: retention watchdog will prune automatically (24h TTL default; configure [beads.policies.order_tracking].delete_after_close)", countStr)
 		return res
 	}
 	res.Status = doctor.StatusOK

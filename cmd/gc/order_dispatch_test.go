@@ -4237,11 +4237,11 @@ func TestSweepStaleOrderTracking_ClosesOnlyOldOpenTrackingBeads(t *testing.T) {
 	}
 }
 
-func TestOrderTrackingRetentionPolicyDefaultsToSevenDays(t *testing.T) {
+func TestOrderTrackingRetentionPolicyDefaultsTo24h(t *testing.T) {
 	policy := orderTrackingRetentionPolicyForConfig(&config.City{})
 
-	if policy.deleteAfterClose != 7*24*time.Hour {
-		t.Fatalf("deleteAfterClose = %v, want 7d", policy.deleteAfterClose)
+	if policy.deleteAfterClose != 24*time.Hour {
+		t.Fatalf("deleteAfterClose = %v, want 24h", policy.deleteAfterClose)
 	}
 	if policy.retainLast != minClosedOrderTrackingRetained {
 		t.Fatalf("retainLast = %d, want %d", policy.retainLast, minClosedOrderTrackingRetained)
