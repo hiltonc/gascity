@@ -3146,6 +3146,130 @@ func TestSendDedupedRequiresKey(t *testing.T) {
 	}
 }
 
+// --- No-subject sentinel tests ---
+
+func TestSendWithNoSubjectUsesSentinel(t *testing.T) {
+	store := beads.NewMemStore()
+	p := New(store)
+
+	m, err := p.Send("alice", "bob", "", "hello there")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if m.Subject != mail.NoSubject {
+		t.Errorf("Subject = %q, want %q", m.Subject, mail.NoSubject)
+	}
+	if m.Body != "hello there" {
+		t.Errorf("Body = %q, want %q", m.Body, "hello there")
+	}
+
+	b, err := store.Get(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Title != mail.NoSubject {
+		t.Errorf("bead Title = %q, want %q", b.Title, mail.NoSubject)
+	}
+}
+
+func TestSendWithEmptyStringSubjectUsesSentinel(t *testing.T) {
+	store := beads.NewMemStore()
+	p := New(store)
+
+	m, err := p.Send("alice", "bob", "", "body text")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if m.Subject != mail.NoSubject {
+		t.Errorf("Subject = %q, want %q", m.Subject, mail.NoSubject)
+	}
+}
+
+func TestSendWithNoSubjectAndNoBodyUsesSentinel(t *testing.T) {
+	store := beads.NewMemStore()
+	p := New(store)
+
+	m, err := p.Send("alice", "bob", "", "")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if m.Subject != mail.NoSubject {
+		t.Errorf("Subject = %q, want %q", m.Subject, mail.NoSubject)
+	}
+}
+
+func TestSendWithExplicitSubjectIsUnchanged(t *testing.T) {
+	store := beads.NewMemStore()
+	p := New(store)
+
+	m, err := p.Send("alice", "bob", "Important", "body")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if m.Subject != "Important" {
+		t.Errorf("Subject = %q, want %q", m.Subject, "Important")
+	}
+}
+
+func TestReplyToNoSubjectMessageDerivesReSentinel(t *testing.T) {
+	store := beads.NewMemStore()
+	p := New(store)
+
+	sent, err := p.Send("alice", "bob", "", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sent.Subject != mail.NoSubject {
+		t.Fatalf("original Subject = %q, want %q", sent.Subject, mail.NoSubject)
+	}
+
+	reply, err := p.Reply(sent.ID, "bob", "", "reply body")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	want := "Re: " + mail.NoSubject
+	if reply.Subject != want {
+		t.Errorf("Reply Subject = %q, want %q", reply.Subject, want)
+	}
+}
+
+func TestReplyToReSentinelDoesNotDoublePrefix(t *testing.T) {
+	store := beads.NewMemStore()
+	p := New(store)
+
+	sent, err := p.Send("alice", "bob", "", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reply1, err := p.Reply(sent.ID, "bob", "", "first reply")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reply2, err := p.Reply(reply1.ID, "alice", "", "second reply")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	want := "Re: " + mail.NoSubject
+	if reply2.Subject != want {
+		t.Errorf("Reply Subject = %q, want %q (no double Re:)", reply2.Subject, want)
+	}
+}
+
+func TestSendDedupedWithNoSubjectUsesSentinel(t *testing.T) {
+	store := beads.NewMemStore()
+	p := New(store)
+
+	m, _, err := p.SendDeduped("alice", "bob", "", "body", "dedup-1")
+	if err != nil {
+		t.Fatalf("SendDeduped: %v", err)
+	}
+	if m.Subject != mail.NoSubject {
+		t.Errorf("Subject = %q, want %q", m.Subject, mail.NoSubject)
+	}
+}
+
 // --- Compile-time interface checks ---
 
 var (

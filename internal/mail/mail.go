@@ -44,6 +44,11 @@ const (
 	// sent through [DedupSender.SendDeduped]. Repeating notifiers (patrol
 	// orders, maintenance loops) use it to suppress duplicate alerts.
 	DedupKeyMetadataKey = "mail.dedup_key"
+
+	// NoSubject is the sentinel subject for messages sent without a subject.
+	// Every reader (CLI, JSON, API) reports this as the subject; no metadata
+	// flag or special-casing is needed.
+	NoSubject = "(no subject)"
 )
 
 // Message represents a mail message between agents or humans.

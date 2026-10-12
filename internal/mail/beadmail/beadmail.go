@@ -179,11 +179,8 @@ func (p *Provider) sendWithExtraMetadata(from, to, subject, body string, extra m
 	labels := []string{"thread:" + threadID}
 
 	title := subject
-	if title == "" && body != "" {
-		title = strings.SplitN(body, "\n", 2)[0]
-		if len(title) > 80 {
-			title = title[:77] + "..."
-		}
+	if title == "" {
+		title = mail.NoSubject
 	}
 
 	b, err := p.createMessageBead(title, body, from, to, labels, metadata)
