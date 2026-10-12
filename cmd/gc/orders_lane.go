@@ -302,6 +302,7 @@ func (cr *CityRuntime) dispatchOrdersLocked(ctx context.Context, cityRoot string
 	cr.runOrderTrackingSweepWatchdog(cfg, now)
 	cr.runOrderTrackingRetentionWatchdog(cfg, now)
 	cr.runNudgeMailSweepWatchdog(cfg, now)
+	cr.runWispsPlaneRetentionWatchdog(cfg, now)
 	if cr.od != nil {
 		cr.od.dispatch(ctx, cityRoot, now)
 	}

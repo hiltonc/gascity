@@ -1520,7 +1520,7 @@ type BeadPolicyConfig struct {
 	// DeleteAfterClose deletes matching GC-owned beads after they have been
 	// closed for this duration. Accepts Go duration syntax plus whole-day "d"
 	// units, e.g. "7d" or "1d12h". ApplyBeadPolicyDefaults fills in a
-	// non-empty default for recognized policy types (order_tracking: "7d"),
+	// non-empty default for recognized policy types (order_tracking: "24h"),
 	// so this field is populated after config load even when the city.toml
 	// omits it.
 	DeleteAfterClose string `toml:"delete_after_close,omitempty"`
@@ -4013,13 +4013,20 @@ func ApplyAgentDefaults(cfg *City) {
 // [beads.policies.order_tracking].delete_after_close is unset in city.toml.
 // cmd/gc/order_dispatch.go derives its runtime fallback from this constant so
 // both values stay in sync.
-const DefaultOrderTrackingDeleteAfterClose = "7d"
+const DefaultOrderTrackingDeleteAfterClose = "24h"
+
+// DefaultWispsPlaneDeleteAfterClose is the canonical default closed-bead TTL
+// for nudge and session wisps-plane policies. Applied by
+// ApplyBeadPolicyDefaults when their delete_after_close is unset.
+const DefaultWispsPlaneDeleteAfterClose = "24h"
 
 // ApplyBeadPolicyDefaults fills in controller-managed defaults for bead
 // policies that have sane non-empty defaults. Call after all config
 // composition layers have been merged so user-supplied values take
 // precedence. Currently:
-//   - [beads.policies.order_tracking].delete_after_close defaults to "7d".
+//   - [beads.policies.order_tracking].delete_after_close defaults to "24h".
+//   - [beads.policies.nudge].delete_after_close defaults to "24h".
+//   - [beads.policies.session].delete_after_close defaults to "24h".
 func ApplyBeadPolicyDefaults(cfg *City) {
 	if cfg == nil {
 		return
@@ -4027,10 +4034,17 @@ func ApplyBeadPolicyDefaults(cfg *City) {
 	if cfg.Beads.Policies == nil {
 		cfg.Beads.Policies = make(map[string]BeadPolicyConfig)
 	}
-	p := cfg.Beads.Policies["order_tracking"]
-	if p.DeleteAfterClose == "" {
-		p.DeleteAfterClose = DefaultOrderTrackingDeleteAfterClose
-		cfg.Beads.Policies["order_tracking"] = p
+	for _, name := range []string{"order_tracking", "nudge", "session"} {
+		p := cfg.Beads.Policies[name]
+		if p.DeleteAfterClose == "" {
+			switch name {
+			case "order_tracking":
+				p.DeleteAfterClose = DefaultOrderTrackingDeleteAfterClose
+			default:
+				p.DeleteAfterClose = DefaultWispsPlaneDeleteAfterClose
+			}
+			cfg.Beads.Policies[name] = p
+		}
 	}
 }
 
