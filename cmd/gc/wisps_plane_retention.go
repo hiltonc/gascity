@@ -24,10 +24,62 @@ const (
 	// (288k/day) keeps up with any observed burst rate.
 	wispsPlaneRetentionDeleteBudget = 1000
 
+	// wispsPlaneRetentionTimeBudget is the wall-clock budget for a steady-state
+	// retention pass. The sweep stops when the budget expires, regardless of how
+	// many beads remain. Subsequent ticks drain the remainder.
+	wispsPlaneRetentionTimeBudget = 5 * time.Second
+
+	// wispsPlaneRetentionStartupTimeBudget is the time budget for the first
+	// retention pass after startup. Kept small so order dispatch is never gated
+	// on a bulk delete.
+	wispsPlaneRetentionStartupTimeBudget = 1 * time.Second
+
+	// wispsPlaneRetentionBatchSize is the number of eligible beads collected
+	// into a single batch-delete call. Batching replaces the per-bead
+	// deleteWorkflowBead round trip with one descendants check for the page and
+	// one batch delete.
+	wispsPlaneRetentionBatchSize = 50
+
 	// mailBeadType is the bead type mail is stored as (cmd_mail.go). The
 	// sweeps never delete it: closed mail addressed to a human is the archive.
 	mailBeadType = "message"
 )
+
+// retentionSweepOpts configures a single retention sweep pass.
+type retentionSweepOpts struct {
+	deadline  time.Time
+	budget    int
+	batchSize int
+	clockFn   func() time.Time // nil → time.Now
+}
+
+func (o retentionSweepOpts) clock() time.Time {
+	if o.clockFn != nil {
+		return o.clockFn()
+	}
+	return time.Now()
+}
+
+func (o retentionSweepOpts) pastDeadline() bool {
+	if o.deadline.IsZero() {
+		return false
+	}
+	return !o.clock().Before(o.deadline)
+}
+
+func (o retentionSweepOpts) effectiveBatchSize() int {
+	if o.batchSize <= 0 {
+		return 1
+	}
+	return o.batchSize
+}
+
+// retentionSweepResult reports what a single retention sweep did.
+type retentionSweepResult struct {
+	deleted   int
+	remaining int
+	timedOut  bool
+}
 
 // wispsPlaneRetentionPolicy holds the per-category TTL for wisps-plane
 // retention. Each category's TTL comes from [beads.policies.<name>].delete_after_close.
@@ -55,11 +107,12 @@ func wispsPlaneRetentionPolicyForConfig(cfg *config.City) wispsPlaneRetentionPol
 
 // sweepClosedNudgeRetention deletes closed nudge beads past their TTL.
 // It lists closed beads with the gc:nudge label, filters by age, and deletes
-// each individually. The limit bounds total delete attempts per call. A
-// message bead is never deleted, even when it carries the nudge label.
-func sweepClosedNudgeRetention(store beads.Store, now time.Time, deleteAfterClose time.Duration, limit int) (int, error) {
-	if store == nil || deleteAfterClose <= 0 || limit <= 0 {
-		return 0, nil
+// in batches. The opts deadline and budget bound the pass by time and count;
+// whichever triggers first stops the sweep. A message bead is never deleted,
+// even when it carries the nudge label.
+func sweepClosedNudgeRetention(store beads.Store, now time.Time, deleteAfterClose time.Duration, opts retentionSweepOpts) (retentionSweepResult, error) {
+	if store == nil || deleteAfterClose <= 0 || opts.budget <= 0 {
+		return retentionSweepResult{}, nil
 	}
 	cutoff := now.Add(-deleteAfterClose)
 	candidates, err := store.List(beads.ListQuery{
@@ -68,42 +121,35 @@ func sweepClosedNudgeRetention(store beads.Store, now time.Time, deleteAfterClos
 		TierMode: beads.TierBoth,
 	})
 	if err != nil {
-		return 0, fmt.Errorf("listing closed nudge beads for retention: %w", err)
+		return retentionSweepResult{}, fmt.Errorf("listing closed nudge beads for retention: %w", err)
 	}
 
-	deleted := 0
-	var deleteErr error
+	var eligible []string
 	for _, c := range candidates {
-		if deleted >= limit {
-			break
-		}
 		if c.Type == mailBeadType {
-			// Never delete mail, whatever labels it carries: closed mail
-			// addressed to a human is that human's archive.
 			continue
 		}
 		if c.CreatedAt.IsZero() || !c.CreatedAt.Before(cutoff) {
 			continue
 		}
-		if err := deleteWorkflowBead(store, c.ID); err != nil {
-			if errors.Is(err, errWorkflowDeleteLiveDescendants) {
-				continue
-			}
-			deleteErr = errors.Join(deleteErr, fmt.Errorf("deleting closed nudge bead %q: %w", c.ID, err))
-			continue
-		}
-		deleted++
+		eligible = append(eligible, c.ID)
 	}
-	return deleted, deleteErr
+
+	deleted, timedOut, deleteErr := deleteBatchedWithDeadline(store, eligible, opts)
+	remaining := len(eligible) - deleted
+	if remaining < 0 {
+		remaining = 0
+	}
+	return retentionSweepResult{deleted: deleted, remaining: remaining, timedOut: timedOut}, deleteErr
 }
 
 // sweepClosedSessionRetention deletes closed session beads past their TTL.
-// It lists closed beads of type "session", filters by age, and deletes each
-// individually. The limit bounds total delete attempts per call. Sessions that
-// still own children are skipped.
-func sweepClosedSessionRetention(store beads.Store, now time.Time, deleteAfterClose time.Duration, limit int) (int, error) {
-	if store == nil || deleteAfterClose <= 0 || limit <= 0 {
-		return 0, nil
+// It lists closed beads of type "session", filters by age, pre-filters those
+// with children, and deletes the remainder in batches. The opts deadline and
+// budget bound the pass by time and count.
+func sweepClosedSessionRetention(store beads.Store, now time.Time, deleteAfterClose time.Duration, opts retentionSweepOpts) (retentionSweepResult, error) {
+	if store == nil || deleteAfterClose <= 0 || opts.budget <= 0 {
+		return retentionSweepResult{}, nil
 	}
 	cutoff := now.Add(-deleteAfterClose)
 	candidates, err := store.List(beads.ListQuery{
@@ -112,15 +158,12 @@ func sweepClosedSessionRetention(store beads.Store, now time.Time, deleteAfterCl
 		TierMode: beads.TierBoth,
 	})
 	if err != nil {
-		return 0, fmt.Errorf("listing closed session beads for retention: %w", err)
+		return retentionSweepResult{}, fmt.Errorf("listing closed session beads for retention: %w", err)
 	}
 
-	deleted := 0
-	var deleteErr error
+	var eligible []string
+	var filterErr error
 	for _, c := range candidates {
-		if deleted >= limit {
-			break
-		}
 		activity := c.UpdatedAt
 		if activity.IsZero() {
 			activity = c.CreatedAt
@@ -130,22 +173,64 @@ func sweepClosedSessionRetention(store beads.Store, now time.Time, deleteAfterCl
 		}
 		children, childErr := store.Children(c.ID, beads.IncludeClosed, beads.WithBothTiers)
 		if childErr != nil {
-			deleteErr = errors.Join(deleteErr, fmt.Errorf("listing children for session %q: %w", c.ID, childErr))
+			filterErr = errors.Join(filterErr, fmt.Errorf("listing children for session %q: %w", c.ID, childErr))
 			continue
 		}
 		if len(children) > 0 {
 			continue
 		}
-		if err := deleteWorkflowBead(store, c.ID); err != nil {
-			if errors.Is(err, errWorkflowDeleteLiveDescendants) {
+		eligible = append(eligible, c.ID)
+	}
+
+	deleted, timedOut, deleteErr := deleteBatchedWithDeadline(store, eligible, opts)
+	remaining := len(eligible) - deleted
+	if remaining < 0 {
+		remaining = 0
+	}
+	return retentionSweepResult{deleted: deleted, remaining: remaining, timedOut: timedOut}, errors.Join(filterErr, deleteErr)
+}
+
+// deleteBatchedWithDeadline deletes IDs in pages of opts.batchSize, checking
+// the deadline between pages. Each page uses deleteWorkflowBeadsBatch for the
+// collective descendants check and batch delete. Returns the number deleted,
+// whether the deadline stopped the sweep, and any accumulated errors.
+func deleteBatchedWithDeadline(store beads.Store, ids []string, opts retentionSweepOpts) (deleted int, timedOut bool, err error) {
+	bs := opts.effectiveBatchSize()
+	budget := opts.budget
+	var deleteErr error
+	for len(ids) > 0 && deleted < budget {
+		if opts.pastDeadline() {
+			return deleted, true, deleteErr
+		}
+		pageSize := bs
+		if pageSize > len(ids) {
+			pageSize = len(ids)
+		}
+		if pageSize > budget-deleted {
+			pageSize = budget - deleted
+		}
+		page := ids[:pageSize]
+		ids = ids[pageSize:]
+
+		if batchErr := deleteWorkflowBeadsBatch(store, page); batchErr != nil {
+			if errors.Is(batchErr, errWorkflowDeleteLiveDescendants) {
+				for _, id := range page {
+					if err := deleteWorkflowBead(store, id); err != nil {
+						if !errors.Is(err, errWorkflowDeleteLiveDescendants) {
+							deleteErr = errors.Join(deleteErr, err)
+						}
+						continue
+					}
+					deleted++
+				}
 				continue
 			}
-			deleteErr = errors.Join(deleteErr, fmt.Errorf("deleting closed session bead %q: %w", c.ID, err))
+			deleteErr = errors.Join(deleteErr, batchErr)
 			continue
 		}
-		deleted++
+		deleted += pageSize
 	}
-	return deleted, deleteErr
+	return deleted, false, deleteErr
 }
 
 // countClosedWispsPlaneRetentionEligible counts closed nudge and session beads
@@ -195,13 +280,9 @@ func countClosedWispsPlaneRetentionEligible(store beads.Store, now time.Time, po
 }
 
 // runWispsPlaneRetentionWatchdog deletes closed wisps-plane beads (nudge and
-// session) past their configured TTL. Order-tracking beads are handled by
-// runOrderTrackingRetentionWatchdog. This watchdog complements that one by
-// covering the two categories that previously had no retention at all.
-//
-// It runs at most once per wispsPlaneRetentionWatchdogInterval and logs when
-// the eligible backlog exceeds the per-tick budget so an operator can see the
-// city is falling behind.
+// session) past their configured TTL. Each pass is time-bounded: the first
+// pass after startup uses a small budget so order dispatch is never blocked
+// by a bulk delete; subsequent passes use the steady-state budget.
 func (cr *CityRuntime) runWispsPlaneRetentionWatchdog(cfg *config.City, now time.Time) {
 	if !cr.wispsPlaneRetentionWatchdogLast.IsZero() &&
 		now.Sub(cr.wispsPlaneRetentionWatchdogLast) < wispsPlaneRetentionWatchdogInterval {
@@ -223,31 +304,52 @@ func (cr *CityRuntime) runWispsPlaneRetentionWatchdog(cfg *config.City, now time
 		return
 	}
 
+	timeBudget := wispsPlaneRetentionTimeBudget
+	if !cr.wispsPlaneRetentionStartupDone {
+		timeBudget = wispsPlaneRetentionStartupTimeBudget
+		cr.wispsPlaneRetentionStartupDone = true
+	}
+
 	policy := wispsPlaneRetentionPolicyForConfig(cfg)
 	budget := wispsPlaneRetentionDeleteBudget
+	clockFn := cr.wispsPlaneRetentionClockFn
+	deadline := now.Add(timeBudget)
+
+	opts := retentionSweepOpts{
+		deadline:  deadline,
+		budget:    budget,
+		batchSize: wispsPlaneRetentionBatchSize,
+		clockFn:   clockFn,
+	}
 
 	var totalDeleted int
+	var totalRemaining int
+	var anyTimedOut bool
 	var sweepErr error
 
 	if policy.nudgeDeleteAfterClose > 0 {
-		nudgeDeleted, nudgeErr := sweepClosedNudgeRetention(cityStore, now, policy.nudgeDeleteAfterClose, budget)
-		totalDeleted += nudgeDeleted
-		budget -= nudgeDeleted
-		if budget < 0 {
-			budget = 0
+		result, nudgeErr := sweepClosedNudgeRetention(cityStore, now, policy.nudgeDeleteAfterClose, opts)
+		totalDeleted += result.deleted
+		totalRemaining += result.remaining
+		anyTimedOut = anyTimedOut || result.timedOut
+		opts.budget -= result.deleted
+		if opts.budget < 0 {
+			opts.budget = 0
 		}
 		sweepErr = errors.Join(sweepErr, nudgeErr)
-		if nudgeDeleted > 0 && cr.stderr != nil {
-			_, _ = fmt.Fprintf(cr.stderr, "%s: wisps-plane retention watchdog: deleted %d closed nudge bead(s)\n", cr.logPrefix, nudgeDeleted)
+		if result.deleted > 0 && cr.stderr != nil {
+			_, _ = fmt.Fprintf(cr.stderr, "%s: wisps-plane retention watchdog: deleted %d closed nudge bead(s)\n", cr.logPrefix, result.deleted)
 		}
 	}
 
-	if policy.sessionDeleteAfterClose > 0 && budget > 0 {
-		sessionDeleted, sessionErr := sweepClosedSessionRetention(cityStore, now, policy.sessionDeleteAfterClose, budget)
-		totalDeleted += sessionDeleted
+	if policy.sessionDeleteAfterClose > 0 && opts.budget > 0 && !opts.pastDeadline() {
+		result, sessionErr := sweepClosedSessionRetention(cityStore, now, policy.sessionDeleteAfterClose, opts)
+		totalDeleted += result.deleted
+		totalRemaining += result.remaining
+		anyTimedOut = anyTimedOut || result.timedOut
 		sweepErr = errors.Join(sweepErr, sessionErr)
-		if sessionDeleted > 0 && cr.stderr != nil {
-			_, _ = fmt.Fprintf(cr.stderr, "%s: wisps-plane retention watchdog: deleted %d closed session bead(s)\n", cr.logPrefix, sessionDeleted)
+		if result.deleted > 0 && cr.stderr != nil {
+			_, _ = fmt.Fprintf(cr.stderr, "%s: wisps-plane retention watchdog: deleted %d closed session bead(s)\n", cr.logPrefix, result.deleted)
 		}
 	}
 
@@ -255,12 +357,10 @@ func (cr *CityRuntime) runWispsPlaneRetentionWatchdog(cfg *config.City, now time
 		_, _ = fmt.Fprintf(cr.stderr, "%s: wisps-plane retention watchdog: %v\n", cr.logPrefix, sweepErr)
 	}
 
-	if totalDeleted >= wispsPlaneRetentionDeleteBudget {
-		nudgeBacklog, sessionBacklog := countClosedWispsPlaneRetentionEligible(cityStore, now, policy)
-		remaining := nudgeBacklog + sessionBacklog
-		if remaining > 0 && cr.stderr != nil {
-			_, _ = fmt.Fprintf(cr.stderr, "%s: wisps-plane retention watchdog: %d eligible bead(s) remain after budget exhausted (nudge: %d, session: %d) — backlog will drain over subsequent ticks\n",
-				cr.logPrefix, remaining, nudgeBacklog, sessionBacklog)
+	if anyTimedOut || totalRemaining > 0 {
+		if cr.stderr != nil {
+			_, _ = fmt.Fprintf(cr.stderr, "%s: wisps-plane retention watchdog: %d bead(s) deleted, %d remain — backlog will drain over subsequent ticks\n",
+				cr.logPrefix, totalDeleted, totalRemaining)
 		}
 	}
 }
