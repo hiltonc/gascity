@@ -144,9 +144,11 @@ func sweepClosedNudgeRetention(store beads.Store, now time.Time, deleteAfterClos
 }
 
 // sweepClosedSessionRetention deletes closed session beads past their TTL.
-// It lists closed beads of type "session", filters by age, pre-filters those
-// with children, and deletes the remainder in batches. The opts deadline and
-// budget bound the pass by time and count.
+// It lists closed beads of type "session" and filters by age in memory, then
+// checks each aged session for children and deletes the childless ones a page
+// at a time as they are found. The opts deadline is checked before every
+// children lookup and every page, and the lookups stop once the budget is
+// covered, so a large backlog costs at most one pass's worth of round trips.
 func sweepClosedSessionRetention(store beads.Store, now time.Time, deleteAfterClose time.Duration, opts retentionSweepOpts) (retentionSweepResult, error) {
 	if store == nil || deleteAfterClose <= 0 || opts.budget <= 0 {
 		return retentionSweepResult{}, nil
@@ -161,8 +163,7 @@ func sweepClosedSessionRetention(store beads.Store, now time.Time, deleteAfterCl
 		return retentionSweepResult{}, fmt.Errorf("listing closed session beads for retention: %w", err)
 	}
 
-	var eligible []string
-	var filterErr error
+	var aged []string
 	for _, c := range candidates {
 		activity := c.UpdatedAt
 		if activity.IsZero() {
@@ -171,29 +172,58 @@ func sweepClosedSessionRetention(store beads.Store, now time.Time, deleteAfterCl
 		if activity.IsZero() || !activity.Before(cutoff) {
 			continue
 		}
-		children, childErr := store.Children(c.ID, beads.IncludeClosed, beads.WithBothTiers)
+		aged = append(aged, c.ID)
+	}
+
+	var result retentionSweepResult
+	var sweepErr error
+	bs := opts.effectiveBatchSize()
+	page := make([]string, 0, bs)
+	eligible := 0
+	examined := 0
+	flush := func() {
+		pageOpts := opts
+		pageOpts.budget = opts.budget - result.deleted
+		deleted, timedOut, deleteErr := deleteBatchedWithDeadline(store, page, pageOpts)
+		result.deleted += deleted
+		result.timedOut = result.timedOut || timedOut
+		sweepErr = errors.Join(sweepErr, deleteErr)
+		page = page[:0]
+	}
+	for examined < len(aged) && result.deleted+len(page) < opts.budget && !result.timedOut {
+		if opts.pastDeadline() {
+			result.timedOut = true
+			break
+		}
+		id := aged[examined]
+		examined++
+		children, childErr := store.Children(id, beads.IncludeClosed, beads.WithBothTiers)
 		if childErr != nil {
-			filterErr = errors.Join(filterErr, fmt.Errorf("listing children for session %q: %w", c.ID, childErr))
+			sweepErr = errors.Join(sweepErr, fmt.Errorf("listing children for session %q: %w", id, childErr))
 			continue
 		}
 		if len(children) > 0 {
 			continue
 		}
-		eligible = append(eligible, c.ID)
+		page = append(page, id)
+		eligible++
+		if len(page) == bs || result.deleted+len(page) >= opts.budget {
+			flush()
+		}
 	}
-
-	deleted, timedOut, deleteErr := deleteBatchedWithDeadline(store, eligible, opts)
-	remaining := len(eligible) - deleted
-	if remaining < 0 {
-		remaining = 0
+	if len(page) > 0 && !result.timedOut {
+		flush()
 	}
-	return retentionSweepResult{deleted: deleted, remaining: remaining, timedOut: timedOut}, errors.Join(filterErr, deleteErr)
+	result.remaining = len(aged) - examined + eligible - result.deleted
+	return result, sweepErr
 }
 
 // deleteBatchedWithDeadline deletes IDs in pages of opts.batchSize, checking
 // the deadline between pages. Each page uses deleteWorkflowBeadsBatch for the
-// collective descendants check and batch delete. Returns the number deleted,
-// whether the deadline stopped the sweep, and any accumulated errors.
+// collective descendants check and batch delete; a page refused for live
+// descendants falls back to per-bead deletes, checking the deadline before
+// each. Returns the number deleted, whether the deadline stopped the sweep,
+// and any accumulated errors.
 func deleteBatchedWithDeadline(store beads.Store, ids []string, opts retentionSweepOpts) (deleted int, timedOut bool, err error) {
 	bs := opts.effectiveBatchSize()
 	budget := opts.budget
@@ -215,6 +245,9 @@ func deleteBatchedWithDeadline(store beads.Store, ids []string, opts retentionSw
 		if batchErr := deleteWorkflowBeadsBatch(store, page); batchErr != nil {
 			if errors.Is(batchErr, errWorkflowDeleteLiveDescendants) {
 				for _, id := range page {
+					if opts.pastDeadline() {
+						return deleted, true, deleteErr
+					}
 					if err := deleteWorkflowBead(store, id); err != nil {
 						if !errors.Is(err, errWorkflowDeleteLiveDescendants) {
 							deleteErr = errors.Join(deleteErr, err)

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
 )
@@ -604,4 +605,244 @@ func TestRetentionSweepOpts_PastDeadline(t *testing.T) {
 			t.Fatal("should be past deadline")
 		}
 	})
+}
+
+// slowRetentionStore simulates a store whose round trips cost wall-clock time:
+// each Children or Delete call advances a shared fake clock. It hides any
+// BatchDeleter on the backing store, so deletes take the per-bead path.
+type slowRetentionStore struct {
+	beads.Store
+	clock         *fakeRetentionClock
+	childrenCost  time.Duration
+	deleteCost    time.Duration
+	childrenCalls atomic.Int64
+	deleteCalls   atomic.Int64
+}
+
+func (s *slowRetentionStore) Children(parentID string, opts ...beads.QueryOpt) ([]beads.Bead, error) {
+	s.childrenCalls.Add(1)
+	s.clock.advance(s.childrenCost)
+	return s.Store.Children(parentID, opts...)
+}
+
+func (s *slowRetentionStore) Delete(id string) error {
+	s.deleteCalls.Add(1)
+	s.clock.advance(s.deleteCost)
+	return s.Store.Delete(id)
+}
+
+type fakeRetentionClock struct {
+	start   time.Time
+	elapsed atomic.Int64
+}
+
+func (c *fakeRetentionClock) now() time.Time {
+	return c.start.Add(time.Duration(c.elapsed.Load()))
+}
+
+func (c *fakeRetentionClock) advance(d time.Duration) {
+	c.elapsed.Add(int64(d))
+}
+
+func agedClosedSessions(now time.Time, n int) []beads.Bead {
+	seed := make([]beads.Bead, 0, n)
+	for i := 0; i < n; i++ {
+		seed = append(seed, beads.Bead{
+			ID:        fmt.Sprintf("session-%04d", i),
+			Status:    "closed",
+			Type:      "session",
+			CreatedAt: now.Add(-48 * time.Hour),
+			UpdatedAt: now.Add(-48 * time.Hour),
+			Labels:    []string{"gc:session"},
+			NoHistory: true,
+		})
+	}
+	return seed
+}
+
+// TestSweepClosedSessionRetention_ChildrenLookupsStopAtDeadline pins that the
+// per-session children check is bounded by the pass deadline: a backlog of
+// closed sessions that all own children (so none is ever eligible) must not
+// cost one Children round trip per session before the deadline is consulted.
+func TestSweepClosedSessionRetention_ChildrenLookupsStopAtDeadline(t *testing.T) {
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	const sessions = 500
+
+	seed := agedClosedSessions(now, sessions)
+	for i := 0; i < sessions; i++ {
+		seed = append(seed, beads.Bead{
+			ID:        fmt.Sprintf("child-%04d", i),
+			Status:    "closed",
+			Type:      "task",
+			CreatedAt: now.Add(-48 * time.Hour),
+			ParentID:  fmt.Sprintf("session-%04d", i),
+		})
+	}
+	clock := &fakeRetentionClock{start: now}
+	store := &slowRetentionStore{
+		Store:        beads.NewMemStoreFrom(2000, seed, nil),
+		clock:        clock,
+		childrenCost: 100 * time.Millisecond,
+	}
+
+	opts := retentionSweepOpts{
+		deadline:  now.Add(time.Second),
+		budget:    1000,
+		batchSize: wispsPlaneRetentionBatchSize,
+		clockFn:   clock.now,
+	}
+	result, err := sweepClosedSessionRetention(store, now, 24*time.Hour, opts)
+	if err != nil {
+		t.Fatalf("sweepClosedSessionRetention: %v", err)
+	}
+	if got := store.childrenCalls.Load(); got != 10 {
+		t.Fatalf("Children calls = %d, want 10 (1s deadline / 100ms per lookup)", got)
+	}
+	if !result.timedOut {
+		t.Fatal("timedOut = false, want true")
+	}
+	if result.deleted != 0 {
+		t.Fatalf("deleted = %d, want 0 (every session owns a child)", result.deleted)
+	}
+	if result.remaining != sessions-10 {
+		t.Fatalf("remaining = %d, want %d (the sessions never examined)", result.remaining, sessions-10)
+	}
+}
+
+// TestSweepClosedSessionRetention_ChildrenLookupsStopAtBudget pins that the
+// children check stops once the pass has found budget-many eligible sessions.
+func TestSweepClosedSessionRetention_ChildrenLookupsStopAtBudget(t *testing.T) {
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	const sessions = 500
+
+	clock := &fakeRetentionClock{start: now}
+	store := &slowRetentionStore{
+		Store: beads.NewMemStoreFrom(1000, agedClosedSessions(now, sessions), nil),
+		clock: clock,
+	}
+
+	opts := retentionSweepOpts{
+		deadline:  now.Add(time.Second),
+		budget:    7,
+		batchSize: wispsPlaneRetentionBatchSize,
+		clockFn:   clock.now,
+	}
+	result, err := sweepClosedSessionRetention(store, now, 24*time.Hour, opts)
+	if err != nil {
+		t.Fatalf("sweepClosedSessionRetention: %v", err)
+	}
+	if got := store.childrenCalls.Load(); got != 7 {
+		t.Fatalf("Children calls = %d, want 7 (the delete budget)", got)
+	}
+	if result.deleted != 7 {
+		t.Fatalf("deleted = %d, want 7", result.deleted)
+	}
+	if result.timedOut {
+		t.Fatal("timedOut = true, want false (budget, not deadline, stopped the pass)")
+	}
+	if result.remaining != sessions-7 {
+		t.Fatalf("remaining = %d, want %d", result.remaining, sessions-7)
+	}
+}
+
+// TestSweepClosedSessionRetention_DeletesAcrossPagesWithinDeadline pins that
+// eligible sessions are deleted page by page as they are found, so a pass
+// whose deadline cuts the children check short still deletes the full pages
+// it already collected.
+func TestSweepClosedSessionRetention_DeletesAcrossPagesWithinDeadline(t *testing.T) {
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	const sessions = 100
+
+	clock := &fakeRetentionClock{start: now}
+	store := &slowRetentionStore{
+		Store:        beads.NewMemStoreFrom(1000, agedClosedSessions(now, sessions), nil),
+		clock:        clock,
+		childrenCost: 100 * time.Millisecond,
+	}
+
+	opts := retentionSweepOpts{
+		deadline:  now.Add(time.Second),
+		budget:    1000,
+		batchSize: 4,
+		clockFn:   clock.now,
+	}
+	result, err := sweepClosedSessionRetention(store, now, 24*time.Hour, opts)
+	if err != nil {
+		t.Fatalf("sweepClosedSessionRetention: %v", err)
+	}
+	if got := store.childrenCalls.Load(); got != 10 {
+		t.Fatalf("Children calls = %d, want 10", got)
+	}
+	if result.deleted != 8 {
+		t.Fatalf("deleted = %d, want 8 (two full pages of 4 before the deadline)", result.deleted)
+	}
+	if !result.timedOut {
+		t.Fatal("timedOut = false, want true")
+	}
+	if result.remaining != sessions-8 {
+		t.Fatalf("remaining = %d, want %d", result.remaining, sessions-8)
+	}
+}
+
+// TestDeleteBatchedWithDeadline_LiveDescendantsFallbackStopsAtDeadline pins
+// that the per-bead fallback taken when a page's batch delete is refused for
+// live descendants honors the pass deadline instead of retrying the whole page.
+func TestDeleteBatchedWithDeadline_LiveDescendantsFallbackStopsAtDeadline(t *testing.T) {
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	const page = 50
+
+	seed := make([]beads.Bead, 0, page+1)
+	ids := make([]string, 0, page)
+	for i := 0; i < page; i++ {
+		id := fmt.Sprintf("nudge-%02d", i)
+		ids = append(ids, id)
+		seed = append(seed, beads.Bead{
+			ID:        id,
+			Status:    "closed",
+			Type:      "chore",
+			CreatedAt: now.Add(-48 * time.Hour),
+			Labels:    []string{nudgeBeadLabel},
+			NoHistory: true,
+		})
+	}
+	// An open descendant of the last bead makes the set-level guard refuse the
+	// whole page, forcing the per-bead fallback.
+	seed = append(seed, beads.Bead{
+		ID:        "live-descendant",
+		Status:    "open",
+		Type:      "task",
+		CreatedAt: now.Add(-time.Hour),
+		Metadata:  map[string]string{beadmeta.RootBeadIDMetadataKey: ids[page-1]},
+	})
+	clock := &fakeRetentionClock{start: now}
+	store := &slowRetentionStore{
+		Store:      beads.NewMemStoreFrom(1000, seed, nil),
+		clock:      clock,
+		deleteCost: 2500 * time.Millisecond,
+	}
+
+	opts := retentionSweepOpts{
+		deadline:  now.Add(time.Second),
+		budget:    1000,
+		batchSize: page,
+		clockFn:   clock.now,
+	}
+	deleted, timedOut, err := deleteBatchedWithDeadline(store, ids, opts)
+	if err != nil {
+		t.Fatalf("deleteBatchedWithDeadline: %v", err)
+	}
+	if !timedOut {
+		t.Fatal("timedOut = false, want true")
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1 (one 2.5s delete exhausts the 1s deadline)", deleted)
+	}
+	if got := store.deleteCalls.Load(); got != 1 {
+		t.Fatalf("Delete calls = %d, want 1", got)
+	}
+	for _, id := range ids[1:] {
+		if _, err := store.Get(id); err != nil {
+			t.Fatalf("Get(%s) = %v, want the bead left for a later pass", id, err)
+		}
+	}
 }
