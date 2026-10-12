@@ -92,12 +92,13 @@ const (
 	orderTrackingSweepCloseBudget    = 4
 
 	// orderTrackingRetentionWatchdogInterval is the minimum time between
-	// controller-driven closed-bead retention sweeps. 15 minutes balances
-	// effective cleanup against per-tick overhead.
-	orderTrackingRetentionWatchdogInterval = 15 * time.Minute
+	// controller-driven closed-bead retention sweeps.
+	orderTrackingRetentionWatchdogInterval = 5 * time.Minute
 	// orderTrackingRetentionWatchdogDeleteBudget bounds the number of
-	// closed order-tracking beads deleted per watchdog invocation.
-	orderTrackingRetentionWatchdogDeleteBudget = 100
+	// closed order-tracking beads deleted per watchdog invocation. At ~8.7k
+	// tracking wisps/day, 1000 per 5min (288k/day capacity) clears any
+	// observed burst rate and drains accumulated backlogs.
+	orderTrackingRetentionWatchdogDeleteBudget = 1000
 )
 
 // defaultOrderTrackingDeleteAfterClose is derived from the canonical config

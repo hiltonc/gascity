@@ -3130,7 +3130,7 @@ Close stale open order-tracking beads and prune expired closed history.
 This is intended for maintenance exec orders. It only closes tracking beads
 older than --stale-after so a fresh in-flight order is not interrupted.
 Closed order-tracking history is deleted after
-[beads.policies.order_tracking].delete_after_close, defaulting to 7d, while
+[beads.policies.order_tracking].delete_after_close, defaulting to 24h, while
 always retaining at least the latest 10 closed tracking beads per order.
 The manual command runs to completion; controller startup and watchdog sweeps
 use bounded cleanup to avoid spending an unbounded tick on stale work.
