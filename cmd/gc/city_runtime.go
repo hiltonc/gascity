@@ -202,6 +202,8 @@ type CityRuntime struct {
 	orderTrackingRetentionWatchdogLast time.Time
 	nudgeMailSweepWatchdogLast         time.Time
 	wispsPlaneRetentionWatchdogLast    time.Time
+	wispsPlaneRetentionStartupDone     bool
+	wispsPlaneRetentionClockFn         func() time.Time // nil → time.Now; tests inject a fake clock
 	wispIndexMigrationApplied          bool
 
 	rec events.Recorder
