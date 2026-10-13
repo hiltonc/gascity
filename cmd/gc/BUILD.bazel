@@ -1612,6 +1612,7 @@ go_test(
         "live_pool_sessions_test.go",
         "load_city_config_snapshot_test.go",
         "mail_inject_newest_window_test.go",
+        "mail_retention_policy_test.go",
         "mail_session_inbox_test.go",
         "main_scope_symlink_test.go",
         "main_test.go",
