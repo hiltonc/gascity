@@ -651,16 +651,48 @@ func ReadFilteredTail(path string, filter Filter, limit int) ([]Event, error) {
 	if err != nil {
 		return nil, fmt.Errorf("stat events tail: %w", err)
 	}
-	return readFilteredTailFromFile(f, info.Size(), filter, limit)
+	return readFilteredTailFrom(f, info.Size(), filter, limit)
 }
 
-func readFilteredTailFromFile(f *os.File, size int64, filter Filter, limit int) ([]Event, error) {
+// belowFilterFloor reports whether e sits at or below the filter's own lower
+// bound, so no event beneath it can match either.
+//
+// Only AfterSeq qualifies. FileRecorder assigns e.Seq = r.seq++ inside one
+// mutex-and-flock critical section, so the active log is append-only and
+// strictly increasing in seq; activeScanStart already skips the log's head on
+// exactly that basis. A line carrying no seq unmarshals as zero and says
+// nothing about its neighbors, so it is left to matchesFilter. Filter.Since
+// has its own horizon (sinceWindow).
+func belowFilterFloor(e Event, f Filter) bool {
+	return f.AfterSeq > 0 && e.Seq > 0 && e.Seq <= f.AfterSeq
+}
+
+// readFilteredTailFrom takes an io.ReaderAt so a test can count the bytes the
+// walk reads, which is what tells an early stop from a full traversal.
+func readFilteredTailFrom(r io.ReaderAt, size int64, filter Filter, limit int) ([]Event, error) {
 	// A Since filter is a horizon as well as a predicate: once the window
 	// closes, nothing earlier can match, and a walk that kept going for a
 	// limit it can no longer reach would parse the rest of the file.
 	window := newSinceWindow(filter.Since)
+	// The floor ends the walk only once two lines in a row sit at or below it.
+	// A log that contradicts its seq ordering (a stale post-rotation writer
+	// appending below the file's head) puts a matchable line underneath a
+	// below-floor one, and honoring the floor there would drop events
+	// ReadFiltered returns; abandoning it costs the walk its early stop
+	// instead. Like activeScanStart's head-and-tail check this is partial by
+	// construction: it cannot see a disordered run that ends above the cursor.
+	floorSeen, floorVoid := false, false
 	var reversed []Event
-	_, err := walkBackward(context.Background(), f, size, filter.MaxScanBytes, func(e Event) bool {
+	_, err := walkBackward(context.Background(), r, size, filter.MaxScanBytes, func(e Event) bool {
+		if !floorVoid && belowFilterFloor(e, filter) {
+			if floorSeen {
+				return true
+			}
+			floorSeen = true
+		} else if floorSeen {
+			floorVoid = true
+			floorSeen = false
+		}
 		if matchesFilter(e, filter) {
 			reversed = append(reversed, e)
 		}
