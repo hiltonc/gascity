@@ -7029,6 +7029,57 @@ func TestDoctorBackupOwnershipUnknownWhenARigHasNoMetadata(t *testing.T) {
 	}
 }
 
+// TestDoctorBackupOwnershipReadsBdBackupRegistration asserts a scope with no
+// metadata.json (beast-gas-city's layout) is still owned through the backup
+// destination `bd backup init` registered in .beads/dolt-backup.json, whose URL
+// ends in the database name, so an unowned database on such a city is named.
+func TestDoctorBackupOwnershipReadsBdBackupRegistration(t *testing.T) {
+	cityPath := t.TempDir()
+	dataDir := filepath.Join(cityPath, "dolt-data")
+	artifactDir := filepath.Join(cityPath, ".dolt-backup")
+	now := time.Now()
+	for _, db := range []string{"hq", "gcd", "jrl"} {
+		if err := os.MkdirAll(filepath.Join(dataDir, db, ".dolt"), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", db, err)
+		}
+		if db == "jrl" {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Join(artifactDir, db), 0o755); err != nil {
+			t.Fatalf("mkdir backup remote %s: %v", db, err)
+		}
+		writeBackupRemoteFile(t, filepath.Join(artifactDir, db, "manifest"), now)
+	}
+	rigDir := filepath.Join(t.TempDir(), "GasCityDispatch")
+	writeScopeBackupRegistration(t, cityPath, artifactDir, "hq")
+	writeScopeBackupRegistration(t, rigDir, artifactDir, "gcd")
+	binDir := t.TempDir()
+	gcLogPath := writeDoctorFakeGCWithRigs(t, binDir, []fakeRig{
+		{Name: "city", Path: cityPath, HQ: true},
+		{Name: "GasCityDispatch", Path: rigDir},
+	})
+	writeDoctorFakeDoltWithLiveLog(t, binDir, []string{"hq", "gcd", "jrl"}, nil)
+
+	out := runDogScript(t, "mol-dog-doctor.sh", binDir, cityPath, dataDir, doctorBackupStaleEnv)
+	if !strings.Contains(out, "backups current: 2/2") {
+		t.Fatalf("hq and gcd should be owned through dolt-backup.json and current:\n%s", out)
+	}
+	if gcLog := readDogGCLog(t, gcLogPath); !strings.Contains(gcLog, "jrl: no rig; left out of backups") {
+		t.Fatalf("unowned database should be named when ownership comes from dolt-backup.json, log:\n%s", gcLog)
+	}
+}
+
+// writeScopeBackupRegistration writes the .beads/dolt-backup.json `bd backup init`
+// keeps at a scope root, whose backup_url ends in the database name.
+func writeScopeBackupRegistration(t *testing.T, scopeDir, artifactDir, db string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(scopeDir, ".beads"), 0o755); err != nil {
+		t.Fatalf("mkdir %s/.beads: %v", scopeDir, err)
+	}
+	writeTestFile(t, filepath.Join(scopeDir, ".beads", "dolt-backup.json"),
+		fmt.Sprintf(`{"backup_url":"file://%s/%s","backup_name":"default"}`, artifactDir, db))
+}
+
 // fakeRig is one entry of the `gc rig list --json` fixture.
 type fakeRig struct {
 	Name      string `json:"name"`
