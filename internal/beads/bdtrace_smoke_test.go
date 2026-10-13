@@ -84,3 +84,45 @@ func TestTraceBDCall_WritesJSONL(t *testing.T) {
 		t.Errorf("expected no file when GC_BD_TRACE_JSON unset, got: %v", err)
 	}
 }
+
+// TestTraceBDPassthrough_WritesTheLineTrace pins that a bd call made outside the
+// store's runner (gc bd's passthrough) lands in the GC_BD_TRACE line log like
+// every other bd call, and in the JSONL trace when that is the one enabled.
+func TestTraceBDPassthrough_WritesTheLineTrace(t *testing.T) {
+	tmp := t.TempDir()
+	linePath := tmp + "/trace.log"
+	t.Setenv("GC_BD_TRACE", linePath)
+	t.Setenv("GC_BD_TRACE_JSON", "")
+
+	start := time.Now().Add(-5 * time.Millisecond)
+	TraceBDPassthrough("go:test.passthrough", "/work", "/opt/bd", []string{"show", "sc-xyz", "--json"}, start, 0, nil)
+
+	data, err := os.ReadFile(linePath)
+	if err != nil {
+		t.Fatalf("read line trace: %v", err)
+	}
+	line := strings.TrimSpace(string(data))
+	for _, want := range []string{"status=done", "dir=/work", "cmd=/opt/bd", `args=["show" "sc-xyz" "--json"]`} {
+		if !strings.Contains(line, want) {
+			t.Errorf("line trace %q does not contain %q", line, want)
+		}
+	}
+
+	jsonPath := tmp + "/trace.jsonl"
+	t.Setenv("GC_BD_TRACE_JSON", jsonPath)
+	TraceBDPassthrough("go:test.passthrough", "/work", "/opt/bd", []string{"list"}, start, 1, errors.New("boom"))
+	var rec map[string]any
+	jsonData, err := os.ReadFile(jsonPath)
+	if err != nil {
+		t.Fatalf("read JSONL trace: %v", err)
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(jsonData))), &rec); err != nil {
+		t.Fatalf("JSONL trace parse: %v", err)
+	}
+	if rec["source"] != "go:test.passthrough" {
+		t.Errorf("source = %v, want go:test.passthrough", rec["source"])
+	}
+	if after, _ := os.ReadFile(linePath); string(after) != string(data) {
+		t.Errorf("line trace written while GC_BD_TRACE_JSON claims tracing:\n%s", after)
+	}
+}

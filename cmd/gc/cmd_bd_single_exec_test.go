@@ -189,13 +189,20 @@ func TestResolveBdScopeTargetSkipsProbesThatCannotChangeTheAnswer(t *testing.T) 
 		{"city id from city cwd", cityDir, "", []string{"show", "demo-abc"}, false, 0, "city"},
 		{"rig id from rig cwd", rigDir, "", []string{"show", "fe-abc"}, false, 0, "rig"},
 		// The b53658f shape: a city source bead read from a rig cwd still
-		// probes, because the answer decides between the two stores.
-		{"city id from rig cwd, present", rigDir, "", []string{"show", "demo-abc"}, true, 1, "city"},
-		{"city id from rig cwd, absent", rigDir, "", []string{"show", "demo-abc"}, false, 1, "rig"},
-		{"rig id from city cwd, present", cityDir, "", []string{"show", "fe-abc"}, true, 1, "rig"},
-		{"rig id from city cwd, absent", cityDir, "", []string{"show", "fe-abc"}, false, 1, "city"},
-		{"GC_RIG selects rig, city id", cityDir, "frontend", []string{"show", "demo-abc"}, true, 1, "city"},
-		{"discarded GC_RIG keeps probing", cityDir, "nope", []string{"show", "demo-abc"}, true, 1, "city"},
+		// probes, because the answer decides between the two stores. A
+		// by-ID verb's subject skips the probe instead (below), so these
+		// cases address the id through a verb outside bdSubjectIDVerbs.
+		{"city id from rig cwd, present", rigDir, "", []string{"comments", "demo-abc"}, true, 1, "city"},
+		{"city id from rig cwd, absent", rigDir, "", []string{"comments", "demo-abc"}, false, 1, "rig"},
+		{"rig id from city cwd, present", cityDir, "", []string{"comments", "fe-abc"}, true, 1, "rig"},
+		{"rig id from city cwd, absent", cityDir, "", []string{"comments", "fe-abc"}, false, 1, "city"},
+		{"GC_RIG selects rig, city id", cityDir, "frontend", []string{"comments", "demo-abc"}, true, 1, "city"},
+		{"discarded GC_RIG keeps probing", cityDir, "nope", []string{"comments", "demo-abc"}, true, 1, "city"},
+		// A by-ID verb's subject whose prefix only one scope carries routes to
+		// that scope without a probe, whatever the cwd (bgc-vpn7).
+		{"by-ID subject, city prefix, rig cwd", rigDir, "", []string{"show", "demo-abc"}, false, 0, "city"},
+		{"by-ID subject, rig prefix, city cwd", cityDir, "", []string{"close", "fe-abc"}, false, 0, "rig"},
+		{"by-ID subject, GC_RIG selects rig, city id", cityDir, "frontend", []string{"update", "demo-abc", "--status", "open"}, false, 0, "city"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -161,9 +161,9 @@ func bdCommandEnv(cityPath string, cfg *config.City, target execStoreTarget) ([]
 	var overrides map[string]string
 	var err error
 	if target.ScopeKind == "rig" {
-		overrides, err = bdRuntimeEnvForRigWithError(cityPath, cfg, target.ScopeRoot)
+		overrides, err = bdOneShotRuntimeEnvForRig(cityPath, cfg, target.ScopeRoot)
 	} else {
-		overrides, err = bdRuntimeEnvWithError(cityPath)
+		overrides, err = bdOneShotRuntimeEnv(cityPath, cfg)
 	}
 	if err != nil {
 		return nil, err
@@ -455,16 +455,27 @@ func doBd(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	// Use the full config load path (includes pack expansion + site
-	// binding overlay) so migrated rigs (path only in .gc/site.toml)
-	// resolve to their bound path. A raw config.Load here would make
-	// every already-migrated rig look unbound and fail the new guard
-	// in resolveBdScopeTarget / bdRigScopeTarget.
-	cfg, err := loadCityConfig(cityPath, stderr)
+	// Use the composed config load (pack expansion + site binding overlay)
+	// so migrated rigs (path only in .gc/site.toml) resolve to their bound
+	// path. A raw config.Load here would make every already-migrated rig
+	// look unbound and fail the new guard in resolveBdScopeTarget /
+	// bdRigScopeTarget.
+	//
+	// This is the passthrough's only load of city.toml: the bd binary pin,
+	// the bd env, the hosted-binding check and the class routing below all
+	// read this cfg. It takes builtin packs as they are on disk, as the bd
+	// env's own pin lookup always has; a refresh is a side effect no bd
+	// command needs. The full loader is the fallback for a city whose packs
+	// were never materialized.
+	cfg, err := loadCityConfigWithoutBuiltinPackRefresh(cityPath, stderr)
+	if err != nil {
+		cfg, err = loadCityConfig(cityPath, stderr)
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "gc bd: loading config: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
 	}
+	offerCLIStorageRoutesConfig(cityPath, cfg)
 	if msg, refused := bdRigQualifiedMetadataRefusal(cfg, bdArgs); refused {
 		fmt.Fprint(stderr, msg) //nolint:errcheck // best-effort stderr
 		return 1
@@ -662,7 +673,7 @@ func doBd(args []string, stdout, stderr io.Writer) int {
 	// the target scope rather than the city keeps a rig that overrides the
 	// city backend, and owns no binding of its own, on the ambient bd its
 	// runtime env already implies.
-	bdPath, err := resolveBdBinaryForScope(cityPath, target.ScopeRoot)
+	bdPath, err := resolveBdBinaryForScopeWithConfig(cityPath, cfg, target.ScopeRoot)
 	if err != nil {
 		fmt.Fprintf(stderr, "gc bd: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
@@ -713,7 +724,7 @@ func doBd(args []string, stdout, stderr io.Writer) int {
 			traceExit = -1
 		}
 	}
-	beads.TraceBDCall("go:gc-bd-passthrough", target.ScopeRoot, bdArgs, traceStart, traceExit, runErr)
+	beads.TraceBDPassthrough("go:gc-bd-passthrough", target.ScopeRoot, bdPath, bdArgs, traceStart, traceExit, runErr)
 
 	if runErr != nil {
 		if traceExit > 0 {
@@ -929,7 +940,11 @@ func resolveBdCity(cityName string) (string, error) {
 	if strings.TrimSpace(cityName) != "" {
 		return validateCityPath(cityName)
 	}
-	return resolveCity()
+	ctx, err := resolveContextMode(cityPathResolution)
+	if err != nil {
+		return "", err
+	}
+	return ctx.CityPath, nil
 }
 
 // extractBdScopeFlags extracts gc-owned --city/--rig flags from the raw
@@ -1031,7 +1046,7 @@ func resolveBdScopeTarget(cfg *config.City, cityPath, rigName string, args []str
 		return fallback, nil
 	}
 	for _, c := range candidates {
-		if bdBeadExists(cityPath, cfg, c.target, c.id) {
+		if c.owned || bdBeadExists(cityPath, cfg, c.target, c.id) {
 			return c.target, nil
 		}
 	}
@@ -1045,10 +1060,13 @@ func resolveBdScopeTarget(cfg *config.City, cityPath, rigName string, args []str
 }
 
 // bdScopeProbe is one bead-ID auto-detect candidate: the store id would route
-// to if it exists there.
+// to if it exists there. owned marks a subject of a by-ID verb whose prefix
+// only that store carries (bdPrefixRoutedSubjects, bdPrefixHasOneOwner): it
+// routes there without opening the store.
 type bdScopeProbe struct {
 	id     string
 	target execStoreTarget
+	owned  bool
 }
 
 // bdScopeProbeCandidates lists, in probe order, the stores bead-ID auto-detect
@@ -1060,12 +1078,13 @@ type bdScopeProbe struct {
 // Unbound rigs are skipped so they are not aliased to the city store.
 func bdScopeProbeCandidates(cfg *config.City, cityTarget execStoreTarget, cityPath string, args []string) []bdScopeProbe {
 	var candidates []bdScopeProbe
+	subjects := bdPrefixRoutedSubjects(args)
 	if cityPrefix := config.EffectiveHQPrefix(cfg); cityPrefix != "" {
 		for _, arg := range args {
 			if strings.HasPrefix(arg, "-") || beadPrefix(cfg, arg) != cityPrefix {
 				continue
 			}
-			candidates = append(candidates, bdScopeProbe{id: arg, target: cityTarget})
+			candidates = append(candidates, bdScopeProbe{id: arg, target: cityTarget, owned: subjects[arg] && bdPrefixHasOneOwner(cfg, cityPrefix)})
 		}
 	}
 	for _, arg := range args {
@@ -1076,7 +1095,7 @@ func bdScopeProbeCandidates(cfg *config.City, cityTarget execStoreTarget, cityPa
 			if strings.TrimSpace(rig.Path) == "" {
 				continue
 			}
-			candidates = append(candidates, bdScopeProbe{id: arg, target: bdRigScopeTarget(cityPath, rig)})
+			candidates = append(candidates, bdScopeProbe{id: arg, target: bdRigScopeTarget(cityPath, rig), owned: subjects[arg] && bdPrefixHasOneOwner(cfg, rig.EffectivePrefix())})
 		}
 	}
 	return candidates
@@ -1164,6 +1183,60 @@ func scopeLabel(t execStoreTarget) string {
 		return fmt.Sprintf("rig %q", t.RigName)
 	}
 	return t.ScopeKind
+}
+
+// bdSubjectIDVerbs are the bd verbs whose every positional argument is a bead
+// ID.
+var bdSubjectIDVerbs = map[string]bool{
+	"show":      true,
+	"update":    true,
+	"close":     true,
+	"reopen":    true,
+	"delete":    true,
+	"heartbeat": true,
+}
+
+// bdPrefixRoutedSubjects returns the bead IDs that args names as the subjects
+// of a bdSubjectIDVerbs verb. resolveBdScopeTarget routes such a subject by its
+// prefix alone when one scope owns the prefix, which saves opening that store:
+// a dolt connection and a read of the bead bd is about to read again.
+//
+// Only subjects qualify. A flag's value (`list --label repo-open`) or another
+// verb's positional (a create title) can look like a bead ID without being
+// one, so those still have to be found in the store before they retarget the
+// command. nil means the argv cannot be read exactly: a different verb, or a
+// flag the pinned bd flag table does not know, which might take the next token
+// as its value.
+func bdPrefixRoutedSubjects(args []string) map[string]bool {
+	if len(args) == 0 || !bdSubjectIDVerbs[args[0]] {
+		return nil
+	}
+	ids, ambiguous := bdScanPositionalIDs(args[1:], bdSubcmdValueFlags(args[0]), bdSubcmdBoolFlags(args[0]), nil)
+	if ambiguous || len(ids) == 0 {
+		return nil
+	}
+	subjects := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		subjects[id] = true
+	}
+	return subjects
+}
+
+// bdPrefixHasOneOwner reports whether exactly one scope, the city or a rig,
+// carries prefix. When two do (a rig whose derived prefix matches the city's,
+// say), a subject's prefix does not say which store holds it, and the caller
+// probes instead.
+func bdPrefixHasOneOwner(cfg *config.City, prefix string) bool {
+	owners := 0
+	if strings.EqualFold(config.EffectiveHQPrefix(cfg), prefix) {
+		owners++
+	}
+	for _, rig := range cfg.Rigs {
+		if strings.EqualFold(rig.EffectivePrefix(), prefix) {
+			owners++
+		}
+	}
+	return owners == 1
 }
 
 func bdRigForArg(cfg *config.City, arg string) (config.Rig, bool) {

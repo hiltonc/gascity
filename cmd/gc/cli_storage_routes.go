@@ -70,6 +70,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
@@ -92,6 +93,9 @@ var cliStorageStderr io.Writer = os.Stderr
 type cliStorageRoutesEntry struct {
 	once   sync.Once
 	routes *storageRoutes
+	// unsplit is a config with no [storage] section that the command loaded
+	// from city.toml for this invocation; see offerCLIStorageRoutesConfig.
+	unsplit atomic.Pointer[config.City]
 }
 
 var (
@@ -114,8 +118,23 @@ func cliStorageRoutes(cityPath string) *storageRoutes {
 		return nil
 	}
 	entry := cliStorageRoutesEntryFor(filepath.Clean(cityPath))
-	entry.once.Do(func() { entry.routes = resolveCLIStorageRoutes(cityPath) })
+	entry.once.Do(func() { entry.routes = resolveCLIStorageRoutesWithConfig(cityPath, entry.unsplit.Load()) })
 	return entry.routes
+}
+
+// offerCLIStorageRoutesConfig hands the routing read a config the command has
+// just loaded from city.toml, so the first resolution does not load the file
+// again. Only a config with no [storage] section is taken. For that city the
+// gate reads nothing from the config except that the section is absent (the
+// bypass in storageBootGate), so which load answered cannot change the verdict.
+// A city that relocates classes still resolves from its own load, for the
+// reason "It resolves the config itself" gives above. An offer made after the
+// first resolution changes nothing.
+func offerCLIStorageRoutesConfig(cityPath string, cfg *config.City) {
+	if cityPath == "" || cfg == nil || cfg.Storage != nil {
+		return
+	}
+	cliStorageRoutesEntryFor(filepath.Clean(cityPath)).unsplit.CompareAndSwap(nil, cfg)
 }
 
 // cliStorageRoutesLoad declines the load-time revision snapshot. This is a
@@ -153,9 +172,20 @@ var cliStorageRoutesLoad = config.LoadOptions{SkipRevisionSnapshot: true}
 // scope of its own. Reading where the classes live must not be able to change
 // what the command does.
 func resolveCLIStorageRoutes(cityPath string) *storageRoutes {
-	cfg, _, err := config.LoadWithIncludesOptions(fsys.OSFS{}, filepath.Join(cityPath, "city.toml"), cliStorageRoutesLoad)
-	if err != nil {
-		return nil
+	return resolveCLIStorageRoutesWithConfig(cityPath, nil)
+}
+
+// resolveCLIStorageRoutesWithConfig is resolveCLIStorageRoutes answering from
+// an offered unsplit config instead of loading city.toml. A nil offer loads.
+func resolveCLIStorageRoutesWithConfig(cityPath string, unsplit *config.City) *storageRoutes {
+	cfg := unsplit
+	if cfg == nil {
+		cityConfigLoads.Add(1)
+		loaded, _, err := config.LoadWithIncludesOptions(fsys.OSFS{}, filepath.Join(cityPath, "city.toml"), cliStorageRoutesLoad)
+		if err != nil {
+			return nil
+		}
+		cfg = loaded
 	}
 	routes, err := storageBootGate(cityPath, cfg, cliStorageLogPrefix, nil, cliStorageStderr)
 	if err == nil {
