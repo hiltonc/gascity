@@ -736,16 +736,292 @@ exit %d
 	return logPath
 }
 
+// writeRecordingTimeout installs a timeout double under both names
+// run_bounded looks for (gtimeout first, then timeout), so the order's bounds
+// are observable on a host with coreutils installed too. It logs every call and
+// runs the command unbounded, except that a command whose arguments contain
+// FAKE_TIMEOUT_EXPIRE_ON exits 124 at once, as coreutils timeout does when
+// the bound kills the command.
 func writeRecordingTimeout(t *testing.T, binDir string) string {
 	t.Helper()
 	logPath := filepath.Join(binDir, "timeout.log")
-	writeExecutable(t, filepath.Join(binDir, "timeout"), fmt.Sprintf(`#!/bin/sh
+	for _, name := range []string{"timeout", "gtimeout"} {
+		writeExecutable(t, filepath.Join(binDir, name), fmt.Sprintf(`#!/bin/sh
 printf 'timeout %%s\n' "$*" >> %s
+if [ -n "${FAKE_TIMEOUT_EXPIRE_ON:-}" ]; then
+  case "$*" in *"$FAKE_TIMEOUT_EXPIRE_ON"*) exit 124 ;; esac
+fi
 [ "$1" = "--kill-after=2" ] && shift
 shift
 exec "$@"
 `, shellQuote(logPath)))
+	}
 	return logPath
+}
+
+// writeBackupFakeDolt installs a dolt CLI double for the snapshot step. It
+// logs each call with its working directory and whether that directory still
+// carries the sql-server lock, and succeeds unless FAKE_DOLT_SYNC_FAIL is set.
+func writeBackupFakeDolt(t *testing.T, binDir string) string {
+	t.Helper()
+	logPath := filepath.Join(binDir, "dolt.log")
+	writeExecutable(t, filepath.Join(binDir, "dolt"), fmt.Sprintf(`#!/bin/sh
+lock=absent
+[ -e .dolt/sql-server.lock ] || [ -e .dolt/sql-server.info ] && lock=present
+printf 'dolt %%s cwd=%%s lock=%%s\n' "$*" "$PWD" "$lock" >> %s
+if [ -n "${FAKE_DOLT_SYNC_FAIL:-}" ]; then
+  printf 'error: %%s\n' "$FAKE_DOLT_SYNC_FAIL" >&2
+  exit 1
+fi
+exit 0
+`, shellQuote(logPath)))
+	return logPath
+}
+
+// writeBackupFakeCp installs a cp double. With copyOnWrite it accepts `-c` (and
+// refuses --reflink) so the order picks snapshot mode on any filesystem, doing
+// the copy with the real cp; without it, it refuses both flags like a cp on a
+// filesystem with no copy-on-write, and the order must sync in place.
+func writeBackupFakeCp(t *testing.T, binDir string, copyOnWrite bool) {
+	t.Helper()
+	accept := "exit 64"
+	if copyOnWrite {
+		accept = `shift; exec /bin/cp "$@"`
+	}
+	writeExecutable(t, filepath.Join(binDir, "cp"), fmt.Sprintf(`#!/bin/sh
+case "${1:-}" in
+  -c) %s ;;
+  --reflink=*) echo 'cp: unrecognized option' >&2; exit 64 ;;
+esac
+exec /bin/cp "$@"
+`, accept))
+}
+
+// writeManagedDataDir lays out <city>/.beads/dolt/<db> as the managed Dolt
+// server leaves it while running: repo_state.json with the given backups, the
+// server lock and info files, and a noms file to copy.
+func writeManagedDataDir(t *testing.T, cityPath, db string, backups map[string]string) string {
+	t.Helper()
+	dbDir := filepath.Join(cityPath, ".beads", "dolt", db)
+	if err := os.MkdirAll(filepath.Join(dbDir, ".dolt", "noms"), 0o755); err != nil {
+		t.Fatalf("mkdir data dir: %v", err)
+	}
+	entries := map[string]any{}
+	for name, url := range backups {
+		entries[name] = map[string]any{"name": name, "url": url}
+	}
+	state, err := json.Marshal(map[string]any{"head": "refs/heads/main", "backups": entries})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{
+		filepath.Join(".dolt", "repo_state.json"):  state,
+		filepath.Join(".dolt", "sql-server.lock"):  []byte("4242\n"),
+		filepath.Join(".dolt", "sql-server.info"):  []byte("4242:3306\n"),
+		filepath.Join(".dolt", "noms", "manifest"): []byte("manifest\n"),
+	} {
+		if err := os.WriteFile(filepath.Join(dbDir, name), data, 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	return dbDir
+}
+
+func TestBackupOrderSyncsFromACopyOnWriteSnapshotBeforeBdRecordsIt(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		backups map[string]string
+		want    string
+	}{
+		{"bd default destination", map[string]string{"default": "file:///art/prod"}, "default"},
+		{"legacy db-backup destination wins", map[string]string{"default": "file:///art/prod", "prod-backup": "file:///art/prod"}, "prod-backup"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cityPath := resolvedTempDir(t)
+			binDir := t.TempDir()
+			gc := writeBackupFakeGC(t, binDir)
+			doltLog := writeBackupFakeDolt(t, binDir)
+			writeBackupFakeCp(t, binDir, true)
+			timeoutLog := writeRecordingTimeout(t, binDir)
+			dbDir := writeManagedDataDir(t, cityPath, "prod", tc.backups)
+
+			out := mustRunBackupOrder(t, binDir, cityPath,
+				"FAKE_CONFIGURED_DBS=prod",
+				"GC_DOLT_BACKUP_SYNC_TIMEOUT_SECS=7",
+			)
+			if !strings.Contains(out, "synced: 1/1") || !strings.Contains(out, "sync mode snapshot") {
+				t.Fatalf("snapshot mode should be chosen and the scope synced:\n%s", out)
+			}
+			dolt, err := os.ReadFile(doltLog)
+			if err != nil {
+				t.Fatalf("the snapshot step must run the dolt CLI: %v", err)
+			}
+			line := strings.TrimSpace(string(dolt))
+			if strings.Count(line, "\n") != 0 {
+				t.Fatalf("want exactly one dolt call:\n%s", line)
+			}
+			if !strings.HasPrefix(line, "dolt backup sync "+tc.want+" cwd=") || !strings.HasSuffix(line, "lock=absent") {
+				t.Fatalf("dolt must sync %q from a clone with the server lock stripped:\n%s", tc.want, line)
+			}
+			if strings.Contains(line, "cwd="+dbDir) || !strings.Contains(line, "cwd="+filepath.Join(cityPath, ".dolt-backup-snapshot.")) {
+				t.Fatalf("dolt must run inside a clone under the artifact dir's parent, never the live data dir:\n%s", line)
+			}
+			for _, live := range []string{"sql-server.lock", "sql-server.info"} {
+				if _, err := os.Stat(filepath.Join(dbDir, ".dolt", live)); err != nil {
+					t.Fatalf("the live data dir must keep its %s: %v", live, err)
+				}
+			}
+			if clones, _ := filepath.Glob(filepath.Join(cityPath, ".dolt-backup-snapshot.*")); len(clones) != 0 {
+				t.Fatalf("the clone must be removed after the sync: %v", clones)
+			}
+			if !strings.Contains(gc.log(t), "gc bd --city "+cityPath+" backup sync --json") {
+				t.Fatalf("bd backup sync must still run in place to record the sync:\n%s", gc.log(t))
+			}
+			timeoutData, err := os.ReadFile(timeoutLog)
+			if err != nil {
+				t.Fatalf("read timeout log: %v", err)
+			}
+			for _, want := range []string{
+				"--kill-after=2 7 dolt backup sync " + tc.want,
+				"--kill-after=2 7 gc bd --city " + cityPath + " backup sync --json",
+			} {
+				if !strings.Contains(string(timeoutData), want) {
+					t.Fatalf("GC_DOLT_BACKUP_SYNC_TIMEOUT_SECS=7 must bound the snapshot sync and the bd sync (%q):\n%s", want, timeoutData)
+				}
+			}
+		})
+	}
+}
+
+func TestBackupOrderSyncsInPlaceWithoutCopyOnWrite(t *testing.T) {
+	cityPath := resolvedTempDir(t)
+	binDir := t.TempDir()
+	gc := writeBackupFakeGC(t, binDir)
+	writeBackupFakeCp(t, binDir, false)
+	writeExecutable(t, filepath.Join(binDir, "dolt"), "#!/bin/sh\necho 'dolt must not be called' >&2\nexit 97\n")
+	writeManagedDataDir(t, cityPath, "prod", map[string]string{"default": "file:///art/prod"})
+
+	out := mustRunBackupOrder(t, binDir, cityPath, "FAKE_CONFIGURED_DBS=prod")
+	if !strings.Contains(out, "synced: 1/1") {
+		t.Fatalf("unexpected backup summary:\n%s", out)
+	}
+	if !strings.Contains(out, "sync mode in-place") || !strings.Contains(out, "no copy-on-write cp") {
+		t.Fatalf("without a copy-on-write cp the order must say it synced in place and why:\n%s", out)
+	}
+	if !strings.Contains(gc.log(t), "gc bd --city "+cityPath+" backup sync --json") {
+		t.Fatalf("in-place mode syncs through gc bd:\n%s", gc.log(t))
+	}
+	if clones, _ := filepath.Glob(filepath.Join(cityPath, ".dolt-backup-snapshot*")); len(clones) != 0 {
+		t.Fatalf("no clone or probe dir may be left behind: %v", clones)
+	}
+}
+
+func TestBackupOrderSnapshotCanBeTurnedOff(t *testing.T) {
+	cityPath := resolvedTempDir(t)
+	binDir := t.TempDir()
+	_ = writeBackupFakeGC(t, binDir)
+	doltLog := writeBackupFakeDolt(t, binDir)
+	writeBackupFakeCp(t, binDir, true)
+	writeManagedDataDir(t, cityPath, "prod", map[string]string{"default": "file:///art/prod"})
+
+	out := mustRunBackupOrder(t, binDir, cityPath, "FAKE_CONFIGURED_DBS=prod", "GC_DOLT_BACKUP_SNAPSHOT=0")
+	if !strings.Contains(out, "synced: 1/1") || !strings.Contains(out, "snapshot disabled (GC_DOLT_BACKUP_SNAPSHOT=0)") {
+		t.Fatalf("GC_DOLT_BACKUP_SNAPSHOT=0 must sync in place and say so:\n%s", out)
+	}
+	if _, err := os.Stat(doltLog); !os.IsNotExist(err) {
+		data, _ := os.ReadFile(doltLog)
+		t.Fatalf("dolt must not run when the snapshot step is off:\n%s", data)
+	}
+}
+
+func TestBackupOrderNamesTheBoundWhenTheSyncIsKilled(t *testing.T) {
+	// Both routes: the snapshot sync killed offline (no in-place retry, the
+	// server path can only be slower) and the in-place bd sync killed.
+	for _, tc := range []struct {
+		name        string
+		dataDir     bool
+		expireOn    string
+		wantBounded func(cityPath string) string
+	}{
+		{"snapshot sync", true, "dolt backup sync", func(string) string { return "--kill-after=2 7 dolt backup sync default" }},
+		{"in-place sync", false, "backup sync --json", func(cityPath string) string {
+			return "--kill-after=2 7 gc bd --city " + cityPath + " backup sync --json"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cityPath := resolvedTempDir(t)
+			binDir := t.TempDir()
+			gc := writeBackupFakeGC(t, binDir)
+			_ = writeBackupFakeDolt(t, binDir)
+			writeBackupFakeCp(t, binDir, true)
+			timeoutLog := writeRecordingTimeout(t, binDir)
+			if tc.dataDir {
+				writeManagedDataDir(t, cityPath, "prod", map[string]string{"default": "file:///art/prod"})
+			}
+
+			out := mustRunBackupOrder(t, binDir, cityPath,
+				"FAKE_CONFIGURED_DBS=prod",
+				"FAKE_TIMEOUT_EXPIRE_ON="+tc.expireOn,
+				"GC_DOLT_BACKUP_SYNC_TIMEOUT_SECS=7",
+				"GC_DOLT_BACKUP_SYNC_ATTEMPTS=1",
+			)
+			if !strings.Contains(out, "synced: 0/1") {
+				t.Fatalf("a killed sync must not count as synced:\n%s", out)
+			}
+			timeoutData, err := os.ReadFile(timeoutLog)
+			if err != nil {
+				t.Fatalf("read timeout log: %v", err)
+			}
+			if !strings.Contains(string(timeoutData), tc.wantBounded(cityPath)) {
+				t.Fatalf("the sync must run under the configured 7s bound (%q):\n%s", tc.wantBounded(cityPath), timeoutData)
+			}
+			log := gc.log(t)
+			for _, want := range []string{
+				"mail send human -s Dolt backup: 1/1 databases failed to sync [MEDIUM]",
+				"prod(timed out after 7s)",
+				"timed out after 7s (raise GC_DOLT_BACKUP_SYNC_TIMEOUT_SECS)",
+			} {
+				if !strings.Contains(log, want) {
+					t.Fatalf("a bound kill must be reported as a timeout naming the bound (%q):\n%s", want, log)
+				}
+			}
+			if strings.Contains(log, "prod(sync failed)") {
+				t.Fatalf("a bound kill must not be reported as a dolt error:\n%s", log)
+			}
+			if tc.dataDir && strings.Contains(log, "backup sync --json") {
+				t.Fatalf("a snapshot sync killed on the bound must not be retried in place:\n%s", log)
+			}
+		})
+	}
+}
+
+func TestBackupOrderFallsBackToInPlaceWhenTheSnapshotSyncErrors(t *testing.T) {
+	cityPath := resolvedTempDir(t)
+	binDir := t.TempDir()
+	gc := writeBackupFakeGC(t, binDir)
+	doltLog := writeBackupFakeDolt(t, binDir)
+	writeBackupFakeCp(t, binDir, true)
+	writeManagedDataDir(t, cityPath, "prod", map[string]string{"default": "file:///art/prod"})
+
+	out := mustRunBackupOrder(t, binDir, cityPath,
+		"FAKE_CONFIGURED_DBS=prod",
+		"FAKE_DOLT_SYNC_FAIL=storage format mismatch",
+	)
+	if !strings.Contains(out, "synced: 1/1") {
+		t.Fatalf("a dolt error offline must fall back to the in-place sync, which succeeds here:\n%s", out)
+	}
+	if !strings.Contains(out, "snapshot sync failed (exit 1: error: storage format mismatch); syncing in place") {
+		t.Fatalf("the fallback must be logged with dolt's error:\n%s", out)
+	}
+	if _, err := os.ReadFile(doltLog); err != nil {
+		t.Fatalf("the snapshot step must have run dolt: %v", err)
+	}
+	if !strings.Contains(gc.log(t), "backup sync --json") {
+		t.Fatalf("in-place sync must run after the snapshot error:\n%s", gc.log(t))
+	}
+	if clones, _ := filepath.Glob(filepath.Join(cityPath, ".dolt-backup-snapshot*")); len(clones) != 0 {
+		t.Fatalf("the clone must be removed after a failed snapshot sync: %v", clones)
+	}
 }
 
 func TestBackupOrderSkipsNonBdStoresQuietly(t *testing.T) {
