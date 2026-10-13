@@ -5562,6 +5562,75 @@ exit 0
 	}
 }
 
+// TestDoctorAcceptsBdDefaultBackupRemote asserts the doctor's eligibility
+// check names the backup remote the way mol-dog-backup.sh does. Since #6751
+// the backup dog syncs through `bd backup init/sync`, and bd registers the
+// remote as `default`, not `<db>-backup`; a doctor that only accepted
+// `<db>-backup` reported every store as "backup remote missing" on every
+// tick right after they all synced (beast-gas-city 2026-10-13). A single
+// registered remote under any name counts too, as it does for the backup
+// script's snapshot sync; two remotes under other names still do not.
+func TestDoctorAcceptsBdDefaultBackupRemote(t *testing.T) {
+	cityPath := t.TempDir()
+	dataDir := filepath.Join(cityPath, "dolt-data")
+	artifactDir := filepath.Join(cityPath, ".dolt-backup")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatalf("mkdir artifact dir: %v", err)
+	}
+	for _, db := range []string{"prod", "archive", "scratch"} {
+		if err := os.MkdirAll(filepath.Join(dataDir, db, ".dolt"), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", db, err)
+		}
+	}
+
+	binDir := t.TempDir()
+	gcLogPath := writeDogFakeGC(t, binDir)
+	writeExecutable(t, filepath.Join(binDir, "dolt"), `#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+  backup)
+    case "$(basename "$PWD")" in
+      prod) printf 'default file:///city/.dolt-backup/prod\n' ;;
+      archive) printf 'offsite file:///elsewhere/archive\n' ;;
+      scratch) printf 'offsite file:///elsewhere/scratch\nmirror file:///mirror/scratch\n' ;;
+    esac
+    exit 0
+    ;;
+esac
+case "$*" in
+  *"COUNT(*) FROM information_schema.PROCESSLIST"*)
+    printf 'COUNT(*)\n1\n'
+    exit 0
+    ;;
+  *"SHOW DATABASES"*)
+    printf 'Database\nprod\narchive\nscratch\n'
+    exit 0
+    ;;
+esac
+exit 0
+`)
+
+	out := runDogScript(t, "mol-dog-doctor.sh", binDir, cityPath, dataDir, doctorBackupStaleEnv)
+	if !strings.Contains(out, "server: ok") {
+		t.Fatalf("unexpected doctor output:\n%s", out)
+	}
+	gcLog, err := os.ReadFile(gcLogPath)
+	if err != nil {
+		t.Fatalf("read gc log: %v", err)
+	}
+	for _, db := range []string{"prod", "archive"} {
+		if strings.Contains(string(gcLog), db+" backup remote missing") {
+			t.Fatalf("doctor reported %s's backup remote missing although one is registered:\n%s", db, gcLog)
+		}
+		if !strings.Contains(string(gcLog), db+" backup missing") {
+			t.Fatalf("doctor did not treat %s as backup-eligible (no artifact, so it should report the backup missing):\n%s", db, gcLog)
+		}
+	}
+	if !strings.Contains(string(gcLog), "scratch backup remote missing") {
+		t.Fatalf("doctor accepted two remotes neither named scratch-backup nor default:\n%s", gcLog)
+	}
+}
+
 func TestDoctorScriptDetectsDoctestOrphansWithBSDGrep(t *testing.T) {
 	cityPath := t.TempDir()
 	dataDir := filepath.Join(cityPath, "dolt-data")
