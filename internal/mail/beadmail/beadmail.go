@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/mail"
 	"github.com/gastownhall/gascity/internal/session"
 )
@@ -600,7 +601,7 @@ func isInjectedAutoHandoff(b beads.Bead) bool {
 }
 
 // archiveInjectedAutoHandoffs marks each injected handoff read and closes it,
-// retain-addressable, mirroring SweepReadMessagesBefore: mail.read (so a later
+// retain-addressable, mirroring SweepReadMessages: mail.read (so a later
 // SessionStart does not re-inject it, a read-back reports it read, and the
 // read-gated purge can reclaim it), the retention close_reason (so
 // isRemovedMessageBead keeps the closed handoff addressable — recoverable —
@@ -1020,44 +1021,79 @@ func readMessagesBefore(store beads.Store, before time.Time, limit int) ([]beads
 	})
 }
 
+// archivableReadMessages returns the read message beads, oldest first, whose
+// recipient's archive window under policy has elapsed at now. It lists once
+// with the shortest non-zero window as the cutoff, then drops each candidate
+// its own recipient's window does not yet cover (or never covers).
+//
+// limit bounds the listing only while every recipient shares one archive
+// window, because then no listed candidate is dropped. Once a recipient can
+// resolve to a longer or zero window, the listing is unbounded: a bounded one
+// would fill with the oldest messages the policy skips and starve every
+// recipient behind them.
+func archivableReadMessages(store beads.Store, policy config.MailRetentionPolicy, now time.Time, limit int) ([]beads.Bead, error) {
+	shortest := policy.ShortestArchiveReadAfter()
+	if shortest <= 0 {
+		return nil, nil
+	}
+	listLimit := limit
+	if policy.ArchiveVariesByRecipient() {
+		listLimit = 0
+	}
+	candidates, err := readMessagesBefore(store, now.Add(-shortest), listLimit)
+	if err != nil {
+		return nil, err
+	}
+	due := make([]beads.Bead, 0, len(candidates))
+	for _, b := range candidates {
+		window := policy.For(b.Assignee).ArchiveReadAfter
+		if window <= 0 || !b.CreatedAt.Before(now.Add(-window)) {
+			continue
+		}
+		due = append(due, b)
+	}
+	return due, nil
+}
+
 // RetentionSweepCloseReason is the canonical close_reason the read-mail
 // retention sweep stamps on a message bead before closing it. It is the marker
 // that tells isRemovedMessageBead a closed message bead is system-aged
 // (retention-swept, still addressable by direct ID until PurgeReadMessageWisps
 // deletes it) rather than user-removed. The production sweep — the always-on
-// cmd/gc nudge-mail watchdog — passes this constant as SweepReadMessagesBefore's
+// cmd/gc nudge-mail watchdog — passes this constant as SweepReadMessages's
 // closeReason, keeping the writer and the direct-ID reader in lockstep. The
 // 20-character floor satisfies validation.on-close=error.
 const RetentionSweepCloseReason = "mail gc-swept: read mail bead past gc retention window"
 
-// SweepReadMessagesBefore closes read message beads created before cutoff,
-// oldest first, stamping closeReason as "close_reason" metadata on each bead
-// before closing it. It is the whole read-mail retention sweep: the candidate
-// query and the close-with-reason loop live here because close_reason is
-// bead-lifecycle vocabulary the mail.Message domain object deliberately omits,
-// and because Provider.Archive/Provider.Delete mean eager delete — a different
-// operation from close-with-reason.
+// SweepReadMessages closes read message beads whose recipient's archive window
+// under policy has elapsed at now, oldest first, stamping closeReason as
+// "close_reason" metadata on each bead before closing it. A recipient whose
+// window is zero is never swept. It is the whole read-mail retention sweep: the
+// candidate query and the close-with-reason loop live here because
+// close_reason is bead-lifecycle vocabulary the mail.Message domain object
+// deliberately omits, and because Provider.Archive/Provider.Delete mean eager
+// delete — a different operation from close-with-reason.
 //
 // Retention callers pass [RetentionSweepCloseReason] as closeReason so beadmail's
 // direct-ID gate (isRemovedMessageBead) keeps the swept beads addressable until
 // purge instead of treating them as user-removed.
 //
-// limit caps the number of beads closed (pass 0 for no cap); it bounds both the
-// candidate query and the loop so a caller sharing a cross-phase close budget
-// (see the nudge+mail sweep) honors it exactly. Beads that are no longer open
-// when revisited are skipped without consuming the limit.
+// limit caps the number of beads closed (pass 0 for no cap), so a caller
+// sharing a cross-phase close budget (see the nudge+mail sweep) honors it
+// exactly. A message the policy skips, or one no longer open when revisited,
+// consumes none of the limit.
 //
 // Errors are split by severity so callers can preserve fatal-vs-recoverable
 // handling: listErr is the fatal candidate-listing failure (no beads were
 // swept), while closeErrs holds the per-bead metadata/close failures that do not
-// abort the sweep. Returns the number of beads closed.
-func SweepReadMessagesBefore(store beads.MailStore, cutoff time.Time, limit int, closeReason string) (closed int, closeErrs []error, listErr error) {
-	candidates, err := readMessagesBefore(store.Store, cutoff, limit)
+// abort the sweep. Returns the IDs of the beads closed, in close order.
+func SweepReadMessages(store beads.MailStore, policy config.MailRetentionPolicy, now time.Time, limit int, closeReason string) (closedIDs []string, closeErrs []error, listErr error) {
+	candidates, err := archivableReadMessages(store.Store, policy, now, limit)
 	if err != nil {
-		return 0, nil, err
+		return nil, nil, err
 	}
 	for _, b := range candidates {
-		if limit > 0 && closed >= limit {
+		if limit > 0 && len(closedIDs) >= limit {
 			break
 		}
 		if b.Status != "open" {
@@ -1071,17 +1107,17 @@ func SweepReadMessagesBefore(store beads.MailStore, cutoff time.Time, limit int,
 			closeErrs = append(closeErrs, fmt.Errorf("mail %s: close: %w", b.ID, err))
 			continue
 		}
-		closed++
+		closedIDs = append(closedIDs, b.ID)
 	}
-	return closed, closeErrs, nil
+	return closedIDs, closeErrs, nil
 }
 
-// CountReadMessagesBefore returns how many read message beads SweepReadMessagesBefore
-// would close for the same cutoff and limit, without mutating any bead. It is the
-// dry-run twin of the sweep and shares its candidate query and limit semantics so
-// the two stay in lockstep.
-func CountReadMessagesBefore(store beads.MailStore, cutoff time.Time, limit int) (int, error) {
-	candidates, err := readMessagesBefore(store.Store, cutoff, limit)
+// CountReadMessages returns how many read message beads SweepReadMessages
+// would close for the same policy, now and limit, without mutating any bead.
+// It is the dry-run twin of the sweep and shares its candidate selection and
+// limit semantics so the two stay in lockstep.
+func CountReadMessages(store beads.MailStore, policy config.MailRetentionPolicy, now time.Time, limit int) (int, error) {
+	candidates, err := archivableReadMessages(store.Store, policy, now, limit)
 	if err != nil {
 		return 0, err
 	}
@@ -1147,7 +1183,7 @@ const UnreadRetentionSweepCloseReason = "mail gc-swept: unread mail bead past gc
 // SweepUnreadMessagesBefore closes unread message beads created before
 // cutoff, oldest first, stamping closeReason as "close_reason" metadata on
 // each bead before closing it. It is the unread-mail half of the retention
-// sweep, mirroring SweepReadMessagesBefore's candidate-query-then-close-loop
+// sweep, mirroring SweepReadMessages's candidate-query-then-close-loop
 // shape but selecting on label absence via unreadMessagesBefore instead of
 // the "read" label.
 //
@@ -1157,7 +1193,7 @@ const UnreadRetentionSweepCloseReason = "mail gc-swept: unread mail bead past gc
 // honors it exactly. Beads that are no longer open when revisited are skipped
 // without consuming the limit.
 //
-// Errors are split by severity the same way SweepReadMessagesBefore's are:
+// Errors are split by severity the same way SweepReadMessages's are:
 // listErr is the fatal candidate-listing failure (no beads were swept), while
 // closeErrs holds the per-bead metadata/close failures that do not abort the
 // sweep. Returns the number of beads closed.
@@ -1209,15 +1245,20 @@ func CountUnreadMessagesBefore(store beads.MailStore, cutoff time.Time, limit in
 }
 
 // PurgeReadMessageWisps deletes read message beads in the wisp tier (open or
-// closed) created before cutoff — the wisp-GC retention sweep for consumed mail.
+// closed) older than their recipient's purge window under policy — the wisp-GC
+// retention sweep for consumed mail. A recipient whose window is zero is never
+// purged.
 // The candidate query and the delete loop live here because wisp-tier delete is
 // bead-lifecycle behavior the mail.Message domain object omits. Each bead's
 // dependencies are stripped before it is deleted (dependency-free single-row
 // message beads make the strip a no-op in practice, but it preserves the
 // retention delete semantics). Beads with a zero or not-yet-past CreatedAt are
 // skipped. Per-bead delete failures are joined and returned without aborting the
-// sweep; returns the number of beads purged.
-func PurgeReadMessageWisps(store beads.MailStore, cutoff time.Time) (int, error) {
+// sweep; returns the IDs of the beads purged.
+func PurgeReadMessageWisps(store beads.MailStore, policy config.MailRetentionPolicy, now time.Time) ([]string, error) {
+	if policy.ShortestRetentionTTL() <= 0 {
+		return nil, nil
+	}
 	entries, err := store.List(beads.ListQuery{
 		Type:          messageBeadType,
 		Metadata:      map[string]string{mail.ReadMetadataKey: "true"},
@@ -1225,13 +1266,14 @@ func PurgeReadMessageWisps(store beads.MailStore, cutoff time.Time) (int, error)
 		TierMode:      beads.TierWisps,
 	})
 	if err != nil {
-		return 0, fmt.Errorf("listing read message wisps: %w", err)
+		return nil, fmt.Errorf("listing read message wisps: %w", err)
 	}
-	purged := 0
+	var purged []string
 	var deleteErr error
 	live := beads.HandlesFor(store.Store).Live
 	for _, entry := range entries {
-		if entry.CreatedAt.IsZero() || !entry.CreatedAt.Before(cutoff) {
+		window := policy.For(entry.Assignee).RetentionTTL
+		if window <= 0 || entry.CreatedAt.IsZero() || !entry.CreatedAt.Before(now.Add(-window)) {
 			continue
 		}
 		// The candidate list above can answer from the CachingStore's stale
@@ -1255,7 +1297,7 @@ func PurgeReadMessageWisps(store beads.MailStore, cutoff time.Time) (int, error)
 			deleteErr = errors.Join(deleteErr, fmt.Errorf("deleting expired bead %q: %w", entry.ID, err))
 			continue
 		}
-		purged++
+		purged = append(purged, entry.ID)
 	}
 	return purged, deleteErr
 }
