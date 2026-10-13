@@ -9,6 +9,10 @@
 # the artifact dir when it is missing, and `bd backup sync` pushes the scope's
 # database (all branches, full history) to it. The artifact dir is then
 # rsynced to GC_BACKUP_OFFSITE_PATH when that is set.
+#
+# A large scope is first synced offline from a copy-on-write clone of its data
+# dir (snapshot-then-sync, see SNAPSHOT below) so the sql-server's read timeout
+# never cuts the bulk of the work; `bd backup sync` then records the sync.
 set -euo pipefail
 
 PACK_DIR="${GC_PACK_DIR:-$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
@@ -48,6 +52,28 @@ esac
 # Bound for the short bd calls (status, init, database lookup).
 BACKUP_BD_TIMEOUT_SECS="${GC_DOLT_BACKUP_BD_TIMEOUT_SECS:-60}"
 case "$BACKUP_BD_TIMEOUT_SECS" in ''|*[!0-9]*|0) BACKUP_BD_TIMEOUT_SECS=60 ;; esac
+
+# SNAPSHOT: `bd backup sync` runs inside the sql-server, so one sync is cut at
+# the server's listener.read_timeout_millis however high the bound above is
+# set (beast-gas-city, 2026-10-12: the 14 GB gcd store died at exactly 600 s
+# with "connection was closed" every run; the same sync took 17 min with no
+# server in the loop) and it serialises against live agent traffic. When the
+# scope's managed data dir ($GC_DOLT_DATA_DIR, default <city>/.beads/dolt/<db>)
+# is on a copy-on-write filesystem (APFS `cp -c`, btrfs/xfs `cp --reflink`)
+# and the dolt CLI is on PATH, the bulk of the sync runs first from a
+# crash-consistent CoW clone of that dir with the server's lock stripped, so
+# only the bound applies to it; the in-place `bd backup sync` then pushes the
+# small remainder and records the sync for bd (`bd backup status`). Without
+# CoW, dolt, or a visible data dir the scope syncs in place as before.
+# GC_DOLT_BACKUP_SNAPSHOT=0 turns the snapshot step off.
+DOLT_DATA_DIR="${GC_DOLT_DATA_DIR:-$CITY_ABS/.beads/dolt}"
+BACKUP_SNAPSHOT_ENABLED="${GC_DOLT_BACKUP_SNAPSHOT:-1}"
+SNAPSHOT_CP_FLAG=""    # "-c" | "--reflink=always"; set by snapshot_probe
+SNAPSHOT_PARENT=""     # where clones are made; same filesystem as the data dir
+SNAPSHOT_PROBED=""
+SNAPSHOT_DIR=""        # the current clone, removed by snapshot_cleanup
+SNAPSHOT_BACKUP_NAME=""
+SNAPSHOT_REASON=""
 
 if ! command -v jq >/dev/null 2>&1; then
     echo "backup: jq is required but not found in PATH" >&2
@@ -189,6 +215,127 @@ classify_sync_failure() {
     fi
 }
 
+# ── snapshot-then-sync ───────────────────────────────────────────────────────
+snapshot_cleanup() {
+    case "$SNAPSHOT_DIR" in
+        */.dolt-backup-snapshot.*) rm -rf "$SNAPSHOT_DIR" ;;
+    esac
+    SNAPSHOT_DIR=""
+}
+trap snapshot_cleanup EXIT
+
+# snapshot_probe decides once per run whether a copy-on-write copy of the
+# data dir is possible, trying `cp -c` (APFS) then `cp --reflink=always`
+# (btrfs/xfs), with a file from the data dir as the source so a clone target
+# on another filesystem is detected. Candidates for the clone's parent are the
+# artifact dir's parent (the city dir by default, the same volume as the data
+# dir) then $TMPDIR. Sets SNAPSHOT_CP_FLAG and SNAPSHOT_PARENT, empty when no
+# copy-on-write copy works.
+snapshot_probe() {
+    local probe_src="$1"
+    local candidate
+    local probe_dir
+    SNAPSHOT_PROBED=1
+    for candidate in "$(dirname "$BACKUP_ARTIFACT_DIR")" "${TMPDIR:-/tmp}"; do
+        [ -d "$candidate" ] || continue
+        probe_dir=$(mktemp -d "$candidate/.dolt-backup-snapshot.probe.XXXXXX" 2>/dev/null) || continue
+        if cp -c "$probe_src" "$probe_dir/probe" 2>/dev/null; then
+            SNAPSHOT_CP_FLAG="-c"
+        elif cp --reflink=always "$probe_src" "$probe_dir/probe" 2>/dev/null; then
+            SNAPSHOT_CP_FLAG="--reflink=always"
+        fi
+        rm -rf "$probe_dir"
+        if [ -n "$SNAPSHOT_CP_FLAG" ]; then
+            SNAPSHOT_PARENT="$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# snapshot_backup_name prints the backup the clone's repo_state.json carries,
+# in the order the doctor resolves it: <db>-backup (the pre-bd registration),
+# bd's default, else the only one registered. Prints nothing when none fits.
+snapshot_backup_name() {
+    jq -r --arg db "$1" '
+        (.backups // {}) |
+        if has($db + "-backup") then $db + "-backup"
+        elif has("default") then "default"
+        elif length == 1 then keys[0]
+        else empty end' "$2/.dolt/repo_state.json" 2>/dev/null
+}
+
+# prepare_snapshot clones the scope's data dir for the offline sync. On
+# success SNAPSHOT_DIR holds the clone and SNAPSHOT_BACKUP_NAME the backup to
+# sync; otherwise it returns 1 with the reason in SNAPSHOT_REASON and the scope
+# syncs in place. Not run in a subshell: the EXIT trap needs SNAPSHOT_DIR.
+prepare_snapshot() {
+    local db="$1"
+    local db_dir="$DOLT_DATA_DIR/$db"
+    local clone
+    SNAPSHOT_DIR=""
+    SNAPSHOT_BACKUP_NAME=""
+    SNAPSHOT_REASON=""
+    if [ "$BACKUP_SNAPSHOT_ENABLED" = "0" ]; then
+        SNAPSHOT_REASON="snapshot disabled (GC_DOLT_BACKUP_SNAPSHOT=0)"
+        return 1
+    fi
+    if [ ! -f "$db_dir/.dolt/repo_state.json" ]; then
+        SNAPSHOT_REASON="no managed data dir at $db_dir"
+        return 1
+    fi
+    if ! command -v dolt >/dev/null 2>&1; then
+        SNAPSHOT_REASON="dolt CLI not on PATH"
+        return 1
+    fi
+    if [ -z "$SNAPSHOT_PROBED" ]; then
+        snapshot_probe "$db_dir/.dolt/repo_state.json" || true
+    fi
+    if [ -z "$SNAPSHOT_CP_FLAG" ]; then
+        SNAPSHOT_REASON="no copy-on-write cp (-c or --reflink) for $db_dir"
+        return 1
+    fi
+    if ! clone=$(mktemp -d "$SNAPSHOT_PARENT/.dolt-backup-snapshot.XXXXXX" 2>/dev/null); then
+        SNAPSHOT_REASON="cannot create a clone dir under $SNAPSHOT_PARENT"
+        return 1
+    fi
+    SNAPSHOT_DIR="$clone"
+    if ! cp "$SNAPSHOT_CP_FLAG" -R "$db_dir" "$clone/$db" 2>/dev/null; then
+        snapshot_cleanup
+        SNAPSHOT_REASON="cp $SNAPSHOT_CP_FLAG -R of $db_dir failed"
+        return 1
+    fi
+    # The clone must not look like a served database to the dolt CLI.
+    rm -f "$clone/$db/.dolt/sql-server.lock" "$clone/$db/.dolt/sql-server.info"
+    SNAPSHOT_BACKUP_NAME=$(snapshot_backup_name "$db" "$clone/$db")
+    if [ -z "$SNAPSHOT_BACKUP_NAME" ]; then
+        snapshot_cleanup
+        SNAPSHOT_REASON="no backup to sync in $db_dir/.dolt/repo_state.json"
+        return 1
+    fi
+    return 0
+}
+
+# snapshot_sync runs the bounded `dolt backup sync` inside the clone, with no
+# server in the loop. Prints the classified failure and returns the sync's
+# exit status (124 when the bound killed it).
+snapshot_sync() {
+    local db="$1"
+    local err_tmp
+    local rc=0
+    err_tmp=$(mktemp) || {
+        printf 'cannot create temp file for snapshot sync diagnostics'
+        return 1
+    }
+    (cd "$SNAPSHOT_DIR/$db" && run_bounded "$BACKUP_SYNC_TIMEOUT_SECS" dolt backup sync "$SNAPSHOT_BACKUP_NAME") \
+        >/dev/null 2>"$err_tmp" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        classify_sync_failure "$rc" "$err_tmp"
+    fi
+    rm -f "$err_tmp"
+    return "$rc"
+}
+
 # backup_unsupported reports whether bd refused backup for this scope's
 # transport (bd v1.3.0 refuses `bd backup` on the proxied-server path with the
 # typed code proxy.backup.unsupported).
@@ -266,7 +413,9 @@ sync_scope() {
     done
     rm -f "$sync_err_tmp"
     printf '%s' "$first_sync_detail"
-    return 1
+    # The final attempt's status, so the caller can tell a bound kill (124)
+    # from a dolt error.
+    return "$sync_rc"
 }
 
 acquire_backup_lock() {
@@ -381,9 +530,37 @@ $db
         continue
     fi
 
+    sync_rc=0
     sync_failure_detail=""
-    if sync_failure_detail=$(sync_scope); then
+    snapshot_note=""
+    if prepare_snapshot "$db"; then
+        echo "backup: $SCOPE_LABEL ($db): sync mode snapshot — cp $SNAPSHOT_CP_FLAG clone of $DOLT_DATA_DIR/$db, dolt backup sync $SNAPSHOT_BACKUP_NAME offline, then bd backup sync" >&2
+        snapshot_rc=0
+        snapshot_detail=$(snapshot_sync "$db") || snapshot_rc=$?
+        snapshot_cleanup
+        if [ "$snapshot_rc" -eq 124 ]; then
+            # Offline, only the bound was against the sync; the server path can
+            # only be slower, so report the kill without retrying in place.
+            sync_rc=124
+            sync_failure_detail="snapshot sync $snapshot_detail"
+            echo "backup: $SCOPE_LABEL ($db): $sync_failure_detail" >&2
+        elif [ "$snapshot_rc" -ne 0 ]; then
+            snapshot_note="snapshot sync failed ($snapshot_detail); "
+            echo "backup: $SCOPE_LABEL ($db): ${snapshot_note}syncing in place" >&2
+        fi
+    else
+        echo "backup: $SCOPE_LABEL ($db): sync mode in-place — $SNAPSHOT_REASON" >&2
+    fi
+    if [ "$sync_rc" -eq 0 ]; then
+        sync_failure_detail=$(sync_scope) || sync_rc=$?
+        sync_failure_detail="$snapshot_note$sync_failure_detail"
+    fi
+    if [ "$sync_rc" -eq 0 ]; then
         SYNCED=$((SYNCED + 1))
+    elif [ "$sync_rc" -eq 124 ]; then
+        append_failed_db "$db(timed out after ${BACKUP_SYNC_TIMEOUT_SECS}s)"
+        append_failed_detail "$db" "$sync_failure_detail"
+        outcome_scope_skipped "$SCOPE_LABEL" "backup sync failed"
     else
         append_failed_db "$db(sync failed)"
         append_failed_detail "$db" "$sync_failure_detail"
