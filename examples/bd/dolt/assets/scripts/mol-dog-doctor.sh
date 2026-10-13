@@ -191,22 +191,36 @@ backup_live_lag() {
 # suspended scope's retired proxy and Dolt. Fails when ownership cannot be
 # fully known (no jq, rig list unavailable, a listed scope with no metadata),
 # so no database is called unowned on a guess.
+# The database a scope's bead store lives in, read cold: `.beads/metadata.json`
+# (`dolt_database`, the proxied-server layout proxied_scope.sh reads), else the
+# last path segment of `.beads/dolt-backup.json`'s backup_url, which is the
+# destination `bd backup init` registered for that database (beast-gas-city's
+# scopes carry only the latter). Prints nothing for a scope with neither file;
+# fails when a file is present but unreadable.
+backup_scope_db() {
+    scope_meta="$1/.beads/metadata.json"
+    scope_backup="$1/.beads/dolt-backup.json"
+    if [ -f "$scope_meta" ]; then
+        jq -r '.dolt_database // empty' "$scope_meta" 2>/dev/null || return 1
+    elif [ -f "$scope_backup" ]; then
+        jq -r '.backup_url // empty' "$scope_backup" 2>/dev/null | sed -e 's#/*$##' -e 's#.*/##' || return 1
+    fi
+}
+
 backup_db_owners() {
     command -v jq >/dev/null 2>&1 || return 1
     owner_rigs=$(cd "$GC_CITY_PATH" && run_bounded "$GC_DOLT_RIG_LIST_TIMEOUT_SECS" gc rig list --json 2>/dev/null \
         | jq -r '.rigs[] | [.name, .path, (.suspended // false | tostring)] | @tsv' 2>/dev/null) || return 1
     [ -n "$owner_rigs" ] || return 1
     while IFS=$'\t' read -r owner_rig owner_path owner_suspended; do
-        owner_meta="$owner_path/.beads/metadata.json"
-        [ -f "$owner_meta" ] || return 1
-        owner_db=$(jq -r '.dolt_database // empty' "$owner_meta" 2>/dev/null) || return 1
+        [ -f "$owner_path/.beads/metadata.json" ] || [ -f "$owner_path/.beads/dolt-backup.json" ] || return 1
+        owner_db=$(backup_scope_db "$owner_path") || return 1
         if [ -n "$owner_db" ]; then
             printf '%s\t%s\t%s\n' "$owner_db" "$owner_rig" "$owner_suspended"
         fi
     done <<<"$owner_rigs"
-    owner_meta="$GC_CITY_PATH/.beads/metadata.json"
-    if [ -f "$owner_meta" ]; then
-        owner_db=$(jq -r '.dolt_database // empty' "$owner_meta" 2>/dev/null) || return 1
+    if [ -f "$GC_CITY_PATH/.beads/metadata.json" ] || [ -f "$GC_CITY_PATH/.beads/dolt-backup.json" ]; then
+        owner_db=$(backup_scope_db "$GC_CITY_PATH") || return 1
         if [ -n "$owner_db" ]; then
             printf '%s\tcity\tfalse\n' "$owner_db"
         fi
