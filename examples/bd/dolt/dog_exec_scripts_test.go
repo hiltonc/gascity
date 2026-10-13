@@ -1,6 +1,7 @@
 package dolt_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -6829,4 +6830,292 @@ if [ "$#" -ge 2 ] && { [ "$1" = "-vi" ] || [ "$1" = "-i" ]; } && [[ "$2" == *"$b
 fi
 exec %s "$@"
 `, shellQuote(realGrep)))
+}
+
+// doltLogDateLayout is the Date: line format `dolt log` prints.
+const doltLogDateLayout = "Mon Jan 2 15:04:05 -0700 2006"
+
+// TestDoctorBackupFreshnessMeasuresLagNotAge asserts the doctor reports a
+// backup stale only when the live store has commits the backup lacks, not when
+// the manifest is merely old. A city that idles overnight leaves its rig
+// scopes with nothing to push, so `bd backup sync` writes nothing and the
+// manifest keeps the last push's mtime; reading that age alone reported every
+// quiet rig "12h old" (hilton-gas-city 2026-10-13). Commit dates carry a
+// non-UTC offset so the parse has to honor the zone.
+func TestDoctorBackupFreshnessMeasuresLagNotAge(t *testing.T) {
+	now := time.Now()
+	push := now.Add(-2 * time.Hour)
+	for _, tc := range []struct {
+		name     string
+		commits  []time.Time // newest first; nil means `dolt log` fails
+		want     string
+		dontWant string
+		wantOK   string
+	}{
+		{
+			name:     "no commits since an old push is current",
+			commits:  []time.Time{now.Add(-3 * time.Hour), now.Add(-4 * time.Hour)},
+			dontWant: "prod backup",
+			wantOK:   "backups current: 1/1",
+		},
+		{
+			name:    "commits after an old push are the lag",
+			commits: []time.Time{now.Add(-1 * time.Hour), now.Add(-90 * time.Minute), now.Add(-3 * time.Hour)},
+			want:    "prod backup is 2h old, 2 commits behind",
+			wantOK:  "backups current: 0/1",
+		},
+		{
+			name:     "unreadable dolt log falls back to age",
+			want:     "prod backup is 2h old, live commits unreadable",
+			dontWant: "commits behind",
+			wantOK:   "backups current: 0/1",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cityPath := t.TempDir()
+			dataDir := filepath.Join(cityPath, "dolt-data")
+			artifactDir := filepath.Join(cityPath, ".dolt-backup")
+			if err := os.MkdirAll(filepath.Join(dataDir, "prod", ".dolt"), 0o755); err != nil {
+				t.Fatalf("mkdir prod: %v", err)
+			}
+			if err := os.MkdirAll(filepath.Join(artifactDir, "prod"), 0o755); err != nil {
+				t.Fatalf("mkdir backup remote: %v", err)
+			}
+			writeBackupRemoteFile(t, filepath.Join(artifactDir, "prod", "manifest"), push)
+
+			binDir := t.TempDir()
+			gcLogPath := writeDogFakeGC(t, binDir)
+			logs := map[string][]time.Time{}
+			if tc.commits != nil {
+				logs["prod"] = tc.commits
+			}
+			writeDoctorFakeDoltWithLiveLog(t, binDir, []string{"prod"}, logs)
+
+			out := runDogScript(t, "mol-dog-doctor.sh", binDir, cityPath, dataDir, doctorBackupStaleEnv)
+			if !strings.Contains(out, tc.wantOK) {
+				t.Fatalf("ok line lacks %q:\n%s", tc.wantOK, out)
+			}
+			gcLog, err := os.ReadFile(gcLogPath)
+			if err != nil && !os.IsNotExist(err) {
+				t.Fatalf("read gc log: %v", err)
+			}
+			if tc.want != "" && !strings.Contains(string(gcLog), tc.want) {
+				t.Fatalf("want %q in log:\n%s", tc.want, gcLog)
+			}
+			if tc.dontWant != "" && strings.Contains(string(gcLog), tc.dontWant) {
+				t.Fatalf("unexpected %q in log:\n%s", tc.dontWant, gcLog)
+			}
+		})
+	}
+}
+
+// TestDoctorBackupLagCountIsCappedAtTheScanDepth asserts a lag deeper than the
+// commits the doctor reads is reported as a floor, not as an exact count.
+func TestDoctorBackupLagCountIsCappedAtTheScanDepth(t *testing.T) {
+	cityPath := t.TempDir()
+	dataDir := filepath.Join(cityPath, "dolt-data")
+	artifactDir := filepath.Join(cityPath, ".dolt-backup")
+	if err := os.MkdirAll(filepath.Join(dataDir, "prod", ".dolt"), 0o755); err != nil {
+		t.Fatalf("mkdir prod: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(artifactDir, "prod"), 0o755); err != nil {
+		t.Fatalf("mkdir backup remote: %v", err)
+	}
+	now := time.Now()
+	writeBackupRemoteFile(t, filepath.Join(artifactDir, "prod", "manifest"), now.Add(-2*time.Hour))
+	commits := make([]time.Time, 3)
+	for i := range commits {
+		commits[i] = now.Add(-time.Duration(i+1) * time.Minute)
+	}
+
+	binDir := t.TempDir()
+	gcLogPath := writeDogFakeGC(t, binDir)
+	writeDoctorFakeDoltWithLiveLog(t, binDir, []string{"prod"}, map[string][]time.Time{"prod": commits})
+
+	runDogScript(t, "mol-dog-doctor.sh", binDir, cityPath, dataDir, doctorBackupStaleEnv,
+		"GC_DOCTOR_BACKUP_LAG_SCAN_COMMITS=3")
+	if gcLog := readDogGCLog(t, gcLogPath); !strings.Contains(gcLog, "prod backup is 2h old, 3+ commits behind") {
+		t.Fatalf("lag deeper than the scan should read as a floor, log:\n%s", gcLog)
+	}
+}
+
+// TestDoctorBackupFreshnessResolvesRigOwnership asserts the doctor maps each
+// database to the rig that owns it. A suspended rig is cold by design
+// (mol-dog-backup.sh skips it), so it is judged by the same lag rule: quiet
+// since its last push is current, data changed before suspension and never
+// pushed is stale. A database no rig owns is never visited by a backup run, so
+// it is named as left out instead of aging into a stale backup forever.
+func TestDoctorBackupFreshnessResolvesRigOwnership(t *testing.T) {
+	cityPath := t.TempDir()
+	dataDir := filepath.Join(cityPath, "dolt-data")
+	artifactDir := filepath.Join(cityPath, ".dolt-backup")
+	now := time.Now()
+	push := now.Add(-2 * time.Hour)
+	for _, db := range []string{"hq", "quiet", "dirty", "jrl"} {
+		if err := os.MkdirAll(filepath.Join(dataDir, db, ".dolt"), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", db, err)
+		}
+		if db == "jrl" {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Join(artifactDir, db), 0o755); err != nil {
+			t.Fatalf("mkdir backup remote %s: %v", db, err)
+		}
+		writeBackupRemoteFile(t, filepath.Join(artifactDir, db, "manifest"), push)
+	}
+
+	rigsDir := t.TempDir()
+	writeScopeMetadata(t, cityPath, "hq")
+	writeScopeMetadata(t, filepath.Join(rigsDir, "quiet"), "quiet")
+	writeScopeMetadata(t, filepath.Join(rigsDir, "dirty"), "dirty")
+	binDir := t.TempDir()
+	gcLogPath := writeDoctorFakeGCWithRigs(t, binDir, []fakeRig{
+		{Name: "city", Path: cityPath, HQ: true},
+		{Name: "quiet", Path: filepath.Join(rigsDir, "quiet"), Suspended: true},
+		{Name: "dirty", Path: filepath.Join(rigsDir, "dirty"), Suspended: true},
+	})
+	writeDoctorFakeDoltWithLiveLog(t, binDir, []string{"hq", "quiet", "dirty", "jrl"}, map[string][]time.Time{
+		"hq":    {now.Add(-3 * time.Hour)},
+		"quiet": {now.Add(-5 * time.Hour)},
+		"dirty": {now.Add(-90 * time.Minute), now.Add(-5 * time.Hour)},
+	})
+
+	out := runDogScript(t, "mol-dog-doctor.sh", binDir, cityPath, dataDir, doctorBackupStaleEnv)
+	if !strings.Contains(out, "backups current: 2/3") {
+		t.Fatalf("ok line should count hq and quiet current of three owned scopes:\n%s", out)
+	}
+	gcLog := readDogGCLog(t, gcLogPath)
+	if !strings.Contains(gcLog, "dirty backup is 2h old, 1 commit behind (rig dirty suspended)") {
+		t.Fatalf("suspended rig with unpushed data should report stale with its lag, log:\n%s", gcLog)
+	}
+	if !strings.Contains(gcLog, "jrl: no rig; left out of backups") {
+		t.Fatalf("unowned database should be named as left out, log:\n%s", gcLog)
+	}
+	for _, dontWant := range []string{"quiet backup", "hq backup", "jrl backup"} {
+		if strings.Contains(gcLog, dontWant) {
+			t.Fatalf("unexpected %q in log:\n%s", dontWant, gcLog)
+		}
+	}
+}
+
+// TestDoctorBackupOwnershipUnknownWhenARigHasNoMetadata asserts a database is
+// named as unowned only when every listed scope's metadata was read. A rig
+// whose .beads/metadata.json is missing may own any database, so calling one
+// "left out" would be a guess; the doctor judges it by the lag rule instead.
+func TestDoctorBackupOwnershipUnknownWhenARigHasNoMetadata(t *testing.T) {
+	cityPath := t.TempDir()
+	dataDir := filepath.Join(cityPath, "dolt-data")
+	artifactDir := filepath.Join(cityPath, ".dolt-backup")
+	if err := os.MkdirAll(filepath.Join(dataDir, "prod", ".dolt"), 0o755); err != nil {
+		t.Fatalf("mkdir prod: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(artifactDir, "prod"), 0o755); err != nil {
+		t.Fatalf("mkdir backup remote: %v", err)
+	}
+	writeBackupRemoteFile(t, filepath.Join(artifactDir, "prod", "manifest"), time.Now())
+
+	binDir := t.TempDir()
+	gcLogPath := writeDoctorFakeGCWithRigs(t, binDir, []fakeRig{
+		{Name: "elsewhere", Path: filepath.Join(t.TempDir(), "missing")},
+	})
+	writeDoctorFakeDoltWithLiveLog(t, binDir, []string{"prod"}, nil)
+
+	out := runDogScript(t, "mol-dog-doctor.sh", binDir, cityPath, dataDir, doctorBackupStaleEnv)
+	if !strings.Contains(out, "backups current: 1/1") {
+		t.Fatalf("prod should still be checked and current:\n%s", out)
+	}
+	if gcLog := readDogGCLog(t, gcLogPath); strings.Contains(gcLog, "no rig") {
+		t.Fatalf("ownership is unknown, so no database may be called unowned, log:\n%s", gcLog)
+	}
+}
+
+// fakeRig is one entry of the `gc rig list --json` fixture.
+type fakeRig struct {
+	Name      string `json:"name"`
+	Path      string `json:"path"`
+	HQ        bool   `json:"hq"`
+	Suspended bool   `json:"suspended"`
+}
+
+// writeDoctorFakeGCWithRigs stands in for gc: `gc rig list --json` prints the
+// given rigs and every call is logged like writeDogFakeGC.
+func writeDoctorFakeGCWithRigs(t *testing.T, binDir string, rigs []fakeRig) string {
+	t.Helper()
+	list, err := json.Marshal(map[string]any{"ok": true, "rigs": rigs})
+	if err != nil {
+		t.Fatalf("marshal rig list: %v", err)
+	}
+	listPath := filepath.Join(binDir, "rig-list.json")
+	writeTestFile(t, listPath, string(list))
+	logPath := filepath.Join(binDir, "gc.log")
+	writeExecutable(t, filepath.Join(binDir, "gc"), fmt.Sprintf(`#!/bin/sh
+printf 'gc %%s\n' "$*" >> %s
+if [ "$1 $2" = "rig list" ]; then
+  cat %s
+fi
+exit 0
+`, shellQuote(logPath), shellQuote(listPath)))
+	return logPath
+}
+
+// writeScopeMetadata writes the .beads/metadata.json bd keeps at a scope root.
+func writeScopeMetadata(t *testing.T, scopeDir, db string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(scopeDir, ".beads"), 0o755); err != nil {
+		t.Fatalf("mkdir %s/.beads: %v", scopeDir, err)
+	}
+	writeTestFile(t, filepath.Join(scopeDir, ".beads", "metadata.json"),
+		fmt.Sprintf(`{"backend":"dolt","dolt_database":%q,"dolt_mode":"server"}`, db))
+}
+
+// writeDoctorFakeDoltWithLiveLog stands in for the dolt CLI: every named
+// database has a <db>-backup remote, and `dolt log` in a database directory
+// prints that database's commits (newest first) in dolt's own layout, or
+// fails when none are given.
+func writeDoctorFakeDoltWithLiveLog(t *testing.T, binDir string, dbs []string, logs map[string][]time.Time) {
+	t.Helper()
+	zone := time.FixedZone("", -7*3600)
+	logDir := filepath.Join(binDir, "dolt-logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatalf("mkdir dolt log dir: %v", err)
+	}
+	for db, commits := range logs {
+		var b strings.Builder
+		for i, c := range commits {
+			fmt.Fprintf(&b, "\x1b[33mcommit fake%04d \x1b[0m\nAuthor: beads <beads@local>\nDate:  %s\n\n\tbd: update\n\n",
+				i, c.In(zone).Format(doltLogDateLayout))
+		}
+		writeTestFile(t, filepath.Join(logDir, db), b.String())
+	}
+	var showDatabases strings.Builder
+	showDatabases.WriteString("Database\\n")
+	for _, db := range dbs {
+		fmt.Fprintf(&showDatabases, "%s\\n", db)
+	}
+	writeExecutable(t, filepath.Join(binDir, "dolt"), fmt.Sprintf(`#!/usr/bin/env bash
+set -euo pipefail
+db=$(basename "$PWD")
+case "$1" in
+  backup)
+    printf '%%s-backup\n' "$db"
+    exit 0
+    ;;
+  log)
+    [ -f %s/"$db" ] || { echo "fatal: cannot read log" >&2; exit 1; }
+    awk -v n="$3" '/^.\[33mcommit / { c++ } c > n { exit } { print }' %s/"$db"
+    exit 0
+    ;;
+esac
+case "$*" in
+  *"COUNT(*) FROM information_schema.PROCESSLIST"*)
+    printf 'COUNT(*)\n1\n'
+    exit 0
+    ;;
+  *"SHOW DATABASES"*)
+    printf '%s'
+    exit 0
+    ;;
+esac
+exit 0
+`, shellQuote(logDir), shellQuote(logDir), showDatabases.String()))
 }

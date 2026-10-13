@@ -2,13 +2,17 @@
 # mol-dog-doctor — probe Dolt server health and report findings.
 #
 # Converted from the former mol-dog-doctor formula. All checks are read-only: SQL probe,
-# PROCESSLIST count, disk usage, orphan DB detection, backup artifact freshness.
+# PROCESSLIST count, disk usage, orphan DB detection, backup freshness.
 # No LLM judgment needed — runs inline in the controller.
 #
 # Runs as an exec order (no LLM, no agent, no wisp).
 #
-# RPO note: BACKUP_STALE_S (default 43200 = 12h = 2x backup interval) is the
-# threshold at which backup artifact age triggers a [WARN: backup stale] advisory.
+# RPO note: BACKUP_STALE_S (default 43200 = 12h = 2x backup interval) bounds how
+# long live commits may go unpushed. A database's backup is stale when its last
+# push (the backup remote's manifest mtime) is older than BACKUP_STALE_S AND the
+# live store holds commits newer than that push. A scope with nothing to push
+# stays current however long ago its last push was: `bd backup sync` writes
+# nothing for it, so the manifest age alone measures idleness, not data at risk.
 # With 6h backup syncs and fail-closed journal corruption recovery, maximum data
 # loss on journal corruption without manual intervention is one 6h backup interval.
 # If BACKUP_STALE_S exceeds 2x the backup interval, a single missed backup cycle
@@ -32,6 +36,8 @@ LATENCY_WARN_MS="${GC_DOCTOR_LATENCY_WARN_MS:-$(( ${GC_DOCTOR_LATENCY_WARN_S:-1}
 CONN_WARN_PCT="${GC_DOCTOR_CONN_WARN_PCT:-80}"
 BACKUP_STALE_S="${GC_DOCTOR_BACKUP_STALE_S:-43200}"  # 2x 6h backup interval
 BACKUP_ARTIFACT_DIR="${GC_BACKUP_ARTIFACT_DIR:-$GC_CITY_PATH/.dolt-backup}"
+# How many live commits the lag count reads; a lag that deep reports as "N+".
+BACKUP_LAG_SCAN_COMMITS="${GC_DOCTOR_BACKUP_LAG_SCAN_COMMITS:-100}"
 # Advisory dedup state (#3409): records the signature of the last-sent [MEDIUM]
 # advisory so a persistent condition collapses into one rolling alert instead of
 # a fresh bead every 5-min tick. DOLT_STATE_DIR is set by runtime.sh.
@@ -148,6 +154,70 @@ backup_commit_mtime_for_db() {
     fi
 }
 
+# Number of live commits in a database newer than its last push, read from
+# `dolt log` in its data directory (read-only, like the `dolt backup` probe
+# below). Fails when the log cannot be read or carries no parseable Date: line,
+# so the caller falls back to judging the backup by age alone. Dates are parsed
+# in awk rather than date(1) because GNU and BSD date disagree on parsing.
+backup_live_lag() {
+    lag_db_dir="$1"
+    lag_pushed_at="$2"
+    lag_log=$(cd "$lag_db_dir" && run_bounded 30 dolt log -n "$BACKUP_LAG_SCAN_COMMITS" 2>/dev/null) || return 1
+    printf '%s\n' "$lag_log" | awk -v pushed="$lag_pushed_at" '
+        function civil_days(y, m, d,   era, yoe, doy) {
+            y -= (m <= 2)
+            era = int((y >= 0 ? y : y - 399) / 400)
+            yoe = y - era * 400
+            doy = int((153 * ((m + 9) % 12) + 2) / 5) + d - 1
+            return era * 146097 + yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy - 719468
+        }
+        # Date:  Tue Oct 13 12:59:15 -0700 2026
+        $1 == "Date:" && NF >= 7 && length($3) == 3 {
+            m = (index("JanFebMarAprMayJunJulAugSepOctNovDec", $3) + 2) / 3
+            if (m < 1 || m != int(m)) next
+            if ($4 !~ /^[0-9]+$/ || $5 !~ /^[0-9]+:[0-9]+:[0-9]+$/ || $6 !~ /^[+-][0-9][0-9][0-9][0-9]$/ || $7 !~ /^[0-9]+$/) next
+            split($5, hms, ":")
+            off = (substr($6, 2, 2) * 3600 + substr($6, 4, 2) * 60) * (substr($6, 1, 1) == "-" ? -1 : 1)
+            t = civil_days($7 + 0, m, $4 + 0) * 86400 + hms[1] * 3600 + hms[2] * 60 + hms[3] - off
+            scanned++
+            if (t > pushed) count++
+        }
+        END { if (!scanned) exit 1; print count + 0 }'
+}
+
+# Which scope owns each database: "<db>\t<rig>\t<suspended>" lines from
+# `gc rig list --json` and each scope's .beads/metadata.json, the city's
+# included. Read cold, never through bd, because any bd call restarts a
+# suspended scope's retired proxy and Dolt. Fails when ownership cannot be
+# fully known (no jq, rig list unavailable, a listed scope with no metadata),
+# so no database is called unowned on a guess.
+backup_db_owners() {
+    command -v jq >/dev/null 2>&1 || return 1
+    owner_rigs=$(cd "$GC_CITY_PATH" && run_bounded "$GC_DOLT_RIG_LIST_TIMEOUT_SECS" gc rig list --json 2>/dev/null \
+        | jq -r '.rigs[] | [.name, .path, (.suspended // false | tostring)] | @tsv' 2>/dev/null) || return 1
+    [ -n "$owner_rigs" ] || return 1
+    while IFS=$'\t' read -r owner_rig owner_path owner_suspended; do
+        owner_meta="$owner_path/.beads/metadata.json"
+        [ -f "$owner_meta" ] || return 1
+        owner_db=$(jq -r '.dolt_database // empty' "$owner_meta" 2>/dev/null) || return 1
+        if [ -n "$owner_db" ]; then
+            printf '%s\t%s\t%s\n' "$owner_db" "$owner_rig" "$owner_suspended"
+        fi
+    done <<<"$owner_rigs"
+    owner_meta="$GC_CITY_PATH/.beads/metadata.json"
+    if [ -f "$owner_meta" ]; then
+        owner_db=$(jq -r '.dolt_database // empty' "$owner_meta" 2>/dev/null) || return 1
+        if [ -n "$owner_db" ]; then
+            printf '%s\tcity\tfalse\n' "$owner_db"
+        fi
+    fi
+}
+
+# The BACKUP_DB_OWNERS line for one database; fails when no scope owns it.
+backup_db_owner() {
+    printf '%s\n' "$BACKUP_DB_OWNERS" | awk -F'\t' -v db="$1" '$1 == db { print; found = 1; exit } END { exit !found }'
+}
+
 append_backup_stale() {
     backup_stale_item="$1"
     if [ -n "$BACKUP_STALE_ITEMS" ]; then
@@ -227,12 +297,26 @@ fi
 # as mol-dog-backup.sh resolves it: <db>-backup (the pre-bd registration),
 # bd's `default` (`bd backup init`, #6751), else the only one registered.
 # mol-dog-backup.sh auto-configures the remote on its next run, so this
-# warning self-heals unless the backup dog itself is failing.
+# warning self-heals unless the backup dog itself is failing. A database no
+# scope owns is never visited by a backup run, so it is named as left out
+# rather than aged into a stale backup that no run will ever refresh.
 BACKUP_ELIGIBLE_DBS=""
 BACKUP_STALE_ITEMS=""
+BACKUP_SCOPES_CHECKED=0
+BACKUP_SCOPES_CURRENT=0
+BACKUP_DB_OWNERS=""
+BACKUP_OWNERS_KNOWN=false
+if [ -n "$USER_DBS" ] && BACKUP_DB_OWNERS=$(backup_db_owners); then
+    BACKUP_OWNERS_KNOWN=true
+fi
 for db in $USER_DBS; do
     db_dir="$DOLT_DATA_DIR/$db"
     if [ -d "$db_dir/.dolt" ]; then
+        if [ "$BACKUP_OWNERS_KNOWN" = true ] && ! backup_db_owner "$db" >/dev/null; then
+            append_backup_stale "$db: no rig; left out of backups"
+            continue
+        fi
+        BACKUP_SCOPES_CHECKED=$((BACKUP_SCOPES_CHECKED + 1))
         if (cd "$db_dir" && run_bounded 30 dolt backup 2>/dev/null | awk -v db="$db" 'NF { n++ } $1 == (db "-backup") || $1 == "default" { ok = 1 } END { exit !(ok || n == 1) }'); then
             BACKUP_ELIGIBLE_DBS="$BACKUP_ELIGIBLE_DBS $db"
         else
@@ -255,9 +339,35 @@ if [ -n "$BACKUP_ELIGIBLE_DBS" ]; then
                 continue
             fi
             BACKUP_AGE=$((NOW_S - BACKUP_COMMIT_MTIME))
-            if [ "$BACKUP_AGE" -gt "$BACKUP_STALE_S" ]; then
-                append_backup_stale "$db backup is $((BACKUP_AGE / 3600))h old"
+            if [ "$BACKUP_AGE" -le "$BACKUP_STALE_S" ]; then
+                BACKUP_SCOPES_CURRENT=$((BACKUP_SCOPES_CURRENT + 1))
+                continue
             fi
+            BACKUP_DETAIL="$db backup is $((BACKUP_AGE / 3600))h old"
+            if BACKUP_LAG=$(backup_live_lag "$DOLT_DATA_DIR/$db" "$BACKUP_COMMIT_MTIME"); then
+                if [ "$BACKUP_LAG" -eq 0 ]; then
+                    BACKUP_SCOPES_CURRENT=$((BACKUP_SCOPES_CURRENT + 1))
+                    continue
+                fi
+                if [ "$BACKUP_LAG" -ge "$BACKUP_LAG_SCAN_COMMITS" ]; then
+                    BACKUP_DETAIL="$BACKUP_DETAIL, ${BACKUP_LAG}+ commits behind"
+                elif [ "$BACKUP_LAG" -eq 1 ]; then
+                    BACKUP_DETAIL="$BACKUP_DETAIL, 1 commit behind"
+                else
+                    BACKUP_DETAIL="$BACKUP_DETAIL, $BACKUP_LAG commits behind"
+                fi
+            else
+                BACKUP_DETAIL="$BACKUP_DETAIL, live commits unreadable"
+            fi
+            # A suspended rig is left cold by mol-dog-backup.sh, so its lag
+            # waits for the rig to resume.
+            if BACKUP_OWNER=$(backup_db_owner "$db"); then
+                IFS=$'\t' read -r _ BACKUP_OWNER_RIG BACKUP_OWNER_SUSPENDED <<<"$BACKUP_OWNER"
+                if [ "$BACKUP_OWNER_SUSPENDED" = true ]; then
+                    BACKUP_DETAIL="$BACKUP_DETAIL (rig $BACKUP_OWNER_RIG suspended)"
+                fi
+            fi
+            append_backup_stale "$BACKUP_DETAIL"
         done
     fi
 fi
@@ -307,5 +417,8 @@ else
 fi
 
 SUMMARY="doctor — server: ok, latency: ${LATENCY_MS}ms, conns: ${CONN_COUNT}/${CONN_MAX}, disk: ${DISK_USAGE}, orphans: ${ORPHAN_COUNT}"
+if [ "$BACKUP_SCOPES_CHECKED" -gt 0 ]; then
+    SUMMARY="$SUMMARY, backups current: ${BACKUP_SCOPES_CURRENT}/${BACKUP_SCOPES_CHECKED}"
+fi
 dolt_notify_done "$SUMMARY"
 echo "doctor: $SUMMARY"
