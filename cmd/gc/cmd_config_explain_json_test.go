@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gastownhall/gascity/internal/config"
+	"github.com/gastownhall/gascity/internal/runtime"
 )
 
 // writeConfigExplainFixtureCity builds a city whose resolved config draws a
@@ -24,6 +27,13 @@ name = "demo"
 [[rigs]]
 name = "myrig"
 path = "`+rigDir+`"
+
+[[rigs.patches]]
+agent = "local"
+
+[rigs.patches.env]
+RIG_PATCH_TOKEN = "rig-patch-secret"
+RIG_PATCH_MODEL = "rig-patch-model"
 
 [[agent]]
 name = "local"
@@ -136,7 +146,7 @@ func TestConfigExplainJSONRedactsEnvExceptModel(t *testing.T) {
 	dir := writeConfigExplainFixtureCity(t)
 	doc, raw := runConfigExplainJSON(t, dir)
 
-	for _, secret := range []string{"sk-city-secret", "provider-secret"} {
+	for _, secret := range []string{"sk-city-secret", "provider-secret", "rig-patch-secret"} {
 		if bytes.Contains(raw, []byte(secret)) {
 			t.Fatalf("explain JSON leaks env value %q:\n%s", secret, raw)
 		}
@@ -144,19 +154,67 @@ func TestConfigExplainJSONRedactsEnvExceptModel(t *testing.T) {
 	for _, tc := range []struct{ scope, name, key string }{
 		{"agent", "local", "env.ANTHROPIC_API_KEY"},
 		{"provider", "mine", "env.MINE_TOKEN"},
+		{"rig", "myrig", "patches.0.env.RIG_PATCH_TOKEN"},
 	} {
 		e := findExplainEntry(t, doc, tc.scope, tc.name, tc.key)
-		if !e.Redacted || e.Value != configExplainRedactedValue {
+		if !e.Redacted || e.Value != runtime.RedactedValue {
 			t.Errorf("%s %s = {value:%v redacted:%v}, want redacted", tc.scope, tc.key, e.Value, e.Redacted)
 		}
 	}
 	for _, tc := range []struct{ scope, name, key, want string }{
 		{"agent", "local", "env.ANTHROPIC_MODEL", "claude-city-model"},
 		{"provider", "mine", "env.MINE_MODEL", "provider-model"},
+		{"rig", "myrig", "patches.0.env.RIG_PATCH_MODEL", "rig-patch-model"},
 	} {
 		e := findExplainEntry(t, doc, tc.scope, tc.name, tc.key)
 		if e.Redacted || e.Value != tc.want {
 			t.Errorf("%s %s = {value:%v redacted:%v}, want %q unredacted", tc.scope, tc.key, e.Value, e.Redacted, tc.want)
+		}
+	}
+}
+
+func TestConfigExplainBuilderRedactsEnvAtAnyDepth(t *testing.T) {
+	env := map[string]string{"TOKEN": "secret", "X_MODEL": "model"}
+	flatten := func(v any) func(*configExplainBuilder) error {
+		return func(b *configExplainBuilder) error { return b.addFlattened(v, configExplainEntry{}, nil) }
+	}
+	tests := []struct {
+		name   string
+		add    func(*configExplainBuilder) error
+		envKey string
+	}{
+		{"workspace", flatten(config.Workspace{Name: "demo", Env: env}), "env"},
+		{"agent", flatten(&config.Agent{Name: "a", Env: env}), "env"},
+		{"rig patch", flatten(config.Rig{Name: "r", RigPatches: []config.AgentOverride{{Agent: "a", Env: env}}}), "patches.0.env"},
+		{"rig override", flatten(config.Rig{Name: "r", Overrides: []config.AgentOverride{{Agent: "a"}, {Agent: "b", Env: env}}}), "overrides.1.env"},
+		{"city agent patch", flatten(config.Patches{Agents: []config.AgentPatch{{Name: "a", Env: env}}}), "agent.0.env"},
+		{"provider", func(b *configExplainBuilder) error {
+			b.addProvider("p", config.ResolvedProvider{Env: env, Provenance: config.ProviderProvenance{
+				MapKeyLayer: map[string]map[string]string{"env": {"TOKEN": "providers.p", "X_MODEL": "providers.p"}},
+			}})
+			return nil
+		}, "env"},
+	}
+	for _, tc := range tests {
+		for _, showEnv := range []bool{false, true} {
+			b := configExplainBuilder{showEnv: showEnv}
+			if err := tc.add(&b); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			got := map[string]configExplainEntry{}
+			for _, e := range b.entries {
+				got[e.Key] = e
+			}
+			wantToken, wantRedacted := any(runtime.RedactedValue), true
+			if showEnv {
+				wantToken, wantRedacted = "secret", false
+			}
+			if e, ok := got[tc.envKey+".TOKEN"]; !ok || e.Value != wantToken || e.Redacted != wantRedacted {
+				t.Errorf("%s showEnv=%v: %s.TOKEN = %+v (found %v), want {value:%v redacted:%v}", tc.name, showEnv, tc.envKey, e, ok, wantToken, wantRedacted)
+			}
+			if e, ok := got[tc.envKey+".X_MODEL"]; !ok || e.Value != "model" || e.Redacted {
+				t.Errorf("%s showEnv=%v: %s.X_MODEL = %+v (found %v), want model unredacted", tc.name, showEnv, tc.envKey, e, ok)
+			}
 		}
 	}
 }
