@@ -302,6 +302,7 @@ func newConfigExplainCmd(stdout, stderr io.Writer) *cobra.Command {
 	var agentFilter string
 	var providerFilter string
 	var asJSON bool
+	var showEnv bool
 	cmd := &cobra.Command{
 		Use:   "explain",
 		Short: "Show resolved config with provenance annotations",
@@ -316,12 +317,18 @@ with per-field and per-map-key attribution — which chain layer
 (builtin:X or providers.Y) contributed each value. Useful for
 debugging base-chain inheritance.
 
-Use --json to emit machine-readable output (providers only).`,
+Use --json to emit machine-readable output. With --provider it emits
+that provider's chain; otherwise it emits every resolved key of the
+workspace, imports, rigs, agents, and custom providers as one entry
+each (scope, name, key, value, layer, source). Env values are redacted
+in that document except for names ending in _MODEL; --show-env
+includes them.`,
 		Example: `  gc config explain
   gc config explain --agent mayor
   gc config explain --rig my-project
   gc config explain --provider codex-max
   gc config explain --provider codex-max --json
+  gc config explain --json
   gc config explain -f overlay.toml --agent polecat`,
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
@@ -332,8 +339,10 @@ Use --json to emit machine-readable output (providers only).`,
 				return nil
 			}
 			if asJSON {
-				fmt.Fprintln(stderr, "gc config explain: --json is only supported with --provider") //nolint:errcheck
-				return errExit
+				if doConfigExplainJSON(configExplainOptions{rigFilter: rigFilter, agentFilter: agentFilter, showEnv: showEnv}, stdout, stderr) != 0 {
+					return errExit
+				}
+				return nil
 			}
 			if doConfigExplain(rigFilter, agentFilter, stdout, stderr) != 0 {
 				return errExit
@@ -344,7 +353,8 @@ Use --json to emit machine-readable output (providers only).`,
 	cmd.Flags().StringVar(&rigFilter, "rig", "", "filter to agents in this rig")
 	cmd.Flags().StringVar(&agentFilter, "agent", "", "filter to a specific agent name")
 	cmd.Flags().StringVar(&providerFilter, "provider", "", "explain a provider's resolved chain instead of agents")
-	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON (requires --provider)")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON")
+	cmd.Flags().BoolVar(&showEnv, "show-env", false, "include env values in --json output (redacted by default except *_MODEL)")
 	cmd.Flags().StringArrayVarP(&extraConfigFiles, "file", "f", nil,
 		"additional config files to layer (can be repeated)")
 	return cmd
@@ -794,41 +804,11 @@ func renderProviderExplainJSON(r config.ResolvedProvider, name string, stdout, s
 	for _, h := range r.Chain {
 		chain = append(chain, map[string]string{"kind": h.Kind, "name": h.Name})
 	}
-	// Surface tri-state capability flags as null when no chain layer set
-	// them (i.e. Provenance has no attribution for the field). The
-	// ResolvedProvider stores bool, so we use provenance presence as the
-	// explicit-vs-default signal.
-	triStateFromProvenance := func(field string, value bool) any {
-		if _, set := r.Provenance.FieldLayer[field]; !set {
-			return nil
-		}
-		return value
-	}
 	payload := map[string]any{
 		"name":             name,
 		"builtin_ancestor": r.BuiltinAncestor,
 		"chain":            chain,
-		"resolved": map[string]any{
-			"command":                  r.Command,
-			"args":                     r.Args,
-			"prompt_mode":              r.PromptMode,
-			"prompt_flag":              r.PromptFlag,
-			"ready_delay_ms":           r.ReadyDelayMs,
-			"ready_prompt_prefix":      r.ReadyPromptPrefix,
-			"process_names":            r.ProcessNames,
-			"resume_command":           r.ResumeCommand,
-			"resume_flag":              r.ResumeFlag,
-			"resume_style":             r.ResumeStyle,
-			"session_id_flag":          r.SessionIDFlag,
-			"title_model":              r.TitleModel,
-			"supports_hooks":           triStateFromProvenance("supports_hooks", r.SupportsHooks),
-			"supports_acp":             triStateFromProvenance("supports_acp", r.SupportsACP),
-			"emits_permission_warning": triStateFromProvenance("emits_permission_warning", r.EmitsPermissionWarning),
-			"accept_startup_dialogs":   r.AcceptStartupDialogs,
-			"env":                      r.Env,
-			"permission_modes":         r.PermissionModes,
-			"option_defaults":          r.EffectiveDefaults,
-		},
+		"resolved":         providerResolvedValues(r),
 		"provenance": map[string]any{
 			"field_layer":   r.Provenance.FieldLayer,
 			"map_key_layer": r.Provenance.MapKeyLayer,
@@ -839,6 +819,42 @@ func renderProviderExplainJSON(r config.ResolvedProvider, name string, stdout, s
 		return 1
 	}
 	return 0
+}
+
+// providerResolvedValues maps each resolved provider field name to its
+// value, as emitted by "gc config explain --provider --json".
+func providerResolvedValues(r config.ResolvedProvider) map[string]any {
+	// Surface tri-state capability flags as null when no chain layer set
+	// them (i.e. Provenance has no attribution for the field). The
+	// ResolvedProvider stores bool, so we use provenance presence as the
+	// explicit-vs-default signal.
+	triStateFromProvenance := func(field string, value bool) any {
+		if _, set := r.Provenance.FieldLayer[field]; !set {
+			return nil
+		}
+		return value
+	}
+	return map[string]any{
+		"command":                  r.Command,
+		"args":                     r.Args,
+		"prompt_mode":              r.PromptMode,
+		"prompt_flag":              r.PromptFlag,
+		"ready_delay_ms":           r.ReadyDelayMs,
+		"ready_prompt_prefix":      r.ReadyPromptPrefix,
+		"process_names":            r.ProcessNames,
+		"resume_command":           r.ResumeCommand,
+		"resume_flag":              r.ResumeFlag,
+		"resume_style":             r.ResumeStyle,
+		"session_id_flag":          r.SessionIDFlag,
+		"title_model":              r.TitleModel,
+		"supports_hooks":           triStateFromProvenance("supports_hooks", r.SupportsHooks),
+		"supports_acp":             triStateFromProvenance("supports_acp", r.SupportsACP),
+		"emits_permission_warning": triStateFromProvenance("emits_permission_warning", r.EmitsPermissionWarning),
+		"accept_startup_dialogs":   r.AcceptStartupDialogs,
+		"env":                      r.Env,
+		"permission_modes":         r.PermissionModes,
+		"option_defaults":          r.EffectiveDefaults,
+	}
 }
 
 // explainField prints a single field with its provenance source.

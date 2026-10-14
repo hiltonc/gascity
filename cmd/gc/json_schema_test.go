@@ -746,9 +746,9 @@ func TestJSONExecutionDoesNotBufferJSONLCommands(t *testing.T) {
 
 func TestJSONExecutionFailureIsStructured(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"config", "explain", "--json"}, &stdout, &stderr)
+	code := run([]string{"config", "explain", "--provider", "gc-test-missing-provider", "--json"}, &stdout, &stderr)
 	if code == 0 {
-		t.Fatalf("run(config explain --json) = 0, want nonzero")
+		t.Fatalf("run(config explain --provider gc-test-missing-provider --json) = 0, want nonzero")
 	}
 	if stderr.Len() == 0 {
 		t.Fatalf("stderr empty, want command diagnostics")
