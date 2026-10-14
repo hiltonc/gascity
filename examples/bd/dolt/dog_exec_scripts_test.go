@@ -7016,10 +7016,9 @@ func TestDoctorBackupLagFallsBackWhenTheServerReadFailsOrTimesOut(t *testing.T) 
 }
 
 // TestDoctorBackupLagProbesShareOneBudget asserts every scope's lag query draws
-// on one GC_DOCTOR_BACKUP_LAG_BUDGET_SECS budget: each query is bounded by what
-// is left of it, and once it is spent the remaining scopes are judged by their
-// push's age without a query, so a stalled server cannot hold the doctor past
-// its exec order's timeout.
+// on one GC_DOCTOR_BACKUP_LAG_BUDGET_SECS budget: once it is spent the remaining
+// scopes are judged by their push's age without a query, so a stalled server
+// cannot hold the doctor past its exec order's timeout.
 func TestDoctorBackupLagProbesShareOneBudget(t *testing.T) {
 	cityPath := t.TempDir()
 	dataDir := filepath.Join(cityPath, "dolt-data")
@@ -7057,6 +7056,32 @@ func TestDoctorBackupLagProbesShareOneBudget(t *testing.T) {
 	}
 	if !strings.Contains(gcLog, "bravo backup is 2h old, ") {
 		t.Fatalf("bravo should be judged by its push's age, log:\n%s", gcLog)
+	}
+}
+
+// TestDoctorBackupLagQueryIsCutAtWhatIsLeftOfTheBudget asserts a lag query is
+// bounded by the remaining GC_DOCTOR_BACKUP_LAG_BUDGET_SECS when that is less
+// than GC_DOCTOR_BACKUP_LAG_TIMEOUT_SECS.
+func TestDoctorBackupLagQueryIsCutAtWhatIsLeftOfTheBudget(t *testing.T) {
+	cityPath := t.TempDir()
+	dataDir := filepath.Join(cityPath, "dolt-data")
+	now := time.Now()
+	writeDoctorBackupScope(t, cityPath, dataDir, "prod", now.Add(-2*time.Hour))
+	binDir := t.TempDir()
+	gcLogPath := writeDogFakeGC(t, binDir)
+	writeDoctorFakeDoltWithLiveLog(t, binDir, []string{"prod"},
+		map[string][]time.Time{"prod": {now.Add(-90 * time.Minute)}})
+	hangDoctorLagQuery(t, binDir, "prod", 30)
+
+	start := time.Now()
+	out := runDogScript(t, "mol-dog-doctor.sh", binDir, cityPath, dataDir, doctorBackupStaleEnv,
+		"GC_DOCTOR_BACKUP_LAG_TIMEOUT_SECS=30", "GC_DOCTOR_BACKUP_LAG_BUDGET_SECS=2")
+	if elapsed := time.Since(start); elapsed >= 15*time.Second {
+		t.Fatalf("a hung lag query should be cut at the 2s budget, not its 30s bound, doctor took %s:\n%s", elapsed, out)
+	}
+	gcLog := readDogGCLog(t, gcLogPath)
+	if want := "prod backup is 2h old, live commits unreadable"; !strings.Contains(gcLog, want) {
+		t.Fatalf("want %q in log:\n%s", want, gcLog)
 	}
 }
 
@@ -7257,10 +7282,8 @@ func writeScopeMetadata(t *testing.T, scopeDir, db string) {
 // writeDoctorFakeDoltWithLiveLog stands in for the dolt CLI: every named
 // database has a <db>-backup remote, and the doctor's lag query against
 // `<db>`.dolt_log answers with the count and oldest epoch of that database's
-// commits newer than the queried push, or fails when none are given. The query
-// must pin the session to UTC: dolt_log dates are UTC, and FROM_UNIXTIME and
-// UNIX_TIMESTAMP otherwise read them in the server's zone (a PDT server shifts
-// every date by 7h).
+// commits newer than the queried push, or fails when none are given, and fails
+// the lag query unless it pins the session to UTC.
 func writeDoctorFakeDoltWithLiveLog(t *testing.T, binDir string, dbs []string, logs map[string][]time.Time) {
 	t.Helper()
 	logDir := filepath.Join(binDir, "dolt-logs")
