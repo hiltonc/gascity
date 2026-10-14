@@ -130,10 +130,10 @@
               },
               "key": {
                 "type": "string",
-                "description": "Dotted TOML key within the scoped object, e.g. provider or env.ANTHROPIC_MODEL."
+                "description": "Dotted TOML key within the scoped object, e.g. provider or env.ANTHROPIC_MODEL. Arrays of tables are keyed by index, e.g. patches.0.env.ANTHROPIC_MODEL."
               },
               "value": {
-                "description": "Resolved value. [redacted] when redacted is true."
+                "description": "Resolved value. <redacted> when redacted is true."
               },
               "layer": {
                 "enum": [
