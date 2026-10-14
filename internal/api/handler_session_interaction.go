@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gastownhall/gascity/internal/pendingwatch"
 	"github.com/gastownhall/gascity/internal/runtime"
 	"github.com/gastownhall/gascity/internal/session"
 	"github.com/gastownhall/gascity/internal/worker"
@@ -67,7 +68,7 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Publish the session.pending_cleared now rather than on the next pass.
-	s.pokePendingInteractions(id)
+	s.pokePendingInteractions(id, pendingwatch.ResolvedByMessage)
 
 	resp := map[string]string{"status": "accepted", "id": id}
 	s.idem.storeResponse(idemKey, bodyHash, http.StatusAccepted, resp)
@@ -212,6 +213,8 @@ func (s *Server) handleSessionRespond(w http.ResponseWriter, r *http.Request) {
 		writeSessionManagerError(w, err)
 		return
 	}
+	// Publish the session.pending_cleared now rather than on the next pass.
+	s.pokePendingInteractions(id, pendingwatch.ResolvedByRespond)
 
 	resp := map[string]string{"status": "accepted", "id": id}
 	s.idem.storeResponse(idemKey, bodyHash, http.StatusAccepted, resp)

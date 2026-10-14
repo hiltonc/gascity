@@ -34,6 +34,7 @@ type fakeCity struct {
 	failNext   int
 	published  []Transition
 	onPublish  func(Transition)
+	onProbe    func(name string)
 }
 
 func newFakeCity(sessions ...Session) *fakeCity {
@@ -73,6 +74,11 @@ func (f *fakeCity) deps() Deps {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			f.probes[name]++
+			if hook := f.onProbe; hook != nil {
+				f.mu.Unlock()
+				hook(name)
+				f.mu.Lock()
+			}
 			if f.unsupp[name] {
 				return Observation{}
 			}
@@ -127,6 +133,9 @@ func (f *fakeCity) transitions() []string {
 			s += " " + tr.Pending.RequestID
 		} else {
 			s += " " + tr.Previous.RequestID + " " + tr.Reason
+			if tr.ResolvedBy != "" {
+				s += " by=" + tr.ResolvedBy
+			}
 		}
 		out = append(out, s)
 	}
@@ -253,6 +262,133 @@ func TestPokeForcesRecaptureOfAnsweredSession(t *testing.T) {
 	w.Poke("s-1")
 	w.Pass(ctx)
 	assertTransitions(t, f, "session.pending s-1 r1", "session.pending_cleared s-1 r1 resolved")
+}
+
+func TestAnsweredAttributesTheClearExactlyOnce(t *testing.T) {
+	f := newFakeCity(Session{ID: "s-1", Name: "w1"})
+	f.set("w1", approval("r1"), t0)
+	w := New(f.deps(), nil)
+	ctx := context.Background()
+	w.Pass(ctx)
+
+	f.set("w1", nil, t0) // the activity clock has not moved yet
+	w.Answered("s-1", ResolvedByRespond)
+	w.Pass(ctx)
+	w.Answered("s-1", ResolvedByRespond) // answered again
+	w.Pass(ctx)
+
+	assertTransitions(t, f,
+		"session.pending s-1 r1",
+		"session.pending_cleared s-1 r1 resolved by=respond",
+	)
+}
+
+// An answer for a session with nothing announced emits nothing, and the
+// attribution does not carry over to an interaction announced later.
+func TestAnsweredWithNothingAnnouncedEmitsNothing(t *testing.T) {
+	f := newFakeCity(Session{ID: "s-1", Name: "w1"})
+	f.set("w1", nil, t0)
+	w := New(f.deps(), nil)
+	ctx := context.Background()
+	w.Pass(ctx)
+
+	w.Answered("s-1", ResolvedByRespond)
+	w.Pass(ctx)
+	assertTransitions(t, f)
+
+	f.set("w1", approval("r1"), t0.Add(time.Second))
+	w.Pass(ctx)
+	f.set("w1", nil, t0.Add(2*time.Second)) // answered in the session itself
+	w.Pass(ctx)
+	assertTransitions(t, f,
+		"session.pending s-1 r1",
+		"session.pending_cleared s-1 r1 resolved",
+	)
+}
+
+// An answer whose effect has not reached the screen yet stays bound to the
+// interaction it answered: it attributes that interaction's clear, even as a
+// replacement, and never the interaction that replaced it.
+func TestAnsweredAttributionStaysWithItsInteraction(t *testing.T) {
+	f := newFakeCity(Session{ID: "s-1", Name: "w1"})
+	f.set("w1", approval("r1"), t0)
+	w := New(f.deps(), nil)
+	ctx := context.Background()
+	w.Pass(ctx)
+
+	w.Answered("s-1", ResolvedByMessage)
+	w.Pass(ctx) // still on screen
+	assertTransitions(t, f, "session.pending s-1 r1")
+
+	f.set("w1", approval("r2"), t0.Add(time.Second))
+	w.Pass(ctx)
+	f.set("w1", nil, t0.Add(2*time.Second))
+	w.Pass(ctx)
+	assertTransitions(t, f,
+		"session.pending s-1 r1",
+		"session.pending_cleared s-1 r1 replaced by=message",
+		"session.pending s-1 r2",
+		"session.pending_cleared s-1 r2 resolved",
+	)
+}
+
+// An answer that lands while a pass is probing the answered session attributes
+// the clear that pass publishes.
+func TestAnsweredDuringThePassAttributesItsClear(t *testing.T) {
+	f := newFakeCity(Session{ID: "s-1", Name: "w1"})
+	f.set("w1", approval("r1"), t0)
+	w := New(f.deps(), nil)
+	ctx := context.Background()
+	w.Pass(ctx)
+
+	f.set("w1", nil, t0.Add(time.Second))
+	f.onProbe = func(string) { w.Answered("s-1", ResolvedByRespond) }
+	w.Pass(ctx)
+	f.onProbe = nil
+	w.Pass(ctx)
+
+	assertTransitions(t, f,
+		"session.pending s-1 r1",
+		"session.pending_cleared s-1 r1 resolved by=respond",
+	)
+}
+
+func TestAnsweredDoesNotAttributeASessionGone(t *testing.T) {
+	f := newFakeCity(Session{ID: "s-1", Name: "w1"})
+	f.set("w1", approval("r1"), t0)
+	w := New(f.deps(), nil)
+	ctx := context.Background()
+	w.Pass(ctx)
+
+	w.Answered("s-1", ResolvedByRespond)
+	f.mu.Lock()
+	f.sessions = nil
+	f.mu.Unlock()
+	w.Pass(ctx)
+
+	assertTransitions(t, f,
+		"session.pending s-1 r1",
+		"session.pending_cleared s-1 r1 session_gone",
+	)
+}
+
+func TestFailedAttributedClearKeepsItsAttribution(t *testing.T) {
+	f := newFakeCity(Session{ID: "s-1", Name: "w1"})
+	f.set("w1", approval("r1"), t0)
+	w := New(f.deps(), nil)
+	ctx := context.Background()
+	w.Pass(ctx)
+
+	f.set("w1", nil, t0.Add(time.Second))
+	w.Answered("s-1", ResolvedByRespond)
+	f.failNext = 1
+	w.Pass(ctx)
+	w.Pass(ctx)
+
+	assertTransitions(t, f,
+		"session.pending s-1 r1",
+		"session.pending_cleared s-1 r1 resolved by=respond",
+	)
 }
 
 func TestPassClearsGoneSessionsOnlyOnCompleteListings(t *testing.T) {

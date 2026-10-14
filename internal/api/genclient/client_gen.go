@@ -276,6 +276,24 @@ func (e SessionPendingClearedPayloadReason) Valid() bool {
 	}
 }
 
+// Defines values for SessionPendingClearedPayloadResolvedBy.
+const (
+	SessionPendingClearedPayloadResolvedByMessage SessionPendingClearedPayloadResolvedBy = "message"
+	SessionPendingClearedPayloadResolvedByRespond SessionPendingClearedPayloadResolvedBy = "respond"
+)
+
+// Valid indicates whether the value is a known member of the SessionPendingClearedPayloadResolvedBy enum.
+func (e SessionPendingClearedPayloadResolvedBy) Valid() bool {
+	switch e {
+	case SessionPendingClearedPayloadResolvedByMessage:
+		return true
+	case SessionPendingClearedPayloadResolvedByRespond:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SessionStreamStructuredMessageEventOperation.
 const (
 	Reset    SessionStreamStructuredMessageEventOperation = "reset"
@@ -3865,12 +3883,18 @@ type SessionPendingClearedPayload struct {
 	// RequestId Request ID from the matching session.pending.
 	RequestId string `json:"request_id"`
 
+	// ResolvedBy Answer path that answered the interaction, on a resolved or replaced clear: respond (POST .../session/{id}/respond) or message (a user message sent through POST .../session/{id}/messages). Absent when no answer path reported it: answered inside the session itself, withdrawn, timed out, or cleared after a controller restart.
+	ResolvedBy *SessionPendingClearedPayloadResolvedBy `json:"resolved_by,omitempty"`
+
 	// SessionId Session bead ID from the matching session.pending.
 	SessionId string `json:"session_id"`
 }
 
 // SessionPendingClearedPayloadReason Why it cleared: resolved (answered or withdrawn), replaced (a different interaction is now pending; its session.pending follows), or session_gone (the session is no longer active).
 type SessionPendingClearedPayloadReason string
+
+// SessionPendingClearedPayloadResolvedBy Answer path that answered the interaction, on a resolved or replaced clear: respond (POST .../session/{id}/respond) or message (a user message sent through POST .../session/{id}/messages). Absent when no answer path reported it: answered inside the session itself, withdrawn, timed out, or cleared after a controller restart.
+type SessionPendingClearedPayloadResolvedBy string
 
 // SessionPendingPayload defines model for SessionPendingPayload.
 type SessionPendingPayload struct {

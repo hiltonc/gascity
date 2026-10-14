@@ -1778,6 +1778,7 @@ export const zSessionPendingClearedPayload = z.object({
         'session_gone'
     ]),
     request_id: z.string(),
+    resolved_by: z.enum(['respond', 'message']).optional(),
     session_id: z.string()
 });
 
