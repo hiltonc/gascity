@@ -6,10 +6,12 @@ import (
 	"maps"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
 	"github.com/gastownhall/gascity/internal/config"
+	"github.com/gastownhall/gascity/internal/runtime"
 )
 
 // configExplainSchemaVersion identifies the document emitted by
@@ -33,9 +35,6 @@ const (
 	configExplainLayerBuiltin  = "builtin"
 	configExplainLayerProvider = "provider"
 )
-
-// configExplainRedactedValue replaces an env value withheld from the output.
-const configExplainRedactedValue = "[redacted]"
 
 // configExplainJSON is the "gc config explain --json" document: every
 // resolved key of the composed config with its value and provenance.
@@ -222,12 +221,20 @@ func (b *configExplainBuilder) addFlattened(v any, base configExplainEntry, sour
 	return nil
 }
 
-// addValue appends value under key, descending into tables. name is the
-// last key segment; children of a table named "env" are env values.
+// addValue appends value under key, descending into tables and arrays
+// of tables (keyed by index). name is the last key segment; children of
+// a table named "env" are env values.
 func (b *configExplainBuilder) addValue(entry configExplainEntry, key, name string, value any, isEnvValue bool) {
-	if table, ok := value.(map[string]any); ok {
-		for _, k := range slices.Sorted(maps.Keys(table)) {
-			b.addValue(entry, key+"."+k, k, table[k], name == "env")
+	switch v := value.(type) {
+	case map[string]any:
+		for _, k := range slices.Sorted(maps.Keys(v)) {
+			b.addValue(entry, key+"."+k, k, v[k], name == "env")
+		}
+		return
+	case []map[string]any:
+		for i, table := range v {
+			index := strconv.Itoa(i)
+			b.addValue(entry, key+"."+index, index, table, false)
 		}
 		return
 	}
@@ -245,7 +252,7 @@ func (b *configExplainBuilder) envValue(name string, value any) (any, bool) {
 	if b.showEnv || strings.HasSuffix(name, "_MODEL") {
 		return value, false
 	}
-	return configExplainRedactedValue, true
+	return runtime.RedactedValue, true
 }
 
 // addProvider appends every field and map key some chain layer set on a
