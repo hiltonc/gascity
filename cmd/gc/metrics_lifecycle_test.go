@@ -651,7 +651,7 @@ func TestProductMetricsLifecycleFailuresPreserveOutputAndOTel(t *testing.T) {
 		{name: "direct success", args: []string{"version"}},
 		{name: "direct Cobra failure", args: []string{"version", "--not-a-flag"}},
 		{name: "buffered JSON success", args: []string{"version", "--json"}},
-		{name: "buffered JSON failure", args: []string{"config", "explain", "--json"}},
+		{name: "buffered JSON failure", args: []string{"config", "explain", "--provider", "gc-test-missing-provider", "--json"}},
 		{name: "reported JSON failure", args: []string{"events", "--json", "--after", "1", "--after-cursor", "x"}},
 		{name: "early JSON schema", args: []string{"version", "--json-schema"}},
 		{name: "early JSON contract failure", args: []string{"completion", "bash", "--json"}},

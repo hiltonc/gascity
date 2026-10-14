@@ -821,7 +821,12 @@ with per-field and per-map-key attribution — which chain layer
 (builtin:X or providers.Y) contributed each value. Useful for
 debugging base-chain inheritance.
 
-Use --json to emit machine-readable output (providers only).
+Use --json to emit machine-readable output. With --provider it emits
+that provider's chain; otherwise it emits every resolved key of the
+workspace, imports, rigs, agents, and custom providers as one entry
+each (scope, name, key, value, layer, source). Env values are redacted
+in that document except for names ending in _MODEL; --show-env
+includes them.
 
 ```
 gc config explain [flags]
@@ -835,6 +840,7 @@ gc config explain --agent mayor
 gc config explain --rig my-project
 gc config explain --provider codex-max
 gc config explain --provider codex-max --json
+gc config explain --json
 gc config explain -f overlay.toml --agent polecat
 ```
 
@@ -842,9 +848,10 @@ gc config explain -f overlay.toml --agent polecat
 |------|------|---------|-------------|
 | `--agent` | string |  | filter to a specific agent name |
 | `-f`, `--file` | stringArray |  | additional config files to layer (can be repeated) |
-| `--json` | bool |  | emit JSON (requires --provider) |
+| `--json` | bool |  | emit JSON |
 | `--provider` | string |  | explain a provider's resolved chain instead of agents |
 | `--rig` | string |  | filter to agents in this rig |
+| `--show-env` | bool |  | include env values in --json output (redacted by default except *_MODEL) |
 
 ## gc config show
 
@@ -2346,6 +2353,7 @@ gc import list [flags]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
+| `--json` | bool |  | Emit the listed imports as JSON |
 | `--tree` | bool |  | Show the import dependency tree |
 
 ## gc import prune

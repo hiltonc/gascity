@@ -281,6 +281,7 @@ func newImportUpgradeCmd(stdout, stderr io.Writer) *cobra.Command {
 
 func newImportListCmd(stdout, stderr io.Writer) *cobra.Command {
 	var tree bool
+	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List imported packs",
@@ -291,6 +292,16 @@ func newImportListCmd(stdout, stderr io.Writer) *cobra.Command {
 				fmt.Fprintf(stderr, "gc import list: %v\n", err) //nolint:errcheck
 				return errExit
 			}
+			if asJSON {
+				if tree {
+					fmt.Fprintln(stderr, "gc import list: --json is not supported with --tree") //nolint:errcheck
+					return errExit
+				}
+				if doImportListJSON(cityPath, stdout, stderr) != 0 {
+					return errExit
+				}
+				return nil
+			}
 			if doImportList(cityPath, tree, stdout, stderr) != 0 {
 				return errExit
 			}
@@ -298,6 +309,7 @@ func newImportListCmd(stdout, stderr io.Writer) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&tree, "tree", false, "Show the import dependency tree")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit the listed imports as JSON")
 	return cmd
 }
 
@@ -966,26 +978,11 @@ func doImportUpgrade(cityPath, target string, stdout, stderr io.Writer) int {
 }
 
 func doImportList(cityPath string, tree bool, stdout, stderr io.Writer) int {
-	scope, err := loadImportScopeFS(fsys.OSFS{}, cityPath)
+	inspectImports, lock, err := loadImportListInputs(cityPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "gc import list: %v\n", err) //nolint:errcheck
 		return 1
 	}
-	lock, err := readImportLockfile(fsys.OSFS{}, cityPath)
-	if err != nil {
-		fmt.Fprintf(stderr, "gc import list: %v\n", err) //nolint:errcheck
-		return 1
-	}
-	inspectImports, err := collectInspectableImportsFS(fsys.OSFS{}, cityPath, scope)
-	if err != nil {
-		fmt.Fprintf(stderr, "gc import list: %v\n", err) //nolint:errcheck
-		return 1
-	}
-	var directNames []string
-	for name := range inspectImports {
-		directNames = append(directNames, name)
-	}
-	sort.Strings(directNames)
 	if tree {
 		if err := writeImportTree(stdout, inspectImports, lock); err != nil {
 			fmt.Fprintf(stderr, "gc import list: %v\n", err) //nolint:errcheck
@@ -994,51 +991,24 @@ func doImportList(cityPath string, tree bool, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	allImports, err := collectAllImportsFS(cityPath)
+	rows, err := importListRowsFor(cityPath, inspectImports, lock)
 	if err != nil {
 		fmt.Fprintf(stderr, "gc import list: %v\n", err) //nolint:errcheck
 		return 1
 	}
-	allowLockOnlyFallback := len(allImports) == len(inspectImports)
-
-	graph, graphErr := buildImportGraph(inspectImports, lock)
-	if graphErr != nil && !allowLockOnlyFallback {
-		fmt.Fprintf(stderr, "gc import list: %v\n", graphErr) //nolint:errcheck
-		return 1
-	}
-
-	directSources := make(map[string]bool)
-	for _, name := range directNames {
-		imp := inspectImports[name]
-		if !isRemoteImportSource(imp.Source) {
-			fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\n", name, imp.Source, imp.Version, "(path)") //nolint:errcheck
-			continue
+	for _, row := range rows {
+		binding := row.Binding
+		if row.Transitive {
+			binding = "(transitive)"
 		}
-		directSources[imp.Source] = true
-		pack, ok := lock.Packs[imp.Source]
-		if !ok {
-			fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\n", name, imp.Source, imp.Version, "(unlocked)") //nolint:errcheck
-			continue
+		lockColumn := row.LockVersion
+		switch row.LockState {
+		case importListLockPath:
+			lockColumn = "(path)"
+		case importListLockUnlocked:
+			lockColumn = "(unlocked)"
 		}
-		fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\n", name, imp.Source, imp.Version, pack.Version) //nolint:errcheck
-	}
-
-	transitive := collectTransitiveImports(graph, directSources)
-	if len(transitive) == 0 && allowLockOnlyFallback {
-		for source, pack := range lock.Packs {
-			if !directSources[source] {
-				transitive[source] = pack
-			}
-		}
-	}
-	transitiveSources := make([]string, 0, len(transitive))
-	for source := range transitive {
-		transitiveSources = append(transitiveSources, source)
-	}
-	sort.Strings(transitiveSources)
-	for _, source := range transitiveSources {
-		pack := transitive[source]
-		fmt.Fprintf(stdout, "(transitive)\t%s\t\t%s\n", source, pack.Version) //nolint:errcheck
+		fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\n", binding, row.Source, row.Version, lockColumn) //nolint:errcheck
 	}
 	return 0
 }

@@ -273,6 +273,7 @@ func loadWithIncludesOptions(fs fsys.FS, path string, opts LoadOptions, extraInc
 			for name, imp := range pc.Imports {
 				if _, exists := root.Imports[name]; !exists {
 					root.Imports[name] = imp
+					prov.Imports[name] = packPath
 				}
 			}
 		}
