@@ -38,8 +38,14 @@ LATENCY_WARN_MS="${GC_DOCTOR_LATENCY_WARN_MS:-$(( ${GC_DOCTOR_LATENCY_WARN_S:-1}
 CONN_WARN_PCT="${GC_DOCTOR_CONN_WARN_PCT:-80}"
 BACKUP_STALE_S="${GC_DOCTOR_BACKUP_STALE_S:-43200}"  # 2x 6h backup interval
 BACKUP_ARTIFACT_DIR="${GC_BACKUP_ARTIFACT_DIR:-$GC_CITY_PATH/.dolt-backup}"
-# How many live commits the lag count reads; a lag that deep reports as "N+".
+# How many live commits the lag count reads. A lag that deep is read again to
+# the deep depth, since `dolt log` walks the whole history it is asked for and a
+# burst of writes after a long idle can exceed the first scan; a lag past the
+# deep scan reports as "N+". The deep read has its own bound: on a busy server
+# 1000 commits take ~45s (hilton-gas-city 2026-10-14).
 BACKUP_LAG_SCAN_COMMITS="${GC_DOCTOR_BACKUP_LAG_SCAN_COMMITS:-100}"
+BACKUP_LAG_DEEP_SCAN_COMMITS="${GC_DOCTOR_BACKUP_LAG_DEEP_SCAN_COMMITS:-1000}"
+BACKUP_LAG_DEEP_SCAN_TIMEOUT_SECS="${GC_DOCTOR_BACKUP_LAG_DEEP_SCAN_TIMEOUT_SECS:-90}"
 # Advisory dedup state (#3409): records the signature of the last-sent [MEDIUM]
 # advisory so a persistent condition collapses into one rolling alert instead of
 # a fresh bead every 5-min tick. DOLT_STATE_DIR is set by runtime.sh.
@@ -156,8 +162,9 @@ backup_commit_mtime_for_db() {
     fi
 }
 
-# Live commits in a database newer than its last push, read from `dolt log` in
-# its data directory (read-only, like the `dolt backup` probe below): prints
+# Live commits in a database newer than its last push, read from the newest
+# <depth> commits of `dolt log` in its data directory, bounded by <timeout>
+# seconds (read-only, like the `dolt backup` probe below): prints
 # "<count> <epoch of the oldest such commit>", the epoch 0 when none. Fails when
 # the log cannot be read or carries no parseable Date: line, so the caller falls
 # back to judging the backup by age alone. Dates are parsed in awk rather than
@@ -165,7 +172,9 @@ backup_commit_mtime_for_db() {
 backup_live_lag() {
     lag_db_dir="$1"
     lag_pushed_at="$2"
-    lag_log=$(cd "$lag_db_dir" && run_bounded 30 dolt log -n "$BACKUP_LAG_SCAN_COMMITS" 2>/dev/null) || return 1
+    lag_depth="$3"
+    lag_timeout="$4"
+    lag_log=$(cd "$lag_db_dir" && run_bounded "$lag_timeout" dolt log -n "$lag_depth" 2>/dev/null) || return 1
     printf '%s\n' "$lag_log" | awk -v pushed="$lag_pushed_at" '
         function civil_days(y, m, d,   era, yoe, doy) {
             y -= (m <= 2)
@@ -372,14 +381,20 @@ if [ -n "$BACKUP_ELIGIBLE_DBS" ]; then
                 BACKUP_SCOPES_CURRENT=$((BACKUP_SCOPES_CURRENT + 1))
                 continue
             fi
-            if BACKUP_LAG=$(backup_live_lag "$DOLT_DATA_DIR/$db" "$BACKUP_COMMIT_MTIME"); then
+            BACKUP_LAG_DEPTH="$BACKUP_LAG_SCAN_COMMITS"
+            if BACKUP_LAG=$(backup_live_lag "$DOLT_DATA_DIR/$db" "$BACKUP_COMMIT_MTIME" "$BACKUP_LAG_DEPTH" 30); then
                 read -r BACKUP_LAG_COMMITS BACKUP_LAG_OLDEST <<<"$BACKUP_LAG"
+                if [ "$BACKUP_LAG_COMMITS" -ge "$BACKUP_LAG_DEPTH" ] && [ "$BACKUP_LAG_DEEP_SCAN_COMMITS" -gt "$BACKUP_LAG_DEPTH" ] &&
+                    BACKUP_LAG=$(backup_live_lag "$DOLT_DATA_DIR/$db" "$BACKUP_COMMIT_MTIME" "$BACKUP_LAG_DEEP_SCAN_COMMITS" "$BACKUP_LAG_DEEP_SCAN_TIMEOUT_SECS"); then
+                    BACKUP_LAG_DEPTH="$BACKUP_LAG_DEEP_SCAN_COMMITS"
+                    read -r BACKUP_LAG_COMMITS BACKUP_LAG_OLDEST <<<"$BACKUP_LAG"
+                fi
                 if [ "$BACKUP_LAG_COMMITS" -eq 0 ]; then
                     BACKUP_SCOPES_CURRENT=$((BACKUP_SCOPES_CURRENT + 1))
                     continue
                 fi
                 BACKUP_LAG_AGE=$((NOW_S - BACKUP_LAG_OLDEST))
-                if [ "$BACKUP_LAG_COMMITS" -ge "$BACKUP_LAG_SCAN_COMMITS" ]; then
+                if [ "$BACKUP_LAG_COMMITS" -ge "$BACKUP_LAG_DEPTH" ]; then
                     # The scan ended before reaching the push, so the oldest
                     # unpushed change is older than any commit read; the push's
                     # age past the threshold is the only bound left.

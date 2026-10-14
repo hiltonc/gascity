@@ -6919,34 +6919,69 @@ func TestDoctorBackupFreshnessMeasuresLagNotAge(t *testing.T) {
 }
 
 // TestDoctorBackupLagCountIsCappedAtTheScanDepth asserts a lag deeper than the
-// commits the doctor reads is reported as a floor, not as an exact count. The
-// oldest unpushed commit lies past the scan, so the scope is judged stale on
-// its push's age even though every commit read is younger than the threshold.
+// first scan is read again deeper, and a lag deeper than that is reported as a
+// floor, not as an exact count. A burst of writes after a long idle outruns the
+// first scan (hilton-gas-city 2026-10-14: gbs took 129 commits in the 50
+// minutes after 16h idle), so stopping there would call a fresh lag stale. Past
+// the deep scan the oldest unpushed commit is out of sight, so the scope is
+// judged stale on its push's age even though every commit read is younger than
+// the threshold.
 func TestDoctorBackupLagCountIsCappedAtTheScanDepth(t *testing.T) {
-	cityPath := t.TempDir()
-	dataDir := filepath.Join(cityPath, "dolt-data")
-	artifactDir := filepath.Join(cityPath, ".dolt-backup")
-	if err := os.MkdirAll(filepath.Join(dataDir, "prod", ".dolt"), 0o755); err != nil {
-		t.Fatalf("mkdir prod: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(artifactDir, "prod"), 0o755); err != nil {
-		t.Fatalf("mkdir backup remote: %v", err)
-	}
 	now := time.Now()
-	writeBackupRemoteFile(t, filepath.Join(artifactDir, "prod", "manifest"), now.Add(-2*time.Hour))
-	commits := make([]time.Time, 3)
-	for i := range commits {
-		commits[i] = now.Add(-time.Duration(i+1) * time.Minute)
-	}
+	for _, tc := range []struct {
+		name     string
+		commits  int // unpushed commits, one a minute back from now
+		want     string
+		dontWant string
+		wantOK   string
+	}{
+		{
+			name:     "a lag past the first scan is read again deeper",
+			commits:  4,
+			dontWant: "prod backup",
+			wantOK:   "backups current: 1/1",
+		},
+		{
+			name:    "a lag past the deep scan is a floor",
+			commits: 6,
+			want:    "prod backup is 5+ commits behind; oldest unpushed change is at least 5m old",
+			wantOK:  "backups current: 0/1",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cityPath := t.TempDir()
+			dataDir := filepath.Join(cityPath, "dolt-data")
+			artifactDir := filepath.Join(cityPath, ".dolt-backup")
+			if err := os.MkdirAll(filepath.Join(dataDir, "prod", ".dolt"), 0o755); err != nil {
+				t.Fatalf("mkdir prod: %v", err)
+			}
+			if err := os.MkdirAll(filepath.Join(artifactDir, "prod"), 0o755); err != nil {
+				t.Fatalf("mkdir backup remote: %v", err)
+			}
+			writeBackupRemoteFile(t, filepath.Join(artifactDir, "prod", "manifest"), now.Add(-2*time.Hour))
+			commits := make([]time.Time, tc.commits, tc.commits+1)
+			for i := range commits {
+				commits[i] = now.Add(-time.Duration(i+1) * time.Minute)
+			}
+			commits = append(commits, now.Add(-3*time.Hour))
 
-	binDir := t.TempDir()
-	gcLogPath := writeDogFakeGC(t, binDir)
-	writeDoctorFakeDoltWithLiveLog(t, binDir, []string{"prod"}, map[string][]time.Time{"prod": commits})
+			binDir := t.TempDir()
+			gcLogPath := writeDogFakeGC(t, binDir)
+			writeDoctorFakeDoltWithLiveLog(t, binDir, []string{"prod"}, map[string][]time.Time{"prod": commits})
 
-	runDogScript(t, "mol-dog-doctor.sh", binDir, cityPath, dataDir, doctorBackupStaleEnv,
-		"GC_DOCTOR_BACKUP_LAG_SCAN_COMMITS=3")
-	if gcLog := readDogGCLog(t, gcLogPath); !strings.Contains(gcLog, "prod backup is 3+ commits behind; oldest unpushed change is at least 3m old") {
-		t.Fatalf("lag deeper than the scan should read as a floor, log:\n%s", gcLog)
+			out := runDogScript(t, "mol-dog-doctor.sh", binDir, cityPath, dataDir, "GC_DOCTOR_BACKUP_STALE_S=600",
+				"GC_DOCTOR_BACKUP_LAG_SCAN_COMMITS=3", "GC_DOCTOR_BACKUP_LAG_DEEP_SCAN_COMMITS=5")
+			if !strings.Contains(out, tc.wantOK) {
+				t.Fatalf("ok line lacks %q:\n%s", tc.wantOK, out)
+			}
+			gcLog := readDogGCLog(t, gcLogPath)
+			if tc.want != "" && !strings.Contains(gcLog, tc.want) {
+				t.Fatalf("want %q in log:\n%s", tc.want, gcLog)
+			}
+			if tc.dontWant != "" && strings.Contains(gcLog, tc.dontWant) {
+				t.Fatalf("unexpected %q in log:\n%s", tc.dontWant, gcLog)
+			}
+		})
 	}
 }
 
