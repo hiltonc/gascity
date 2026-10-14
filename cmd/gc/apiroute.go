@@ -39,8 +39,10 @@ var (
 // is missing or prohibitively expensive use supervisorFallthroughAPIClient
 // instead, which additionally routes a supervisor-managed city (alive socket,
 // no standalone [api] port) to the supervisor client rather than reporting
-// controller-down: maintenance (no local fallback at all) and gc status (local
-// fallback re-opens the bead/dolt store). (gascity ga-tp7, ra-r9hm6v)
+// controller-down: maintenance (no local fallback at all), gc status (local
+// fallback re-opens the bead/dolt store) and gc session pending (local fallback
+// opens the store and cannot reach in-process runtimes). (gascity ga-tp7,
+// ra-r9hm6v)
 func apiClient(cityPath string) *api.Client {
 	// Remote routing is NOT handled here. A remote target is refused upstream by
 	// the capability gate in resolveContext (Phase 1) and, once enabled, will be
@@ -63,7 +65,7 @@ func apiClient(cityPath string) *api.Client {
 		// Alive socket: use the standalone HTTP endpoint when configured, else
 		// return nil so the caller takes its local fallback. A supervisor-managed
 		// city (no standalone [api] port) reaches the supervisor client only via
-		// supervisorFallthroughAPIClient (maintenance and gc status).
+		// supervisorFallthroughAPIClient (maintenance, gc status, session pending).
 		return standaloneControllerClient(cityPath)
 	}
 	return apiRouteSupervisorClientHook(cityPath)

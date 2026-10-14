@@ -41,12 +41,12 @@ are listed in partial_errors rather than failing the command.`,
 // sessionPendingAPIClient returns (client, "") when the API path is available,
 // or (nil, reason) when the caller should fall back. Indirected through a var
 // so tests can inject one.
-var sessionPendingAPIClient = func(cityPath string) (*api.Client, string) {
-	if c := apiClient(cityPath); c != nil {
-		return c, ""
-	}
-	return nil, apiClientFallbackReason(cityPath)
-}
+//
+// Uses supervisorFallthroughAPIClient rather than plain apiClient: in a
+// supervisor-managed city (no standalone [api] port) apiClient returns nil
+// even though the supervisor is up, and the local fallback both misses
+// in-process runtimes and opens the city store from the CLI.
+var sessionPendingAPIClient = supervisorFallthroughAPIClient
 
 // cmdSessionPending is the CLI entry point for "gc session pending". It routes
 // through the supervisor API when a controller is up, because in-process
