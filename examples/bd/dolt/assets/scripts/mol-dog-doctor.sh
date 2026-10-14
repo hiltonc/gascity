@@ -8,11 +8,13 @@
 # Runs as an exec order (no LLM, no agent, no wisp).
 #
 # RPO note: BACKUP_STALE_S (default 43200 = 12h = 2x backup interval) bounds how
-# long live commits may go unpushed. A database's backup is stale when its last
-# push (the backup remote's manifest mtime) is older than BACKUP_STALE_S AND the
-# live store holds commits newer than that push. A scope with nothing to push
-# stays current however long ago its last push was: `bd backup sync` writes
-# nothing for it, so the manifest age alone measures idleness, not data at risk.
+# long live commits may go unpushed. A database's backup is stale when the
+# oldest live commit newer than its last push (the backup remote's manifest
+# mtime) is itself older than BACKUP_STALE_S. A scope with nothing to push stays
+# current however long ago its last push was: `bd backup sync` writes nothing
+# for it, so the manifest age alone measures idleness, not data at risk. Nor
+# does the first write after a long idle read as the push's age: its own age is
+# how long that change has gone unbacked-up.
 # With 6h backup syncs and fail-closed journal corruption recovery, maximum data
 # loss on journal corruption without manual intervention is one 6h backup interval.
 # If BACKUP_STALE_S exceeds 2x the backup interval, a single missed backup cycle
@@ -154,11 +156,12 @@ backup_commit_mtime_for_db() {
     fi
 }
 
-# Number of live commits in a database newer than its last push, read from
-# `dolt log` in its data directory (read-only, like the `dolt backup` probe
-# below). Fails when the log cannot be read or carries no parseable Date: line,
-# so the caller falls back to judging the backup by age alone. Dates are parsed
-# in awk rather than date(1) because GNU and BSD date disagree on parsing.
+# Live commits in a database newer than its last push, read from `dolt log` in
+# its data directory (read-only, like the `dolt backup` probe below): prints
+# "<count> <epoch of the oldest such commit>", the epoch 0 when none. Fails when
+# the log cannot be read or carries no parseable Date: line, so the caller falls
+# back to judging the backup by age alone. Dates are parsed in awk rather than
+# date(1) because GNU and BSD date disagree on parsing.
 backup_live_lag() {
     lag_db_dir="$1"
     lag_pushed_at="$2"
@@ -180,9 +183,21 @@ backup_live_lag() {
             off = (substr($6, 2, 2) * 3600 + substr($6, 4, 2) * 60) * (substr($6, 1, 1) == "-" ? -1 : 1)
             t = civil_days($7 + 0, m, $4 + 0) * 86400 + hms[1] * 3600 + hms[2] * 60 + hms[3] - off
             scanned++
-            if (t > pushed) count++
+            if (t > pushed) {
+                count++
+                if (!oldest || t < oldest) oldest = t
+            }
         }
-        END { if (!scanned) exit 1; print count + 0 }'
+        END { if (!scanned) exit 1; print count + 0, oldest + 0 }'
+}
+
+# A duration in seconds as "Nh", or "Nm" under an hour.
+backup_age_text() {
+    if [ "$1" -ge 3600 ]; then
+        printf '%sh\n' "$(($1 / 3600))"
+    else
+        printf '%sm\n' "$(($1 / 60))"
+    fi
 }
 
 # Which scope owns each database: "<db>\t<rig>\t<suspended>" lines from
@@ -357,21 +372,28 @@ if [ -n "$BACKUP_ELIGIBLE_DBS" ]; then
                 BACKUP_SCOPES_CURRENT=$((BACKUP_SCOPES_CURRENT + 1))
                 continue
             fi
-            BACKUP_DETAIL="$db backup is $((BACKUP_AGE / 3600))h old"
             if BACKUP_LAG=$(backup_live_lag "$DOLT_DATA_DIR/$db" "$BACKUP_COMMIT_MTIME"); then
-                if [ "$BACKUP_LAG" -eq 0 ]; then
+                read -r BACKUP_LAG_COMMITS BACKUP_LAG_OLDEST <<<"$BACKUP_LAG"
+                if [ "$BACKUP_LAG_COMMITS" -eq 0 ]; then
                     BACKUP_SCOPES_CURRENT=$((BACKUP_SCOPES_CURRENT + 1))
                     continue
                 fi
-                if [ "$BACKUP_LAG" -ge "$BACKUP_LAG_SCAN_COMMITS" ]; then
-                    BACKUP_DETAIL="$BACKUP_DETAIL, ${BACKUP_LAG}+ commits behind"
-                elif [ "$BACKUP_LAG" -eq 1 ]; then
-                    BACKUP_DETAIL="$BACKUP_DETAIL, 1 commit behind"
+                BACKUP_LAG_AGE=$((NOW_S - BACKUP_LAG_OLDEST))
+                if [ "$BACKUP_LAG_COMMITS" -ge "$BACKUP_LAG_SCAN_COMMITS" ]; then
+                    # The scan ended before reaching the push, so the oldest
+                    # unpushed change is older than any commit read; the push's
+                    # age past the threshold is the only bound left.
+                    BACKUP_DETAIL="$db backup is ${BACKUP_LAG_COMMITS}+ commits behind; oldest unpushed change is at least $(backup_age_text "$BACKUP_LAG_AGE") old"
+                elif [ "$BACKUP_LAG_AGE" -le "$BACKUP_STALE_S" ]; then
+                    BACKUP_SCOPES_CURRENT=$((BACKUP_SCOPES_CURRENT + 1))
+                    continue
+                elif [ "$BACKUP_LAG_COMMITS" -eq 1 ]; then
+                    BACKUP_DETAIL="$db backup is 1 commit behind; oldest unpushed change is $(backup_age_text "$BACKUP_LAG_AGE") old"
                 else
-                    BACKUP_DETAIL="$BACKUP_DETAIL, $BACKUP_LAG commits behind"
+                    BACKUP_DETAIL="$db backup is $BACKUP_LAG_COMMITS commits behind; oldest unpushed change is $(backup_age_text "$BACKUP_LAG_AGE") old"
                 fi
             else
-                BACKUP_DETAIL="$BACKUP_DETAIL, live commits unreadable"
+                BACKUP_DETAIL="$db backup is $((BACKUP_AGE / 3600))h old, live commits unreadable"
             fi
             # A suspended rig is left cold by mol-dog-backup.sh, so its lag
             # waits for the rig to resume.

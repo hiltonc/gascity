@@ -6840,8 +6840,11 @@ const doltLogDateLayout = "Mon Jan 2 15:04:05 -0700 2006"
 // the manifest is merely old. A city that idles overnight leaves its rig
 // scopes with nothing to push, so `bd backup sync` writes nothing and the
 // manifest keeps the last push's mtime; reading that age alone reported every
-// quiet rig "12h old" (hilton-gas-city 2026-10-13). Commit dates carry a
-// non-UTC offset so the parse has to honor the zone.
+// quiet rig "12h old" (hilton-gas-city 2026-10-13). Staleness is measured
+// from the oldest commit the backup lacks, so one fresh write after a long
+// idle does not read as the push's age (hilton-gas-city 2026-10-14: the ga
+// store's first write after 13h idle read "12h old, 5 commits behind"). Commit
+// dates carry a non-UTC offset so the parse has to honor the zone.
 func TestDoctorBackupFreshnessMeasuresLagNotAge(t *testing.T) {
 	now := time.Now()
 	push := now.Add(-2 * time.Hour)
@@ -6859,9 +6862,15 @@ func TestDoctorBackupFreshnessMeasuresLagNotAge(t *testing.T) {
 			wantOK:   "backups current: 1/1",
 		},
 		{
-			name:    "commits after an old push are the lag",
-			commits: []time.Time{now.Add(-1 * time.Hour), now.Add(-90 * time.Minute), now.Add(-3 * time.Hour)},
-			want:    "prod backup is 2h old, 2 commits behind",
+			name:     "a fresh commit after an old push is current",
+			commits:  []time.Time{now.Add(-1 * time.Minute), now.Add(-3 * time.Hour)},
+			dontWant: "prod backup",
+			wantOK:   "backups current: 1/1",
+		},
+		{
+			name:    "an unpushed commit older than the threshold is stale",
+			commits: []time.Time{now.Add(-1 * time.Minute), now.Add(-90 * time.Minute), now.Add(-3 * time.Hour)},
+			want:    "prod backup is 2 commits behind; oldest unpushed change is 1h old",
 			wantOK:  "backups current: 0/1",
 		},
 		{
@@ -6910,7 +6919,9 @@ func TestDoctorBackupFreshnessMeasuresLagNotAge(t *testing.T) {
 }
 
 // TestDoctorBackupLagCountIsCappedAtTheScanDepth asserts a lag deeper than the
-// commits the doctor reads is reported as a floor, not as an exact count.
+// commits the doctor reads is reported as a floor, not as an exact count. The
+// oldest unpushed commit lies past the scan, so the scope is judged stale on
+// its push's age even though every commit read is younger than the threshold.
 func TestDoctorBackupLagCountIsCappedAtTheScanDepth(t *testing.T) {
 	cityPath := t.TempDir()
 	dataDir := filepath.Join(cityPath, "dolt-data")
@@ -6934,7 +6945,7 @@ func TestDoctorBackupLagCountIsCappedAtTheScanDepth(t *testing.T) {
 
 	runDogScript(t, "mol-dog-doctor.sh", binDir, cityPath, dataDir, doctorBackupStaleEnv,
 		"GC_DOCTOR_BACKUP_LAG_SCAN_COMMITS=3")
-	if gcLog := readDogGCLog(t, gcLogPath); !strings.Contains(gcLog, "prod backup is 2h old, 3+ commits behind") {
+	if gcLog := readDogGCLog(t, gcLogPath); !strings.Contains(gcLog, "prod backup is 3+ commits behind; oldest unpushed change is at least 3m old") {
 		t.Fatalf("lag deeper than the scan should read as a floor, log:\n%s", gcLog)
 	}
 }
@@ -6985,7 +6996,7 @@ func TestDoctorBackupFreshnessResolvesRigOwnership(t *testing.T) {
 		t.Fatalf("ok line should count hq and quiet current of three owned scopes:\n%s", out)
 	}
 	gcLog := readDogGCLog(t, gcLogPath)
-	if !strings.Contains(gcLog, "dirty backup is 2h old, 1 commit behind (rig dirty suspended)") {
+	if !strings.Contains(gcLog, "dirty backup is 1 commit behind; oldest unpushed change is 1h old (rig dirty suspended)") {
 		t.Fatalf("suspended rig with unpushed data should report stale with its lag, log:\n%s", gcLog)
 	}
 	if !strings.Contains(gcLog, "jrl: no rig; left out of backups") {
