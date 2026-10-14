@@ -25,6 +25,13 @@
 // unchanged costs no captures at all; a session whose output keeps moving
 // costs at most one capture per pass. Probes run at most ProbeConcurrency at
 // a time.
+//
+// Attribution. An answer path that answers an interaction (the API's respond
+// and message routes) reports it through Answered; the clear of the
+// interaction it answered names that path as resolved_by. An interaction
+// answered inside the session itself, withdrawn, or timed out clears with no
+// resolved_by. Attribution lives in memory only: a clear published after a
+// controller restart carries none.
 package pendingwatch
 
 import (
@@ -51,6 +58,18 @@ const (
 	// ReasonSessionGone: the session left the probed set (closed, asleep,
 	// suspended, or otherwise no longer active).
 	ReasonSessionGone = "session_gone"
+)
+
+// Answer paths carried on a session.pending_cleared transition as resolved_by.
+// The values are the wire enum of the session.pending_cleared payload. A clear
+// with no answer path (answered inside the session itself, withdrawn, or timed
+// out) carries none.
+const (
+	// ResolvedByRespond: POST .../session/{id}/respond answered it.
+	ResolvedByRespond = "respond"
+	// ResolvedByMessage: a user message sent through POST
+	// .../session/{id}/messages answered it.
+	ResolvedByMessage = "message"
 )
 
 // ProbeConcurrency bounds how many sessions one pass probes at once.
@@ -107,6 +126,10 @@ type Transition struct {
 	// Reason is the clear reason (ReasonResolved, ReasonReplaced,
 	// ReasonSessionGone).
 	Reason string
+	// ResolvedBy is the answer path (ResolvedByRespond, ResolvedByMessage)
+	// that answered the interaction a resolved or replaced clear clears;
+	// empty when no answer path reported it.
+	ResolvedBy string
 }
 
 // Deps are the watcher's I/O seams. List, Probe and Publish are required.
@@ -130,7 +153,8 @@ type Deps struct {
 }
 
 // Watcher publishes pending-interaction transitions for one city. Pass is
-// safe to call concurrently with Poke; passes themselves are serialized.
+// safe to call concurrently with Poke and Answered; passes themselves are
+// serialized.
 type Watcher struct {
 	deps Deps
 
@@ -138,11 +162,23 @@ type Watcher struct {
 	published   map[string]Published
 	probedAt    map[string]time.Time
 	unsupported map[string]bool
+	// attributed binds an answer path to the announced interaction it
+	// answered, keyed by session, until that interaction clears.
+	attributed map[string]attribution
 
 	pokeMu   sync.Mutex
 	forced   map[string]bool
 	forceAll bool
+	// answered holds answer paths reported since the last pass, keyed by
+	// session, not yet bound to an announced interaction.
+	answered map[string]string
 	pokeCh   chan struct{}
+}
+
+// attribution is an answer path bound to the request it answered.
+type attribution struct {
+	RequestID string
+	By        string
 }
 
 // New returns a watcher that starts from published, the set already announced
@@ -162,7 +198,9 @@ func New(deps Deps, published map[string]Published) *Watcher {
 		published:   map[string]Published{},
 		probedAt:    map[string]time.Time{},
 		unsupported: map[string]bool{},
+		attributed:  map[string]attribution{},
 		forced:      map[string]bool{},
+		answered:    map[string]string{},
 		pokeCh:      make(chan struct{}, 1),
 	}
 	for id, p := range published {
@@ -186,6 +224,22 @@ func (w *Watcher) Poke(sessionID string) {
 	case w.pokeCh <- struct{}{}:
 	default:
 	}
+}
+
+// Answered reports that an answer path (ResolvedByRespond, ResolvedByMessage)
+// just answered sessionID's interaction, and pokes a pass that re-probes it.
+// The answer binds to the interaction announced for sessionID when a pass
+// takes it, so that interaction's clear carries by as its ResolvedBy; with
+// nothing announced it attributes nothing and emits nothing.
+func (w *Watcher) Answered(sessionID, by string) {
+	if sessionID == "" || by == "" {
+		w.Poke(sessionID)
+		return
+	}
+	w.pokeMu.Lock()
+	w.answered[sessionID] = by
+	w.pokeMu.Unlock()
+	w.Poke(sessionID)
 }
 
 // Run runs a pass at once, then every interval and on every Poke, until ctx
@@ -223,6 +277,44 @@ func (w *Watcher) takeForced() (map[string]bool, bool) {
 	return forced, all
 }
 
+// bindAnswered binds every answer reported since the last pass to the
+// interaction announced for its session, and drops answers for sessions with
+// nothing announced. Called with passMu held.
+func (w *Watcher) bindAnswered() {
+	w.pokeMu.Lock()
+	answered := w.answered
+	w.answered = map[string]string{}
+	w.pokeMu.Unlock()
+	for id, by := range answered {
+		w.bind(id, by)
+	}
+}
+
+// bind binds by to the interaction announced for id, if any. Called with
+// passMu held.
+func (w *Watcher) bind(id, by string) {
+	if p, ok := w.published[id]; ok {
+		w.attributed[id] = attribution{RequestID: p.RequestID, By: by}
+	}
+}
+
+// resolvedBy returns the answer path that answered prev, the interaction id
+// is about to clear, folding in an answer reported while this pass ran.
+// Called with passMu held.
+func (w *Watcher) resolvedBy(id string, prev Published) string {
+	w.pokeMu.Lock()
+	by, late := w.answered[id]
+	delete(w.answered, id)
+	w.pokeMu.Unlock()
+	if late {
+		w.bind(id, by)
+	}
+	if a, ok := w.attributed[id]; ok && a.RequestID == prev.RequestID {
+		return a.By
+	}
+	return ""
+}
+
 type probeJob struct {
 	session  Session
 	activity time.Time
@@ -235,6 +327,7 @@ func (w *Watcher) Pass(ctx context.Context) {
 	w.passMu.Lock()
 	defer w.passMu.Unlock()
 	forced, forceAll := w.takeForced()
+	w.bindAnswered()
 
 	listing, err := w.deps.List()
 	if err != nil {
@@ -373,11 +466,16 @@ func (w *Watcher) publishPending(s Session, p runtime.PendingInteraction) bool {
 }
 
 func (w *Watcher) publishCleared(s Session, prev Published, reason string) bool {
-	if err := w.deps.Publish(Transition{Type: events.SessionPendingCleared, Session: s, Previous: prev, Reason: reason}); err != nil {
+	tr := Transition{Type: events.SessionPendingCleared, Session: s, Previous: prev, Reason: reason}
+	if reason != ReasonSessionGone {
+		tr.ResolvedBy = w.resolvedBy(s.ID, prev)
+	}
+	if err := w.deps.Publish(tr); err != nil {
 		w.deps.Logf("pending interactions: %s for %s not recorded, retrying next pass: %v", events.SessionPendingCleared, s.ID, err)
 		return false
 	}
 	delete(w.published, s.ID)
+	delete(w.attributed, s.ID)
 	return true
 }
 

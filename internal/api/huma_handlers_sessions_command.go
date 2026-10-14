@@ -18,6 +18,7 @@ import (
 	"github.com/gastownhall/gascity/internal/api/apierr"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
+	"github.com/gastownhall/gascity/internal/pendingwatch"
 	"github.com/gastownhall/gascity/internal/reconcilekey"
 	"github.com/gastownhall/gascity/internal/runtime"
 	"github.com/gastownhall/gascity/internal/session"
@@ -859,6 +860,9 @@ func (s *Server) acceptSessionMessage(ctx context.Context, input *SessionMessage
 				sendResult(messageResult{sessionID: id, errorCode: code, err: err})
 				return
 			}
+			// A message can answer the question the session is blocked on;
+			// publish that clear now rather than on the next pass.
+			s.pokePendingInteractions(id, pendingwatch.ResolvedByMessage)
 			sendResult(messageResult{sessionID: id, outcome: outcome})
 		}()
 
@@ -1023,7 +1027,7 @@ func (s *Server) humaHandleSessionRespond(_ context.Context, input *SessionRespo
 		return nil, err
 	}
 	// Publish the session.pending_cleared now rather than on the next pass.
-	s.pokePendingInteractions(id)
+	s.pokePendingInteractions(id, pendingwatch.ResolvedByRespond)
 
 	out := &SessionRespondOutput{}
 	out.Body.Status = "accepted"

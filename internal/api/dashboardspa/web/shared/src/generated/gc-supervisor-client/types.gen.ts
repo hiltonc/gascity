@@ -3366,6 +3366,10 @@ export type SessionPendingClearedPayload = {
      */
     request_id: string;
     /**
+     * Answer path that answered the interaction, on a resolved or replaced clear: respond (POST .../session/{id}/respond) or message (a user message sent through POST .../session/{id}/messages). Absent when no answer path reported it: answered inside the session itself, withdrawn, timed out, or cleared after a controller restart.
+     */
+    resolved_by?: 'respond' | 'message';
+    /**
      * Session bead ID from the matching session.pending.
      */
     session_id: string;

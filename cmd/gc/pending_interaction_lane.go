@@ -72,7 +72,7 @@ func (cr *CityRuntime) runPendingInteractionLane(ctx context.Context, cs *contro
 	}
 	w := pendingwatch.New(deps, published)
 	if cs != nil {
-		cs.setPendingInteractionPoke(w.Poke)
+		cs.setPendingInteractionPoke(w.Answered)
 	}
 	w.Run(ctx, pendingInteractionInterval)
 }
@@ -247,10 +247,11 @@ func publishPendingTransition(rec events.Recorder, tr pendingwatch.Transition) e
 		}
 	case events.SessionPendingCleared:
 		payload = api.SessionPendingClearedPayload{
-			SessionID: tr.Session.ID,
-			RequestID: tr.Previous.RequestID,
-			Kind:      tr.Previous.Kind,
-			Reason:    tr.Reason,
+			SessionID:  tr.Session.ID,
+			RequestID:  tr.Previous.RequestID,
+			Kind:       tr.Previous.Kind,
+			Reason:     tr.Reason,
+			ResolvedBy: tr.ResolvedBy,
 		}
 	default:
 		return fmt.Errorf("unknown pending transition %q", tr.Type)
@@ -277,7 +278,7 @@ func publishPendingTransition(rec events.Recorder, tr pendingwatch.Transition) e
 var _ api.PendingInteractionPoker = (*controllerState)(nil)
 
 // setPendingInteractionPoke installs the running lane's poke; nil removes it.
-func (cs *controllerState) setPendingInteractionPoke(poke func(sessionID string)) {
+func (cs *controllerState) setPendingInteractionPoke(poke func(sessionID, resolvedBy string)) {
 	if poke == nil {
 		cs.pendingPoke.Store(nil)
 		return
@@ -287,12 +288,13 @@ func (cs *controllerState) setPendingInteractionPoke(poke func(sessionID string)
 
 // PokePendingInteractions asks the controller to re-probe sessionID now, so an
 // answered interaction's session.pending_cleared does not wait for the lane's
-// cadence. It does nothing while no lane runs.
-func (cs *controllerState) PokePendingInteractions(sessionID string) {
+// cadence and names resolvedBy, the answer path, as its resolved_by. It does
+// nothing while no lane runs.
+func (cs *controllerState) PokePendingInteractions(sessionID, resolvedBy string) {
 	if cs == nil {
 		return
 	}
 	if poke := cs.pendingPoke.Load(); poke != nil {
-		(*poke)(sessionID)
+		(*poke)(sessionID, resolvedBy)
 	}
 }

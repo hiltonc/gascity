@@ -715,6 +715,8 @@ type SessionPendingClearedPayload struct {
 	RequestID string `json:"request_id" doc:"Request ID from the matching session.pending."`
 	Kind      string `json:"kind" doc:"Interaction kind from the matching session.pending."`
 	Reason    string `json:"reason" enum:"resolved,replaced,session_gone" doc:"Why it cleared: resolved (answered or withdrawn), replaced (a different interaction is now pending; its session.pending follows), or session_gone (the session is no longer active)."`
+	// ResolvedBy is the answer path that answered the interaction.
+	ResolvedBy string `json:"resolved_by,omitempty" enum:"respond,message" doc:"Answer path that answered the interaction, on a resolved or replaced clear: respond (POST .../session/{id}/respond) or message (a user message sent through POST .../session/{id}/messages). Absent when no answer path reported it: answered inside the session itself, withdrawn, timed out, or cleared after a controller restart."`
 }
 
 // IsEventPayload marks SessionPendingClearedPayload as an events.Payload variant.

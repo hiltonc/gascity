@@ -365,13 +365,18 @@ also carries each change as an event, so a client does not have to poll:
   and `kind`, and gives a `reason`: `resolved` (answered or withdrawn),
   `replaced` (a different interaction is now pending; its
   `session.pending` follows), or `session_gone` (the session is no longer
-  active).
+  active). A `resolved` or `replaced` clear of an interaction answered
+  through the API names the answer path in `resolved_by`: `respond`
+  (`POST .../respond`) or `message` (a user message sent through
+  `POST .../messages`). It is absent when the interaction was answered
+  inside the session itself, withdrawn, or timed out, and on a clear
+  published after a controller restart.
 
 Each fires once per transition, not once per detection pass. The city's
 controller detects them whether or not any client is watching, so orders
 and agents can react to them too. It checks every active session every 5
 seconds, re-reading a session's screen only when its output changed since
-the last read, and immediately after a successful `respond`. Its probe is
+the last read, and immediately after a successful `respond` or message. Its probe is
 the runtime's own pending detector, the same one `GET .../pending` uses.
 
 Resuming: a client that reconnects with `Last-Event-ID` (or `after_seq` /

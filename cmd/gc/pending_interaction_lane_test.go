@@ -86,7 +86,7 @@ func TestPendingInteractionLaneRecordsTransitionsWithOnlyTheController(t *testin
 	}
 
 	sp.SetPendingInteraction("worker-1", nil)
-	w.Poke(active.ID)
+	w.Answered(active.ID, pendingwatch.ResolvedByRespond)
 	w.Pass(context.Background())
 	if n := len(log.Events); n != 2 {
 		t.Fatalf("events after the answer = %d, want 2: %+v", n, log.Events)
@@ -96,8 +96,11 @@ func TestPendingInteractionLaneRecordsTransitionsWithOnlyTheController(t *testin
 		t.Fatalf("DecodePayload cleared: %v", err)
 	}
 	cp, ok := cleared.(api.SessionPendingClearedPayload)
-	if !ok || cp.RequestID != "req-1" || cp.Reason != pendingwatch.ReasonResolved {
+	if !ok || cp.RequestID != "req-1" || cp.Reason != pendingwatch.ReasonResolved || cp.ResolvedBy != pendingwatch.ResolvedByRespond {
 		t.Fatalf("cleared payload = %#v", cleared)
+	}
+	if e := log.Events[1]; e.Subject != active.ID || e.SessionID != active.ID {
+		t.Fatalf("cleared event = %+v, want subject and session_id %s", e, active.ID)
 	}
 }
 
@@ -127,19 +130,19 @@ func TestPendingInteractionLaneRestartRebuildsFromTheEventLog(t *testing.T) {
 // POST .../respond reaches the running lane through the controller state.
 func TestControllerStatePokesPendingInteractionLane(t *testing.T) {
 	cs := &controllerState{}
-	cs.PokePendingInteractions("s-1") // no lane: a no-op
+	cs.PokePendingInteractions("s-1", pendingwatch.ResolvedByRespond) // no lane: a no-op
 	var got []string
-	cs.setPendingInteractionPoke(func(id string) { got = append(got, id) })
+	cs.setPendingInteractionPoke(func(id, by string) { got = append(got, id+" "+by) })
 	var state api.State = cs
 	poker, ok := state.(api.PendingInteractionPoker)
 	if !ok {
 		t.Fatal("controllerState does not implement api.PendingInteractionPoker")
 	}
-	poker.PokePendingInteractions("s-1")
+	poker.PokePendingInteractions("s-1", pendingwatch.ResolvedByRespond)
 	cs.setPendingInteractionPoke(nil)
-	poker.PokePendingInteractions("s-2")
-	if len(got) != 1 || got[0] != "s-1" {
-		t.Fatalf("pokes = %q, want [s-1]", got)
+	poker.PokePendingInteractions("s-2", pendingwatch.ResolvedByMessage)
+	if len(got) != 1 || got[0] != "s-1 respond" {
+		t.Fatalf("pokes = %q, want [s-1 respond]", got)
 	}
 }
 
