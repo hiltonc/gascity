@@ -485,3 +485,59 @@ func inProcessAPIClient(cityName string, h http.Handler) *api.Client {
 			return rec.Result(), nil
 		})})
 }
+
+// TestSessionPendingAPIClientRoutesToSupervisor pins gc session pending to the
+// supervisor in a supervisor-managed city: an alive controller socket with no
+// standalone [api] port. Plain apiClient returns nil in that shape, which sent
+// every run to the local fallback logged as reason=controller-down, opening
+// the city store and probing every runtime from the CLI.
+func TestSessionPendingAPIClientRoutesToSupervisor(t *testing.T) {
+	sentinel := api.NewClient("http://supervisor.sentinel:1")
+	origAlive, origSup := apiRouteControllerAliveHook, apiRouteSupervisorClientHook
+	t.Cleanup(func() {
+		apiRouteControllerAliveHook = origAlive
+		apiRouteSupervisorClientHook = origSup
+	})
+
+	t.Run("alive-no-api-port-routes-to-supervisor", func(t *testing.T) {
+		t.Setenv("GC_NO_API", "")
+		apiRouteControllerAliveHook = func(string) int { return 4242 }
+		apiRouteSupervisorClientHook = func(string) *api.Client { return sentinel }
+		dir := writeCityTOMLForRoute(t, t.TempDir(), "name = \"t\"\n")
+		c, reason := sessionPendingAPIClient(dir)
+		if c != sentinel {
+			t.Fatalf("sessionPendingAPIClient client = %p, want supervisor sentinel %p", c, sentinel)
+		}
+		if reason != "" {
+			t.Fatalf("sessionPendingAPIClient reason = %q, want empty", reason)
+		}
+	})
+
+	t.Run("escape-hatch-skips-supervisor", func(t *testing.T) {
+		t.Setenv("GC_NO_API", "1")
+		apiRouteControllerAliveHook = func(string) int { return 4242 }
+		apiRouteSupervisorClientHook = func(string) *api.Client { return sentinel }
+		dir := writeCityTOMLForRoute(t, t.TempDir(), "name = \"t\"\n")
+		c, reason := sessionPendingAPIClient(dir)
+		if c != nil {
+			t.Fatalf("sessionPendingAPIClient client = %p, want nil under GC_NO_API", c)
+		}
+		if reason != "escape-hatch" {
+			t.Fatalf("sessionPendingAPIClient reason = %q, want \"escape-hatch\"", reason)
+		}
+	})
+
+	t.Run("controller-fully-down-falls-back-local", func(t *testing.T) {
+		t.Setenv("GC_NO_API", "")
+		apiRouteControllerAliveHook = func(string) int { return 0 }
+		apiRouteSupervisorClientHook = func(string) *api.Client { return nil }
+		dir := writeCityTOMLForRoute(t, t.TempDir(), "name = \"t\"\n")
+		c, reason := sessionPendingAPIClient(dir)
+		if c != nil {
+			t.Fatalf("sessionPendingAPIClient client = %p, want nil when nothing is running", c)
+		}
+		if reason != "controller-down" {
+			t.Fatalf("sessionPendingAPIClient reason = %q, want \"controller-down\"", reason)
+		}
+	})
+}
