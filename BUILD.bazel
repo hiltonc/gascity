@@ -164,6 +164,7 @@ go_library(
         "schemas/graph/result.schema.json",
         "schemas/handoff/result.schema.json",
         "schemas/hook/result.schema.json",
+        "schemas/import/list/result.schema.json",
         "schemas/import/status/result.schema.json",
         "schemas/init/result.schema.json",
         "schemas/lint/result.schema.json",
