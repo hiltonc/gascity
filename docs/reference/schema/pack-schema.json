@@ -174,6 +174,10 @@
           "type": "string",
           "description": "SlingQuery is the command template to route a bead to this session config.\nIf it contains Go template placeholders, gc expands them using the same\nPathContext fields as work_dir and session_setup (Agent, AgentBase,\nRig, RigRoot, CityRoot, CityName, DefaultBranch) before replacing {}\nwith the bead ID. Used by gc sling to make a bead visible to the target's work_query.\nThe placeholder {} is replaced with the bead ID at runtime.\nDefault for all agents:\n\"bd update {} --set-metadata gc.routed_to=\u003cqualified-name\u003e\".\nRouting is metadata-based; sling stamps the target template and the\nreconciler/scale_check paths decide when sessions are created.\nCustom sling_query and work_query can be overridden independently."
         },
+        "route_as": {
+          "type": "string",
+          "description": "RouteAs is the qualified name of another agent in the same rig whose\nrouted queue this agent also serves. The default work_query reads\ngc.routed_to=\u003croute_as\u003e first, then this agent's own route, and gc hook\n--claim accepts both; the shared assignee compare-and-swap keeps each\nbead to one claimant. Default pool demand is still counted per route, so\nwork routed to route_as wakes only that agent's pool: give this agent a\nscale_check or min_active_sessions to say when it should run beside it."
+        },
         "idle_timeout": {
           "type": "string",
           "description": "IdleTimeout is the maximum time an agent session can be inactive before\nthe controller kills and restarts it. Duration string (e.g., \"15m\", \"1h\").\nEmpty (default) disables idle checking."
