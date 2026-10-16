@@ -1825,6 +1825,7 @@ go_test(
         "session_reconciler_killsite_fold_test.go",
         "session_reconciler_named_collapse_test.go",
         "session_reconciler_observation_regression_test.go",
+        "session_reconciler_orphaned_reset_test.go",
         "session_reconciler_pool_replacement_test.go",
         "session_reconciler_progress_idle_rewake_test.go",
         "session_reconciler_progress_test.go",

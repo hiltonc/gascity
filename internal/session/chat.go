@@ -243,33 +243,49 @@ func freshStartCommandFromMetadata(metadata map[string]string, fallback string) 
 	return fallback
 }
 
-func (m *Manager) clearStaleResumeMetadata(id string, b *beads.Bead) error {
-	if err := m.store.SetMetadata(id, "session_key", ""); err != nil {
-		return fmt.Errorf("clearing stale resume metadata session_key: %w", err)
+// rotateStaleResumeConversation abandons b's unresumable conversation before
+// its fresh relaunch: one write clears the resume tracking and rotates the
+// continuation epoch, returning the epoch the relaunch runs under. The
+// relaunch is the reset's consumer, so continuation_reset_pending is left
+// clear; armed here, it would outlive the runtime the relaunch starts and pin
+// the row reset-pending (ga-h56n).
+func (m *Manager) rotateStaleResumeConversation(id string, b *beads.Bead) (int, error) {
+	epoch, err := strconv.Atoi(b.Metadata["continuation_epoch"])
+	if err != nil || epoch <= 0 {
+		epoch = DefaultContinuationEpoch
 	}
-	if err := m.store.SetMetadata(id, "started_config_hash", ""); err != nil {
-		return fmt.Errorf("clearing stale resume metadata started_config_hash: %w", err)
-	}
-	if err := m.store.SetMetadata(id, "continuation_reset_pending", "true"); err != nil {
-		return fmt.Errorf("clearing stale resume metadata continuation_reset_pending: %w", err)
+	epoch++
+	batch := map[string]string{
+		"session_key":                "",
+		"started_config_hash":        "",
+		"continuation_epoch":         strconv.Itoa(epoch),
+		"continuation_reset_pending": "",
 	}
 	// Priming markers share started_config_hash's lifetime (S19 Stage 2): this
 	// stale-resume clear forces a fresh start, so the markers reset with it.
 	for _, k := range primingResetKeys {
-		if err := m.store.SetMetadata(id, k, ""); err != nil {
-			return fmt.Errorf("clearing stale resume metadata %s: %w", k, err)
-		}
+		batch[k] = ""
+	}
+	if err := m.store.SetMetadataBatch(id, batch); err != nil {
+		return 0, fmt.Errorf("clearing stale resume metadata: %w", err)
 	}
 	if b.Metadata == nil {
 		b.Metadata = make(map[string]string)
 	}
-	b.Metadata["session_key"] = ""
-	b.Metadata["started_config_hash"] = ""
-	b.Metadata["continuation_reset_pending"] = "true"
-	for _, k := range primingResetKeys {
-		b.Metadata[k] = ""
+	maps.Copy(b.Metadata, batch)
+	return epoch, nil
+}
+
+// rearmStaleResumeReset records a relaunch that never started, so the next
+// start rotates the continuation again, as the controller's failed-launch undo
+// keeps a stale key's reset pending. cause is the relaunch's failure; a failed
+// re-arm joins it.
+func (m *Manager) rearmStaleResumeReset(id string, b *beads.Bead, cause error) error {
+	if err := m.store.SetMetadata(id, "continuation_reset_pending", "true"); err != nil {
+		return errors.Join(cause, fmt.Errorf("re-arming continuation reset: %w", err))
 	}
-	return nil
+	b.Metadata["continuation_reset_pending"] = "true"
+	return cause
 }
 
 func (m *Manager) retryFreshStartAfterStaleKey(
@@ -352,13 +368,15 @@ func (m *Manager) retryFreshStartAfterStaleKey(
 	if sessionKey == "" && freshCmd == resumeCommand {
 		return false, nil
 	}
-	if err := m.clearStaleResumeMetadata(id, b); err != nil {
+	epoch, err := m.rotateStaleResumeConversation(id, b)
+	if err != nil {
 		if unroute != nil {
 			unroute()
 		}
 		return false, err
 	}
 	cfg.Command = freshCmd
+	cfg.Env = mergeEnv(cfg.Env, map[string]string{"GC_CONTINUATION_EPOCH": strconv.Itoa(epoch)})
 	// Refuse the fresh start if a prior escaped process for this session could
 	// not be confirmed dead: a survivor would race this replacement for the
 	// same work bead. This path reuses the existing bead ID, so there is no
@@ -367,13 +385,13 @@ func (m *Manager) retryFreshStartAfterStaleKey(
 		if unroute != nil {
 			unroute()
 		}
-		return false, fmt.Errorf("pre-start orphan cleanup: %w", orphanErr)
+		return false, m.rearmStaleResumeReset(id, b, fmt.Errorf("pre-start orphan cleanup: %w", orphanErr))
 	}
 	if err := m.sp.Start(ctx, sessName, cfg); err != nil {
 		if unroute != nil {
 			unroute()
 		}
-		return false, fmt.Errorf("fresh start after stale key: %w", err)
+		return false, m.rearmStaleResumeReset(id, b, fmt.Errorf("fresh start after stale key: %w", err))
 	}
 	return true, nil
 }
