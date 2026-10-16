@@ -3814,6 +3814,14 @@ type Agent struct {
 	// reconciler/scale_check paths decide when sessions are created.
 	// Custom sling_query and work_query can be overridden independently.
 	SlingQuery string `toml:"sling_query,omitempty"`
+	// RouteAs is the qualified name of another agent in the same rig whose
+	// routed queue this agent also serves. The default work_query reads
+	// gc.routed_to=<route_as> first, then this agent's own route, and gc hook
+	// --claim accepts both; the shared assignee compare-and-swap keeps each
+	// bead to one claimant. Default pool demand is still counted per route, so
+	// work routed to route_as wakes only that agent's pool: give this agent a
+	// scale_check or min_active_sessions to say when it should run beside it.
+	RouteAs string `toml:"route_as,omitempty"`
 	// IdleTimeout is the maximum time an agent session can be inactive before
 	// the controller kills and restarts it. Duration string (e.g., "15m", "1h").
 	// Empty (default) disables idle checking. Not applied to a [[named_session]]
@@ -4631,7 +4639,35 @@ func ValidateAgents(agents []Agent) error {
 	if err := validateDependsOn(agents); err != nil {
 		return err
 	}
+	return validateRouteAs(agents)
+}
 
+// validateRouteAs checks that every route_as names another agent in the same
+// rig that does not itself borrow a queue. Like depends_on, it runs before
+// pool expansion, so route_as names a template, not a pool instance.
+func validateRouteAs(agents []Agent) error {
+	byName := make(map[string]*Agent, len(agents))
+	for i := range agents {
+		byName[agents[i].QualifiedName()] = &agents[i]
+	}
+	for _, a := range agents {
+		if a.RouteAs == "" {
+			continue
+		}
+		if a.RouteAs == a.QualifiedName() {
+			return fmt.Errorf("agent %q: route_as references itself", a.QualifiedName())
+		}
+		target, ok := byName[a.RouteAs]
+		if !ok {
+			return fmt.Errorf("agent %q: route_as references unknown agent %q", a.QualifiedName(), a.RouteAs)
+		}
+		if target.Dir != a.Dir {
+			return fmt.Errorf("agent %q: route_as target %q is not in the same rig", a.QualifiedName(), a.RouteAs)
+		}
+		if target.RouteAs != "" {
+			return fmt.Errorf("agent %q: route_as target %q itself sets route_as", a.QualifiedName(), a.RouteAs)
+		}
+	}
 	return nil
 }
 
