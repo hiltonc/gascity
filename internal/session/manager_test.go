@@ -277,6 +277,13 @@ func (s failMetadataKeyStore) SetMetadata(id, key, value string) error {
 	return s.MemStore.SetMetadata(id, key, value)
 }
 
+func (s failMetadataKeyStore) SetMetadataBatch(id string, kvs map[string]string) error {
+	if _, ok := kvs[s.key]; ok {
+		return errors.New("set metadata failed")
+	}
+	return s.MemStore.SetMetadataBatch(id, kvs)
+}
+
 func (s waitFailStore) List(query beads.ListQuery) ([]beads.Bead, error) {
 	if query.Label == WaitBeadLabel || strings.HasPrefix(query.Label, "session:") {
 		return nil, errors.New("wait list failed")
@@ -5335,8 +5342,8 @@ func TestEnsureRunning_RetriesAfterStartupDeathError(t *testing.T) {
 	if b.Metadata["started_config_hash"] != "" {
 		t.Errorf("started_config_hash should be cleared after startup-death retry, got %q", b.Metadata["started_config_hash"])
 	}
-	if b.Metadata["continuation_reset_pending"] != "true" {
-		t.Errorf("continuation_reset_pending should be set after startup-death retry, got %q", b.Metadata["continuation_reset_pending"])
+	if b.Metadata["continuation_reset_pending"] != "" {
+		t.Errorf("continuation_reset_pending should be consumed by the fresh relaunch after startup-death retry, got %q", b.Metadata["continuation_reset_pending"])
 	}
 }
 
@@ -5397,8 +5404,8 @@ func TestEnsureRunning_StartupDeathWithoutStrippableResumeRecovers(t *testing.T)
 	if b.Metadata["started_config_hash"] != "" {
 		t.Errorf("started_config_hash should be cleared after startup-death fallback, got %q", b.Metadata["started_config_hash"])
 	}
-	if b.Metadata["continuation_reset_pending"] != "true" {
-		t.Errorf("continuation_reset_pending should be set after startup-death fallback, got %q", b.Metadata["continuation_reset_pending"])
+	if b.Metadata["continuation_reset_pending"] != "" {
+		t.Errorf("continuation_reset_pending should be consumed by the fresh relaunch after startup-death fallback, got %q", b.Metadata["continuation_reset_pending"])
 	}
 }
 
@@ -5451,8 +5458,8 @@ func TestEnsureRunning_RetriesWhenResumeKeyDiverged(t *testing.T) {
 	if b.Metadata["session_key"] != "" {
 		t.Errorf("session_key should be cleared after diverged-key retry, got %q", b.Metadata["session_key"])
 	}
-	if b.Metadata["continuation_reset_pending"] != "true" {
-		t.Errorf("continuation_reset_pending should be set after diverged-key retry, got %q", b.Metadata["continuation_reset_pending"])
+	if b.Metadata["continuation_reset_pending"] != "" {
+		t.Errorf("continuation_reset_pending should be consumed by the fresh relaunch after diverged-key retry, got %q", b.Metadata["continuation_reset_pending"])
 	}
 }
 
@@ -5672,8 +5679,8 @@ func TestEnsureRunning_RetriesWhenResumeFlagIsEmpty(t *testing.T) {
 	if b.Metadata["started_config_hash"] != "" {
 		t.Errorf("started_config_hash should be cleared after empty-resume_flag retry, got %q", b.Metadata["started_config_hash"])
 	}
-	if b.Metadata["continuation_reset_pending"] != "true" {
-		t.Errorf("continuation_reset_pending should be set after empty-resume_flag retry, got %q", b.Metadata["continuation_reset_pending"])
+	if b.Metadata["continuation_reset_pending"] != "" {
+		t.Errorf("continuation_reset_pending should be consumed by the fresh relaunch after empty-resume_flag retry, got %q", b.Metadata["continuation_reset_pending"])
 	}
 }
 
@@ -5710,7 +5717,7 @@ func TestEnsureRunning_StartupDeathClearMetadataFailurePropagates(t *testing.T) 
 	if err == nil {
 		t.Fatal("Send should fail when stale resume metadata cannot be cleared")
 	}
-	if !strings.Contains(err.Error(), "clearing stale resume metadata session_key") {
+	if !strings.Contains(err.Error(), "clearing stale resume metadata") {
 		t.Fatalf("Send error = %v, want stale metadata clear failure", err)
 	}
 
