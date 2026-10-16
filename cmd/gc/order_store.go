@@ -196,6 +196,9 @@ func orderExecEnvWithError(cityPath string, cfg *config.City, target execStoreTa
 	if name := strings.TrimSpace(a.Name); name != "" {
 		env["BEADS_ACTOR"] = "order:" + name
 	}
+	// An exec order runs with no session identity, so mail it sends without
+	// --from is the controller's, not the operator's "human".
+	env[mailSenderEnv] = controllerMailIdentity
 	if target.ScopeKind == "rig" {
 		env["GC_RIG"] = target.RigName
 		env["GC_RIG_ROOT"] = target.ScopeRoot

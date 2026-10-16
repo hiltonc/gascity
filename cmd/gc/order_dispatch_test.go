@@ -9340,6 +9340,27 @@ func TestLockedWriterSerializesConcurrentWrites(t *testing.T) {
 // (e.g., `gc order sweep-tracking` → `bd close`) is audit-logged as
 // "order:<name>" rather than an ambient identity. This is what gives
 // the dashboard fine-grained attribution per order.
+// TestOrderExecEnvSetsControllerMailSender pins the sender of an exec order's
+// mail: the controller runs it with no session identity, so without this its
+// `gc mail send` would fall back to the operator's "human" mailbox.
+func TestOrderExecEnvSetsControllerMailSender(t *testing.T) {
+	t.Setenv("GC_BEADS", "bd")
+	t.Setenv("GC_DOLT", "skip")
+
+	cityDir := t.TempDir()
+	target := execStoreTarget{ScopeRoot: cityDir, ScopeKind: "city", Prefix: "pc"}
+	a := orders.Order{Name: "mol-dog-doctor", Trigger: "cooldown", Interval: "5m", Exec: "true"}
+
+	envSlice, err := orderExecEnvWithError(cityDir, nil, target, a, nil)
+	if err != nil {
+		t.Fatalf("orderExecEnvWithError() error = %v", err)
+	}
+	want := mailSenderEnv + "=" + controllerMailIdentity
+	if !slices.Contains(envSlice, want) {
+		t.Fatalf("orderExecEnv missing %q; env=%v", want, envSlice)
+	}
+}
+
 func TestOrderExecEnvSetsBeadsActorToOrderName(t *testing.T) {
 	t.Setenv("GC_BEADS", "bd")
 	t.Setenv("GC_DOLT", "skip")

@@ -770,6 +770,105 @@ func TestCmdMailSendFromControllerCreatesMessage(t *testing.T) {
 	}
 }
 
+// newMailSenderTestCity makes a file-backed city with a live mayor session to
+// mail, and clears every session identity, as an exec order's env and an
+// operator's shell both have none.
+func newMailSenderTestCity(t *testing.T) string {
+	t.Helper()
+	t.Setenv("GC_BEADS", "file")
+	t.Setenv("GC_MAIL", "")
+	t.Setenv("GC_ALIAS", "")
+	t.Setenv("GC_SESSION_ID", "")
+	t.Setenv("GC_AGENT", "")
+	cityPath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte("[workspace]\nname = \"test-city\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(city.toml): %v", err)
+	}
+	t.Setenv("GC_CITY", cityPath)
+	store, err := openCityStoreAt(cityPath)
+	if err != nil {
+		t.Fatalf("openCityStoreAt: %v", err)
+	}
+	createMailIdentitySession(t, store, "test-city/mayor", "mayor", "mayor-session")
+	return cityPath
+}
+
+// sentMessageFrom returns the sender of the one message in cityPath's store.
+func sentMessageFrom(t *testing.T, cityPath string) string {
+	t.Helper()
+	store, err := openCityStoreAt(cityPath)
+	if err != nil {
+		t.Fatalf("openCityStoreAt: %v", err)
+	}
+	msgs, err := store.List(beads.ListQuery{Type: "message", Status: "open", TierMode: beads.TierBoth})
+	if err != nil {
+		t.Fatalf("List messages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1: %#v", len(msgs), msgs)
+	}
+	return msgs[0].From
+}
+
+// An exec order's advisory (the Dolt doctor's, the reaper's escalation) sends
+// with no --from and no session identity. It is from the controller, never
+// from the operator's "human" mailbox.
+func TestCmdMailSendWithoutSessionIdentityUsesMailFromEnv(t *testing.T) {
+	cityPath := newMailSenderTestCity(t)
+	t.Setenv(mailSenderEnv, controllerMailIdentity)
+
+	var stdout, stderr bytes.Buffer
+	if code := cmdMailSend([]string{"mayor/"}, false, false, "", "", "Dolt health advisory [MEDIUM]", "Latency warning", &stdout, &stderr); code != 0 {
+		t.Fatalf("cmdMailSend() = %d, want 0; stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if got := sentMessageFrom(t, cityPath); got != controllerMailIdentity {
+		t.Fatalf("message From = %q, want %q", got, controllerMailIdentity)
+	}
+}
+
+// An operator's `gc mail send` from a plain shell is still from human.
+func TestCmdMailSendWithoutSessionIdentityOrMailFromEnvIsHuman(t *testing.T) {
+	cityPath := newMailSenderTestCity(t)
+	t.Setenv(mailSenderEnv, "")
+
+	var stdout, stderr bytes.Buffer
+	if code := cmdMailSend([]string{"mayor/"}, false, false, "", "", "hello", "from the operator", &stdout, &stderr); code != 0 {
+		t.Fatalf("cmdMailSend() = %d, want 0; stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if got := sentMessageFrom(t, cityPath); got != "human" {
+		t.Fatalf("message From = %q, want human", got)
+	}
+}
+
+// A session that inherits the env var still sends as itself.
+func TestCmdMailSendSessionIdentityOutranksMailFromEnv(t *testing.T) {
+	cityPath := newMailSenderTestCity(t)
+	t.Setenv(mailSenderEnv, controllerMailIdentity)
+	t.Setenv("GC_ALIAS", "mayor")
+
+	var stdout, stderr bytes.Buffer
+	if code := cmdMailSend([]string{"human/"}, false, false, "", "", "status", "from the mayor", &stdout, &stderr); code != 0 {
+		t.Fatalf("cmdMailSend() = %d, want 0; stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if got := sentMessageFrom(t, cityPath); got != "mayor" {
+		t.Fatalf("message From = %q, want mayor", got)
+	}
+}
+
+// An explicit --from outranks the env var.
+func TestCmdMailSendExplicitFromOutranksMailFromEnv(t *testing.T) {
+	cityPath := newMailSenderTestCity(t)
+	t.Setenv(mailSenderEnv, controllerMailIdentity)
+
+	var stdout, stderr bytes.Buffer
+	if code := cmdMailSend([]string{"mayor/"}, false, false, "human", "", "hello", "from the operator", &stdout, &stderr); code != 0 {
+		t.Fatalf("cmdMailSend() = %d, want 0; stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if got := sentMessageFrom(t, cityPath); got != "human" {
+		t.Fatalf("message From = %q, want human", got)
+	}
+}
+
 // createMailIdentitySession creates a live session bead for identity/alias,
 // the shared fixture shape used by the #4070 --from authorization tests
 // below (mirrors TestCmdMailSendFromControllerCreatesMessage's recipient
