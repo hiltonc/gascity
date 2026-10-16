@@ -315,6 +315,7 @@ func deepCopyAgent(src *config.Agent, name, dir string) config.Agent {
 		// DefaultSlingFormula: deep-copied below with other pointer fields.
 		WorkQuery:          src.WorkQuery,
 		SlingQuery:         src.SlingQuery,
+		RouteAs:            src.RouteAs,
 		SessionSetupScript: src.SessionSetupScript,
 		OverlayDir:         src.OverlayDir,
 		SourceDir:          src.SourceDir,
