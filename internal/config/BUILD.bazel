@@ -165,6 +165,7 @@ go_test(
         "retired_key_test.go",
         "revision_test.go",
         "rig_merge_strategy_test.go",
+        "route_as_test.go",
         "service_test.go",
         "session_model_phase0_spec_test.go",
         "session_setup_path_test.go",
