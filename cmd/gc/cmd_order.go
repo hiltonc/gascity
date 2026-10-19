@@ -2217,10 +2217,11 @@ func newOrderSweepNudgeMailCmd(stdout, stderr io.Writer) *cobra.Command {
 		Long: `Close stale delivered nudge beads and read mail beads.
 
 Nudge beads that are past --nudge-ttl and not in the live nudge queue are
-closed. Read mail beads are archived (closed) once their recipient's
-[mail] archive_read_after window has passed, or its [[mail.recipient]]
-override; a recipient whose window is "0" is never swept. --mail-ttl replaces
-that whole policy for one run with a single window for every recipient.
+closed. Read mail beads are archived (closed) once their [mail]
+archive_read_after window has passed, or the longer of the windows set by a
+matching [[mail.recipient]] or [[mail.sender]] override; mail whose window is
+"0" is never swept. --mail-ttl replaces that whole policy for one run, sender
+and recipient overrides included, with a single window for every message.
 Closing unread mail is opt-in: when --unread-mail-ttl (or [mail]
 unread_retention_ttl) is set, unread mail beads past it are also closed, so
 mail nobody ever reads ages out instead of accumulating forever.
@@ -2240,7 +2241,7 @@ The controller watchdog also runs this sweep automatically every 5 minutes.`,
 		},
 	}
 	cmd.Flags().DurationVar(&nudgeTTL, "nudge-ttl", nudgeMailSweepDefaultNudgeTTL, "min age before a delivered nudge bead is GC'd")
-	cmd.Flags().DurationVar(&mailTTL, "mail-ttl", 0, "min age before a read mail bead is archived, for every recipient; overrides the city's [mail] archive_read_after policy for this run, and 0 disables the mail phase (default: that policy)")
+	cmd.Flags().DurationVar(&mailTTL, "mail-ttl", 0, "min age before a read mail bead is archived, for every recipient and sender; overrides the city's [mail] archive_read_after policy and its [[mail.recipient]] and [[mail.sender]] overrides for this run, and 0 disables the mail phase (default: that policy)")
 	cmd.Flags().DurationVar(&unreadMailTTL, "unread-mail-ttl", nudgeMailSweepDefaultUnreadMailTTL, "min age before an unread mail bead is GC'd; 0 disables (default: cfg.Mail.UnreadRetentionTTL when set, else disabled)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "log what would be closed; make no changes")
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress success output")
@@ -2339,9 +2340,9 @@ func cmdOrderSweepNudgeMail(nudgeTTL, mailTTL, unreadMailTTL time.Duration, mail
 }
 
 // sweepNudgeMailPolicy picks the read-mail archive policy for one
-// sweep-nudge-mail run: an explicit --mail-ttl archives every recipient's read
-// mail after that one window, replacing the city's policy; otherwise the run
-// follows the city's [mail] policy, per recipient.
+// sweep-nudge-mail run: an explicit --mail-ttl archives all read mail after
+// that one window, replacing the city's policy and its sender and recipient
+// overrides; otherwise the run follows the city's [mail] policy.
 func sweepNudgeMailPolicy(cfg *config.City, mailTTL time.Duration, mailTTLSet bool) (config.MailRetentionPolicy, error) {
 	if mailTTLSet {
 		return config.NewMailRetentionPolicy(config.MailRetentionWindows{ArchiveReadAfter: mailTTL}), nil

@@ -3098,10 +3098,11 @@ gc order show <name> [flags]
 Close stale delivered nudge beads and read mail beads.
 
 Nudge beads that are past --nudge-ttl and not in the live nudge queue are
-closed. Read mail beads are archived (closed) once their recipient's
-[mail] archive_read_after window has passed, or its [[mail.recipient]]
-override; a recipient whose window is "0" is never swept. --mail-ttl replaces
-that whole policy for one run with a single window for every recipient.
+closed. Read mail beads are archived (closed) once their [mail]
+archive_read_after window has passed, or the longer of the windows set by a
+matching [[mail.recipient]] or [[mail.sender]] override; mail whose window is
+"0" is never swept. --mail-ttl replaces that whole policy for one run, sender
+and recipient overrides included, with a single window for every message.
 Closing unread mail is opt-in: when --unread-mail-ttl (or [mail]
 unread_retention_ttl) is set, unread mail beads past it are also closed, so
 mail nobody ever reads ages out instead of accumulating forever.
@@ -3118,7 +3119,7 @@ gc order sweep-nudge-mail [flags]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--dry-run` | bool |  | log what would be closed; make no changes |
-| `--mail-ttl` | duration | `0s` | min age before a read mail bead is archived, for every recipient; overrides the city's [mail] archive_read_after policy for this run, and 0 disables the mail phase (default: that policy) |
+| `--mail-ttl` | duration | `0s` | min age before a read mail bead is archived, for every recipient and sender; overrides the city's [mail] archive_read_after policy and its [[mail.recipient]] and [[mail.sender]] overrides for this run, and 0 disables the mail phase (default: that policy) |
 | `--nudge-ttl` | duration | `10m0s` | min age before a delivered nudge bead is GC'd |
 | `--quiet` | bool |  | suppress success output |
 | `--unread-mail-ttl` | duration | `0s` | min age before an unread mail bead is GC'd; 0 disables (default: cfg.Mail.UnreadRetentionTTL when set, else disabled) |
