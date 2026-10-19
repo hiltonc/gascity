@@ -2048,7 +2048,14 @@
             "$ref": "#/$defs/MailRecipientRetention"
           },
           "type": "array",
-          "description": "Recipients override archive_read_after and retention_ttl for the\nrecipients they match. The first matching entry wins; a knob an entry\nleaves unset falls back to the [mail] value."
+          "description": "Recipients override archive_read_after and retention_ttl for the\nrecipients they match. The first matching entry wins; a knob an entry\nleaves unset falls back to the [mail] value. See [[mail.sender]] for a message\nthat a sender entry also matches."
+        },
+        "sender": {
+          "items": {
+            "$ref": "#/$defs/MailSenderRetention"
+          },
+          "type": "array",
+          "description": "Senders override archive_read_after and retention_ttl for the mail\ntheir senders send. The first matching entry wins. When a sender entry\nand a recipient entry both match a message, each knob takes the longer\nwindow of the entries that set it (\"0\", never, is longest); a knob\nneither sets falls back to the [mail] value."
         }
       },
       "additionalProperties": false,
@@ -2076,6 +2083,28 @@
         "match"
       ],
       "description": "MailRecipientRetention overrides the [mail] read-mail retention knobs for the recipient addresses it matches."
+    },
+    "MailSenderRetention": {
+      "properties": {
+        "match": {
+          "type": "string",
+          "description": "Match selects senders by their stored address: an exact address such\nas \"human\", or a path.Match glob such as \"gascity/*\"."
+        },
+        "archive_read_after": {
+          "type": "string",
+          "description": "ArchiveReadAfter overrides [mail] archive_read_after for mail from\nmatching senders. \"0\" means never archive."
+        },
+        "retention_ttl": {
+          "type": "string",
+          "description": "RetentionTTL overrides [mail] retention_ttl for mail from matching\nsenders. \"0\" means never purge."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "match"
+      ],
+      "description": "MailSenderRetention overrides the [mail] read-mail retention knobs for the mail sent by the sender addresses it matches."
     },
     "MaintenanceConfig": {
       "properties": {

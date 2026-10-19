@@ -2011,8 +2011,15 @@ type MailConfig struct {
 	UnreadRetentionTTL string `toml:"unread_retention_ttl,omitempty"`
 	// Recipients override archive_read_after and retention_ttl for the
 	// recipients they match. The first matching entry wins; a knob an entry
-	// leaves unset falls back to the [mail] value.
+	// leaves unset falls back to the [mail] value. See [[mail.sender]] for a message
+	// that a sender entry also matches.
 	Recipients []MailRecipientRetention `toml:"recipient,omitempty"`
+	// Senders override archive_read_after and retention_ttl for the mail
+	// their senders send. The first matching entry wins. When a sender entry
+	// and a recipient entry both match a message, each knob takes the longer
+	// window of the entries that set it ("0", never, is longest); a knob
+	// neither sets falls back to the [mail] value.
+	Senders []MailSenderRetention `toml:"sender,omitempty"`
 }
 
 // MailRecipientRetention overrides the [mail] read-mail retention knobs for
@@ -2026,6 +2033,21 @@ type MailRecipientRetention struct {
 	ArchiveReadAfter string `toml:"archive_read_after,omitempty"`
 	// RetentionTTL overrides [mail] retention_ttl for matching recipients.
 	// "0" means never purge.
+	RetentionTTL string `toml:"retention_ttl,omitempty"`
+}
+
+// MailSenderRetention overrides the [mail] read-mail retention knobs for the
+// mail sent by the sender addresses it matches. It decides only when that
+// mail is archived and purged, never whether it reads as read.
+type MailSenderRetention struct {
+	// Match selects senders by their stored address: an exact address such
+	// as "human", or a path.Match glob such as "gascity/*".
+	Match string `toml:"match" jsonschema:"required"`
+	// ArchiveReadAfter overrides [mail] archive_read_after for mail from
+	// matching senders. "0" means never archive.
+	ArchiveReadAfter string `toml:"archive_read_after,omitempty"`
+	// RetentionTTL overrides [mail] retention_ttl for mail from matching
+	// senders. "0" means never purge.
 	RetentionTTL string `toml:"retention_ttl,omitempty"`
 }
 

@@ -56,7 +56,7 @@ func TestMailRetentionWithoutNewConfigMatchesToday(t *testing.T) {
 			}
 			want := config.MailRetentionWindows{ArchiveReadAfter: tt.wantArchive, RetentionTTL: tt.wantRetention}
 			for _, recipient := range []string{"human", "gascity/worker", ""} {
-				if got := policy.For(recipient); got != want {
+				if got := policy.For("", recipient); got != want {
 					t.Errorf("For(%q) = %+v, want %+v", recipient, got, want)
 				}
 			}
@@ -185,7 +185,117 @@ func TestWispGCForConfigRunsWhenOnlyARecipientPurges(t *testing.T) {
 	if wg == nil {
 		t.Fatal("newWispGCForConfig returned nil; a recipient retention_ttl must enable the mail purge")
 	}
-	if got := wg.(*memoryWispGC).mailRetention.For("gascity/witness").RetentionTTL; got != 24*time.Hour {
+	if got := wg.(*memoryWispGC).mailRetention.For("", "gascity/witness").RetentionTTL; got != 24*time.Hour {
 		t.Fatalf("witness retention = %v, want 24h", got)
+	}
+}
+
+// humanSenderKeptConfig is a city whose read mail is archived after an hour
+// and purged after a week, except mail from "human", which no rule addressed
+// to its recipients shortens.
+func humanSenderKeptConfig() *config.City {
+	cfg := &config.City{}
+	cfg.Daemon.WispGCInterval = "5m"
+	cfg.Mail = config.MailConfig{
+		ArchiveReadAfter: "1h",
+		RetentionTTL:     "168h",
+		Senders: []config.MailSenderRetention{
+			{Match: "human", ArchiveReadAfter: "0", RetentionTTL: "0"},
+		},
+	}
+	return cfg
+}
+
+func sentMailSeed(id, sender, recipient string, createdAt time.Time) beads.Bead {
+	b := addressedMailSeed(id, recipient, createdAt)
+	b.From = sender
+	return b
+}
+
+func TestSweepStaleNudgeMail_PerSenderPolicy(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	policy, err := mailRetentionPolicyForConfig(humanSenderKeptConfig())
+	if err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	store := beads.NewMemStoreFrom(100, []beads.Bead{
+		sentMailSeed("from-human-old", "human", "gascity/worker", now.Add(-72*time.Hour)),
+		sentMailSeed("from-agent-old", "gascity/other", "gascity/worker", now.Add(-2*time.Hour)),
+		sentMailSeed("from-agent-recent", "gascity/other", "gascity/worker", now.Add(-10*time.Minute)),
+	}, nil)
+	nudges, mails := beads.NudgesStore{Store: store}, beads.MailStore{Store: store}
+
+	counts, err := countStaleNudgeMail(nudges, mails, nil, now, nudgeMailSweepDefaultNudgeTTL, policy, nudgeMailSweepDefaultUnreadMailTTL, 0)
+	if err != nil {
+		t.Fatalf("countStaleNudgeMail: %v", err)
+	}
+	result, err := sweepStaleNudgeMail(nudges, mails, nil, now, nudgeMailSweepDefaultNudgeTTL, policy, nudgeMailSweepDefaultUnreadMailTTL, 0)
+	if err != nil {
+		t.Fatalf("sweepStaleNudgeMail: %v", err)
+	}
+	if got := strings.Join(result.MailClosedIDs, ","); got != "from-agent-old" {
+		t.Fatalf("archived = %s, want from-agent-old", got)
+	}
+	if counts.MailClosed != result.MailClosed {
+		t.Fatalf("dry-run mail count = %d, sweep archived %d", counts.MailClosed, result.MailClosed)
+	}
+}
+
+func TestSweepNudgeMailPolicyMailTTLOverridesSenderRules(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	policy, err := sweepNudgeMailPolicy(humanSenderKeptConfig(), 20*time.Minute, true)
+	if err != nil {
+		t.Fatalf("sweepNudgeMailPolicy: %v", err)
+	}
+	store := beads.NewMemStoreFrom(100, []beads.Bead{
+		sentMailSeed("from-human-old", "human", "gascity/worker", now.Add(-72*time.Hour)),
+		sentMailSeed("from-agent-mid", "gascity/other", "gascity/worker", now.Add(-30*time.Minute)),
+	}, nil)
+	result, err := sweepStaleNudgeMail(beads.NudgesStore{Store: store}, beads.MailStore{Store: store}, nil, now, nudgeMailSweepDefaultNudgeTTL, policy, nudgeMailSweepDefaultUnreadMailTTL, 0)
+	if err != nil {
+		t.Fatalf("sweepStaleNudgeMail: %v", err)
+	}
+	if got := strings.Join(result.MailClosedIDs, ","); got != "from-human-old,from-agent-mid" {
+		t.Fatalf("archived = %s, want from-human-old,from-agent-mid", got)
+	}
+}
+
+func TestWispGCForConfigPurgesPerSender(t *testing.T) {
+	now := time.Now()
+	readWisp := func(id, sender string, createdAt time.Time) beads.Bead {
+		b := makeGCMessageWisp(id, createdAt, map[string]string{mail.ReadMetadataKey: "true"})
+		b.From = sender
+		b.Assignee = "gascity/worker"
+		return b
+	}
+	store := newGCStore([]beads.Bead{
+		readWisp("from-agent-old", "gascity/other", now.Add(-200*time.Hour)),
+		readWisp("from-human-old", "human", now.Add(-2000*time.Hour)),
+	})
+
+	wg := newWispGCForConfig(humanSenderKeptConfig())
+	if wg == nil {
+		t.Fatal("newWispGCForConfig returned nil for a city with a purge window")
+	}
+	if _, err := wg.runGC(beads.GraphStore{Store: store}, beads.SessionStore{}, beads.MailStore{Store: store}, now); err != nil {
+		t.Fatalf("runGC: %v", err)
+	}
+	assertDeletedIDs(t, store.deletedIDs, "from-agent-old")
+	if _, err := store.Get("from-human-old"); err != nil {
+		t.Fatalf("from-human-old should be preserved: %v", err)
+	}
+}
+
+func TestWispGCForConfigRunsWhenOnlyASenderPurges(t *testing.T) {
+	cfg := &config.City{}
+	cfg.Daemon.WispGCInterval = "5m"
+	cfg.Mail.Senders = []config.MailSenderRetention{{Match: "ops/*", RetentionTTL: "24h"}}
+
+	wg := newWispGCForConfig(cfg)
+	if wg == nil {
+		t.Fatal("newWispGCForConfig returned nil; a sender retention_ttl must enable the mail purge")
+	}
+	if got := wg.(*memoryWispGC).mailRetention.For("ops/deploy", "gascity/worker").RetentionTTL; got != 24*time.Hour {
+		t.Fatalf("ops sender retention = %v, want 24h", got)
 	}
 }
