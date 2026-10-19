@@ -1005,3 +1005,74 @@ func TestPurgeReadMessageWisps_NoRetentionWindowListsNothing(t *testing.T) {
 		t.Fatalf("purged=%v err=%v lists=%d, want nothing purged and nothing listed", purged, err, store.lists)
 	}
 }
+
+// TestSenderRuleKeepsReadMailWithoutChangingReadState sends mail from a sender
+// whose [[mail.sender]] rule never archives or purges to a recipient no rule
+// matches. Long after it is read, neither the archive sweep nor the purge
+// touches it, and it still reads as read: the rule decides retention only.
+func TestSenderRuleKeepsReadMailWithoutChangingReadState(t *testing.T) {
+	policy, err := config.MailConfig{
+		ArchiveReadAfter: "1h",
+		RetentionTTL:     "168h",
+		Senders:          []config.MailSenderRetention{{Match: "human", ArchiveReadAfter: "0", RetentionTTL: "0"}},
+	}.RetentionPolicy()
+	if err != nil {
+		t.Fatalf("RetentionPolicy: %v", err)
+	}
+	store := &deleteTrackStore{MemStore: beads.NewMemStore(), failDelete: map[string]error{}}
+	p := New(store)
+	fromHuman, err := p.Send("human", "gascity/worker", "keep", "from a person")
+	if err != nil {
+		t.Fatalf("Send from human: %v", err)
+	}
+	fromAgent, err := p.Send("gascity/other", "gascity/worker", "automation", "from an agent")
+	if err != nil {
+		t.Fatalf("Send from agent: %v", err)
+	}
+	for _, id := range []string{fromHuman.ID, fromAgent.ID} {
+		if _, err := p.Read(id); err != nil {
+			t.Fatalf("Read %s: %v", id, err)
+		}
+	}
+	mailStore := beads.MailStore{Store: store}
+	later := time.Now().Add(2000 * time.Hour)
+
+	closed, closeErrs, listErr := SweepReadMessages(mailStore, policy, later, 0, RetentionSweepCloseReason)
+	if listErr != nil || len(closeErrs) != 0 {
+		t.Fatalf("sweep errors: list=%v close=%v", listErr, closeErrs)
+	}
+	if strings.Join(closed, ",") != fromAgent.ID {
+		t.Fatalf("archived = %v, want only the agent's mail %s", closed, fromAgent.ID)
+	}
+	purged, err := PurgeReadMessageWisps(mailStore, policy, later)
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if strings.Join(purged, ",") != fromAgent.ID {
+		t.Fatalf("purged = %v, want only the agent's mail %s", purged, fromAgent.ID)
+	}
+
+	raw, err := store.Get(fromHuman.ID)
+	if err != nil {
+		t.Fatalf("human's mail was removed: %v", err)
+	}
+	if raw.Status != "open" {
+		t.Fatalf("human's mail status = %q, want open (never archived)", raw.Status)
+	}
+	got, err := p.Get(fromHuman.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.Read {
+		t.Fatal("human's mail no longer reads as read")
+	}
+	inbox, err := p.Inbox("gascity/worker")
+	if err != nil {
+		t.Fatalf("Inbox: %v", err)
+	}
+	for _, m := range inbox {
+		if m.ID == fromHuman.ID {
+			t.Fatal("the recipient's inbox counts the kept mail as unread")
+		}
+	}
+}
