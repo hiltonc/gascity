@@ -266,16 +266,6 @@ and policy targets, and a green `go test` is not evidence a change passes CI.
   client certificate use `--config=remote-exec` (ask your human before
   adding either to `.bazelrc.local`). Details: TESTING.md
   "Bazel cache tiers" and `engdocs/bazel-quickstart.md`.
-- **Where the go suite runs (this fork).** On a host without Bazel, run the
-  broad go sweeps (`make check`, `make test-fast-parallel`, the integration
-  shards) on `the-forge`, not on this machine:
-  `~/Developer/high-gas-city/tools/remote-run/remote-run.sh the-forge
-  ~/Developer/gascity make check`. Only the compute moves; the claim, bead,
-  worktree and commits stay local, and `.githooks/lib/push-suite.sh` already
-  sends its go suite there. The sync is one way, so never run a generator or
-  golden re-record remotely; never pipe it (the pipe's status hides a red
-  run); PREFLIGHT, SYNC, CONNECTION LOST and GIT REBUILD FAILED are not test
-  failures; and it does not replace the local pre-commit gate.
 - **BUILD files.** After changing imports or adding packages or files, run
   `make bazel-sync` and commit the result; the `BUILD files in sync` CI gate
   fails otherwise. Never commit machine-specific endpoints; they belong in

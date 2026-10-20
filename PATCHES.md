@@ -38,13 +38,12 @@ and drop out on a rebase by itself; expect to carry each one and to resolve
 real conflicts until upstream takes it. As of 2026-10-13, on branch
 `patches/on-main-rebase-2026-10-13`, rebased onto upstream/main `8e3d40151`
 (the per-patch outcome of each rewrite is under "Rebase log" below; what was
-dropped, and where to restore it from, is under "Dropped 2026-10-13" and
-"Dropped 2026-10-05"):
+dropped, and where to restore it from, is under "Dropped 2026-10-20",
+"Dropped 2026-10-13" and "Dropped 2026-10-05"):
 
 | commit | what |
 |---|---|
 | `a6ba926fd` | `mise.toml` pins go 1.26.9, which `go.mod` requires and upstream does not. Build environment only. |
-| `f9a411891` | Sends the heavy go sweeps to the build host instead of this laptop. Upstream's pre-push now runs `.githooks/lib/push-suite.sh` (bazel test, or `make test-fast-parallel` in its `go` mode); the remote-run hand-off lives in that script's go mode (`run_go_suite`: `GC_REMOTE_RUN`/`GC_REMOTE_HOST`, exits 69/75 fall back to local), which is the mode a host without Bazel takes. `AGENTS.md` keeps the four remote-run rules as one bullet under "Build and test". |
 | `d14449af9` | `perf(events)`: stops a backward tail walk at the AfterSeq floor. Ours, upstream PR #6374 (open). Re-expressed on upstream's `walkBackward` visit callback (#6063): the floor check sits beside `sinceWindow` in `readFilteredTailFrom` (an `io.ReaderAt`, for the byte-counting test). The PR's head `c0c4cb29e` is the pre-#6063 shape and needs this commit force-pushed to it. The test helper is `writeTailLog` (upstream took `writeLog` and `writeSeqLog`). Drop when #6374 merges. |
 | `0da1f8abe` | `perf(dashboardbff)`: projects run lanes on demand rather than on a timer. Ours, upstream PR #6373 (open); its head `84e3f2b54` carries the same change but no `BUILD.bazel` entry for `runtailer_demand_test.go`, which this commit adds. Drop when #6373 merges. |
 | `ba742a2dc` | `feat(cli)`: delegates an unknown command to `gc-<name>` on PATH (Unix: process-image handover; Windows: a supervising fallback). `external_command_unix_test.go` owns the handover: the extension keeps the pid gc was launched as, and a signalled process group yields a death-by-signal exit status. |
@@ -76,6 +75,15 @@ dropped, and where to restore it from, is under "Dropped 2026-10-13" and
 | (ga-6d77) | `fix(cli)`: `gc session pending` reaches the supervisor in a supervisor-managed city. `sessionPendingAPIClient` is `supervisorFallthroughAPIClient`, as `gc status` and maintenance are; plain `apiClient` returned nil whenever the controller socket was alive with no `[api]` port, so every run took the local fallback (logged `reason=controller-down`), opened the city store and probed each runtime from the CLI. Measured on hilton-gas-city: 22-29s and 5-6 Dolt connections per run before, 0.8-3.1s and none after; beast-gas-city 3.6-12s before, 0.4-1.9s after. Test `TestSessionPendingAPIClientRoutesToSupervisor`. |
 | (register) | This register's table and rebase log, last for upstream `8e3d40151`, the second-to-last commit. Docs only. |
 | (census, last) | Re-baselines the resource census (+1 call in +1 file over upstream) for upstream `8e3d40151`. No dashboard bundle commit: no carried patch touches the SPA, so upstream's `dist/` is current. Redo both on every rebase (see below). |
+
+## Dropped 2026-10-20
+
+The build host is retired (ga-9oty), so nothing hands work to it. To restore
+the patch, cherry-pick `f9a411891`; it stays in `patches/on-main`'s history.
+
+| old commit | patch | why |
+|---|---|---|
+| `f9a411891` | Sends the heavy go sweeps to the build host instead of this laptop: the remote-run hand-off in `.githooks/lib/push-suite.sh`'s go mode (`run_go_suite`: `GC_REMOTE_RUN`/`GC_REMOTE_HOST`, exits 69/75 fall back to local) and the remote-run bullet under `AGENTS.md`'s "Build and test". | **Retired.** the-forge and high-gas-city are gone. Upstream never had the hand-off; `push-suite.sh`, `scripts/githooks_pre_push_suite_test.go`, `scripts/githooks_pre_push_stdin_test.go` and `AGENTS.md` are upstream's again (`8e3d40151`). |
 
 ## Dropped 2026-10-13
 
@@ -177,6 +185,7 @@ own `BUILD.bazel` entries and bumped the mise pin.
   execution; `make test-fast-parallel` only in its `go` mode). The remote-run
   hand-off now lives in that `go` mode, which this Bazel-less laptop takes. If
   the hosts get Bazel and an rbe executor in `~/.bazelrc`, the patch can go.
+  (Dropped 2026-10-20 with the build host; see "Dropped 2026-10-20".)
 - `07d01c43e` events AfterSeq floor: rewritten onto upstream's `walkBackward`
   (#6063). Upstream PR #6374's head (`c0c4cb29e`) is the old shape and needs
   this commit force-pushed to it.
@@ -405,8 +414,9 @@ at the end.
 
 Two things this base needs on the hosts before the branch moves:
 
-- **Go 1.26.6 on the-forge.** `mise.toml` now pins 1.26.6 and the forge's mise
-  lives in root-owned `/opt/mise`, so a login shell there fails with
+- **Go 1.26.6 on the-forge (moot: the host was retired 2026-10-20).**
+  `mise.toml` now pins 1.26.6 and the forge's mise lives in root-owned
+  `/opt/mise`, so a login shell there fails with
   `failed create_dir_all: /opt/mise/installs/go/1.26.6: Permission denied`.
   That breaks the pre-push sweep, the refinery's verify and any remote-run of
   this branch until someone with root runs `mise install go@1.26.6` there.
@@ -443,7 +453,7 @@ Resolve them with anything to keep the rebase moving, then regenerate properly:
 
     make dashboard-build
 
-It needs node, which the-forge does not have, so it runs locally; it does not
+It needs node and runs locally; it does not
 run the Go suite. Regenerating is NOT optional whenever a carried patch touches
 the SPA source or the generated supervisor client: keeping upstream's bundle
 would ship a dashboard built without them, and nothing fails to say so. Since
