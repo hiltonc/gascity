@@ -266,12 +266,6 @@ and policy targets, and a green `go test` is not evidence a change passes CI.
   client certificate use `--config=remote-exec` (ask your human before
   adding either to `.bazelrc.local`). Details: TESTING.md
   "Bazel cache tiers" and `engdocs/bazel-quickstart.md`.
-- **Where the go suite runs (this fork).** On a host without Bazel, the
-  broad go sweeps (`make check`, `make test-fast-parallel`, the integration
-  shards) run locally; there is no default build host. Handing
-  `.githooks/lib/push-suite.sh`'s go suite to one is opt-in: set
-  `GC_REMOTE_HOST` to the box and `GC_REMOTE_RUN` to its remote-run script.
-  Never pipe a sweep (the pipe's status hides a red run).
 - **BUILD files.** After changing imports or adding packages or files, run
   `make bazel-sync` and commit the result; the `BUILD files in sync` CI gate
   fails otherwise. Never commit machine-specific endpoints; they belong in

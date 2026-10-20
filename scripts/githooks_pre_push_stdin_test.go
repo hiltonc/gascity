@@ -42,11 +42,8 @@ func newPrePushFixture(t *testing.T) *prePushFixture {
 		"GIT_CONFIG_SYSTEM="+filepath.Join(recordDir, "gitconfig-system"),
 		"BD_STDIN_RECORD="+f.bdStdin,
 		"MAKE_RECORD="+f.makeRuns,
-		// The developer's own mode choice and build host must not leak into
-		// the fixture.
+		// The developer's own mode choice must not leak into the fixture.
 		"GC_PREPUSH_SUITE=",
-		"GC_REMOTE_HOST=",
-		"GC_REMOTE_RUN=",
 	)
 
 	// `bd` records exactly what the chain handed it on stdin.
