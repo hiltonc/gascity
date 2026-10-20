@@ -297,3 +297,62 @@ func assertGoFallbackAnnounced(t *testing.T, out string, fellBack bool, why stri
 		}
 	}
 }
+
+// TestPrePushGoSuiteRemoteHandOff: the go suite moves to a build host only
+// when GC_REMOTE_HOST names one. remote-run's 69 (preflight) and 75 (sync or
+// connection lost) are not build failures and fall back to local; any other
+// status is the sweep's own.
+func TestPrePushGoSuiteRemoteHandOff(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		host       string
+		remoteExit string
+		wantRemote bool
+		wantMake   string
+		wantCode   int
+	}{
+		{name: "no host runs locally without trying remote", wantMake: prePushMakeArgs},
+		{name: "configured host runs remotely", host: "somehost", remoteExit: "0", wantRemote: true},
+		{name: "preflight failure falls back to local", host: "somehost", remoteExit: "69", wantRemote: true, wantMake: prePushMakeArgs},
+		{name: "lost connection falls back to local", host: "somehost", remoteExit: "75", wantRemote: true, wantMake: prePushMakeArgs},
+		{name: "remote test failure fails the push", host: "somehost", remoteExit: "1", wantRemote: true, wantCode: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newPrePushFixture(t)
+			remoteRuns := filepath.Join(t.TempDir(), "remote-runs")
+			remoteRun := filepath.Join(f.binDir, "remote-run")
+			writeExecutable(t, remoteRun, `#!/usr/bin/env sh
+printf '%s\n' "$*" >> "$REMOTE_RECORD"
+exit "${REMOTE_EXIT:-0}"
+`)
+			f.env = append(f.env,
+				"GC_PREPUSH_SUITE=go",
+				"GC_REMOTE_RUN="+remoteRun,
+				"GC_REMOTE_HOST="+tc.host,
+				"REMOTE_RECORD="+remoteRuns,
+				"REMOTE_EXIT="+tc.remoteExit,
+			)
+
+			code, out := f.run(t, f.pushRefLine())
+			if code != tc.wantCode {
+				t.Fatalf("pre-push exit = %d, want %d\n%s", code, tc.wantCode, out)
+			}
+			wantRemote := ""
+			if tc.wantRemote {
+				// The hook passes git's toplevel, which resolves symlinks
+				// (macOS's /var is /private/var).
+				repo, err := filepath.EvalSymlinks(f.repo)
+				if err != nil {
+					t.Fatalf("resolve repo: %v", err)
+				}
+				wantRemote = tc.host + " " + repo + " make " + prePushMakeArgs
+			}
+			if got := strings.TrimSpace(f.read(t, remoteRuns)); got != wantRemote {
+				t.Errorf("remote-run ran %q, want %q\n%s", got, wantRemote, out)
+			}
+			if got := strings.TrimSpace(f.read(t, f.makeRuns)); got != tc.wantMake {
+				t.Errorf("make ran %q, want %q\n%s", got, tc.wantMake, out)
+			}
+		})
+	}
+}

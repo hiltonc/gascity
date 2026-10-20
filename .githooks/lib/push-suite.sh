@@ -286,19 +286,19 @@ esac
 # Where the go suite RUNS. It compiles ~2.8 GiB of test binaries per shard,
 # and on a laptop that is also running agents it is the single most expensive
 # thing the repo does; a push that looks hung is almost always this. So send it
-# to the Linux build host when one is configured, and keep the gate identical
-# either way: the same target, the same pass or fail, just not on this CPU.
+# to a build host when one is configured, and keep the gate identical either
+# way: the same target, the same pass or fail, just not on this CPU.
 #
-# GC_REMOTE_RUN points at tools/remote-run/remote-run.sh; GC_REMOTE_HOST names
-# the box. Unset either and this falls through to running locally, so a
-# checkout without them behaves exactly as it always has.
+# The hand-off is opt-in, with no default host: GC_REMOTE_HOST names the box
+# and GC_REMOTE_RUN points at a remote-run.sh that syncs the checkout there and
+# runs the command. Unless both are set, the suite runs locally straight away.
 #
 # An unreachable or slow host must NOT fail a push: remote-run exits 69 for
 # PREFLIGHT and 75 for SYNC or CONNECTION LOST, which are explicitly not build
 # failures, so those fall back to local rather than rejecting good work.
 run_go_suite() {
-  local remote_run=${GC_REMOTE_RUN:-$HOME/Developer/high-gas-city/tools/remote-run/remote-run.sh}
-  local remote_host=${GC_REMOTE_HOST:-the-forge}
+  local remote_run=${GC_REMOTE_RUN:-}
+  local remote_host=${GC_REMOTE_HOST:-}
   local rc
   if [ -x "$remote_run" ] && [ -n "$remote_host" ]; then
     printf 'pre-push: running the sweep on %s instead of this machine\n' "$remote_host" >&2

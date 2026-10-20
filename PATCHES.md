@@ -44,7 +44,7 @@ dropped, and where to restore it from, is under "Dropped 2026-10-13" and
 | commit | what |
 |---|---|
 | `a6ba926fd` | `mise.toml` pins go 1.26.9, which `go.mod` requires and upstream does not. Build environment only. |
-| `f9a411891` | Sends the heavy go sweeps to the build host instead of this laptop. Upstream's pre-push now runs `.githooks/lib/push-suite.sh` (bazel test, or `make test-fast-parallel` in its `go` mode); the remote-run hand-off lives in that script's go mode (`run_go_suite`: `GC_REMOTE_RUN`/`GC_REMOTE_HOST`, exits 69/75 fall back to local), which is the mode a host without Bazel takes. `AGENTS.md` keeps the four remote-run rules as one bullet under "Build and test". |
+| `f9a411891` | Sends the heavy go sweeps to a build host instead of this laptop. Upstream's pre-push now runs `.githooks/lib/push-suite.sh` (bazel test, or `make test-fast-parallel` in its `go` mode); the remote-run hand-off lives in that script's go mode (`run_go_suite`: `GC_REMOTE_RUN`/`GC_REMOTE_HOST`, exits 69/75 fall back to local), which is the mode a host without Bazel takes. The build host it defaulted to is retired, so the hand-off is opt-in with no default host (ga-i4bv, below). |
 | `d14449af9` | `perf(events)`: stops a backward tail walk at the AfterSeq floor. Ours, upstream PR #6374 (open). Re-expressed on upstream's `walkBackward` visit callback (#6063): the floor check sits beside `sinceWindow` in `readFilteredTailFrom` (an `io.ReaderAt`, for the byte-counting test). The PR's head `c0c4cb29e` is the pre-#6063 shape and needs this commit force-pushed to it. The test helper is `writeTailLog` (upstream took `writeLog` and `writeSeqLog`). Drop when #6374 merges. |
 | `0da1f8abe` | `perf(dashboardbff)`: projects run lanes on demand rather than on a timer. Ours, upstream PR #6373 (open); its head `84e3f2b54` carries the same change but no `BUILD.bazel` entry for `runtailer_demand_test.go`, which this commit adds. Drop when #6373 merges. |
 | `ba742a2dc` | `feat(cli)`: delegates an unknown command to `gc-<name>` on PATH (Unix: process-image handover; Windows: a supervising fallback). `external_command_unix_test.go` owns the handover: the extension keeps the pid gc was launched as, and a signalled process group yields a death-by-signal exit status. |
@@ -74,6 +74,7 @@ dropped, and where to restore it from, is under "Dropped 2026-10-13" and
 | `19442343d` | `fix(dolt)`: `mol-dog-doctor.sh` counts a database as backup-eligible when `dolt backup` lists a remote named `<db>-backup` **or** `default`, or exactly one remote under any name, the order `mol-dog-backup.sh` already resolves the name in (`snapshot_backup_name`). Since #6751 the backup dog syncs through `bd backup init/sync`, and bd registers the remote as `default` (`.beads/dolt/gcd/.dolt/repo_state.json` carries only `default -> file:///…/.dolt-backup/gcd` after the first run; the old `gcd-backup` registration is gone), so the doctor's `grep -qx "${db}-backup"` reported every store as `<db> backup remote missing` through `gc dolt health` on every 30 s tick although all seven had just synced (beast-gas-city 2026-10-13 00:55Z, right after the bd pack moved to `0a9337dea`). The comment above the check names the three accepted shapes and still cites #3176. New `TestDoctorAcceptsBdDefaultBackupRemote` in `examples/bd/dolt/dog_exec_scripts_test.go` (`default <url>` eligible, a single `offsite <url>` eligible, two unmatched remotes still reported); `TestDoctorWarnsOnUserDBsMissingBackupRemote` keeps the `<db>-backup` case green. Touches upstream-owned `examples/bd/dolt/assets/scripts/mol-dog-doctor.sh`, `dog_exec_scripts_test.go` (follow-up to ga-0c9lu). |
 | (ga-870q) | `fix(dolt)`: `mol-dog-doctor.sh` reports a backup stale only when it lags the live data, not when its manifest is merely old. A manifest older than `BACKUP_STALE_S` now triggers a read of `dolt log -n $GC_DOCTOR_BACKUP_LAG_SCAN_COMMITS` (default 100, bounded by `run_bounded 30`) in `$DOLT_DATA_DIR/<db>`, with Date: lines parsed to epoch in awk (GNU and BSD `date` disagree); the scope is stale only if commits are newer than the push, reported as `<db> backup is Nh old, K commits behind` (`100+` at the scan depth). No newer commit counts the scope current; an unreadable log falls back to the age rule as `..., live commits unreadable`. Ownership comes cold from `gc rig list --json` plus each scope's `.beads/metadata.json` `dolt_database` (never bd, which wakes a suspended scope): a suspended rig's lag carries `(rig <name> suspended)`, and a database no scope owns reads `<db>: no rig; left out of backups` instead of aging forever; ownership is treated as unknown (no such line) when jq, the rig list or any listed scope's metadata is missing. The ok line gains `backups current: X/Y`. The header's RPO note says what is measured; `BACKUP_STALE_S` keeps its meaning and default. Evidence: hilton-gas-city 18:48Z (every quiet rig "12h old" with zero commits since its 06:46Z push) and beast-gas-city 19:02Z (suspended gsc/hcm/hfa/hli, orphan jrl), 2026-10-13. Tests in `examples/bd/dolt/dog_exec_scripts_test.go`: `TestDoctorBackupFreshnessMeasuresLagNotAge` (current, lagging, unreadable), `TestDoctorBackupLagCountIsCappedAtTheScanDepth`, `TestDoctorBackupFreshnessResolvesRigOwnership` (suspended quiet/dirty, no-rig), `TestDoctorBackupOwnershipUnknownWhenARigHasNoMetadata`. Touches upstream-owned `examples/bd/dolt/assets/scripts/mol-dog-doctor.sh`, `dog_exec_scripts_test.go` (ga-870q). |
 | (ga-6d77) | `fix(cli)`: `gc session pending` reaches the supervisor in a supervisor-managed city. `sessionPendingAPIClient` is `supervisorFallthroughAPIClient`, as `gc status` and maintenance are; plain `apiClient` returned nil whenever the controller socket was alive with no `[api]` port, so every run took the local fallback (logged `reason=controller-down`), opened the city store and probed each runtime from the CLI. Measured on hilton-gas-city: 22-29s and 5-6 Dolt connections per run before, 0.8-3.1s and none after; beast-gas-city 3.6-12s before, 0.4-1.9s after. Test `TestSessionPendingAPIClientRoutesToSupervisor`. |
+| (ga-i4bv) | `chore(hooks)`: the build host is retired, so `run_go_suite` has no default `GC_REMOTE_HOST` or `GC_REMOTE_RUN` and runs the go suite locally unless both are set; a configured host keeps the 69/75 local fallback (`TestPrePushGoSuiteRemoteHandOff`). `AGENTS.md`'s "Where the go suite runs" bullet says the same. |
 | (register) | This register's table and rebase log, last for upstream `8e3d40151`, the second-to-last commit. Docs only. |
 | (census, last) | Re-baselines the resource census (+1 call in +1 file over upstream) for upstream `8e3d40151`. No dashboard bundle commit: no carried patch touches the SPA, so upstream's `dist/` is current. Redo both on every rebase (see below). |
 
@@ -177,6 +178,8 @@ own `BUILD.bazel` entries and bumped the mise pin.
   execution; `make test-fast-parallel` only in its `go` mode). The remote-run
   hand-off now lives in that `go` mode, which this Bazel-less laptop takes. If
   the hosts get Bazel and an rbe executor in `~/.bazelrc`, the patch can go.
+  (Since 2026-10-20 the build host is retired and the hand-off is opt-in, with
+  no default host.)
 - `07d01c43e` events AfterSeq floor: rewritten onto upstream's `walkBackward`
   (#6063). Upstream PR #6374's head (`c0c4cb29e`) is the old shape and needs
   this commit force-pushed to it.
@@ -405,8 +408,8 @@ at the end.
 
 Two things this base needs on the hosts before the branch moves:
 
-- **Go 1.26.6 on the-forge.** `mise.toml` now pins 1.26.6 and the forge's mise
-  lives in root-owned `/opt/mise`, so a login shell there fails with
+- **Go 1.26.6 on the build host (retired 2026-10-20).** `mise.toml` now pins
+  1.26.6 and the forge's mise lives in root-owned `/opt/mise`, so a login shell there fails with
   `failed create_dir_all: /opt/mise/installs/go/1.26.6: Permission denied`.
   That breaks the pre-push sweep, the refinery's verify and any remote-run of
   this branch until someone with root runs `mise install go@1.26.6` there.
@@ -443,8 +446,8 @@ Resolve them with anything to keep the rebase moving, then regenerate properly:
 
     make dashboard-build
 
-It needs node, which the-forge does not have, so it runs locally; it does not
-run the Go suite. Regenerating is NOT optional whenever a carried patch touches
+It needs node, which the build host (retired 2026-10-20) did not have, so it
+runs locally; it does not run the Go suite. Regenerating is NOT optional whenever a carried patch touches
 the SPA source or the generated supervisor client: keeping upstream's bundle
 would ship a dashboard built without them, and nothing fails to say so. Since
 2026-10-05 none does, so the rebuild should reproduce upstream's `dist/` byte
