@@ -8,11 +8,13 @@
 # Runs as an exec order (no LLM, no agent, no wisp).
 #
 # RPO note: BACKUP_STALE_S (default 43200 = 12h = 2x backup interval) bounds how
-# long live commits may go unpushed. A database's backup is stale when its last
-# push (the mtime of its newest backup artifact) is older than BACKUP_STALE_S AND
-# the live store holds commits newer than that push. A scope with nothing to push
+# long live commits may go unpushed. A database's backup is stale when the
+# oldest live commit newer than its last push (the mtime of its newest backup
+# artifact) is itself older than BACKUP_STALE_S. A scope with nothing to push
 # stays current however long ago its last push was: `bd backup sync` writes
 # nothing for it, so the artifact age alone measures idleness, not data at risk.
+# Nor does the first write after a long idle read as the push's age: its own age
+# is how long that change has gone unbacked-up.
 # With 6h backup syncs and fail-closed journal corruption recovery, maximum data
 # loss on journal corruption without manual intervention is one 6h backup interval.
 # If BACKUP_STALE_S exceeds 2x the backup interval, a single missed backup cycle
@@ -36,8 +38,12 @@ LATENCY_WARN_MS="${GC_DOCTOR_LATENCY_WARN_MS:-$(( ${GC_DOCTOR_LATENCY_WARN_S:-1}
 CONN_WARN_PCT="${GC_DOCTOR_CONN_WARN_PCT:-80}"
 BACKUP_STALE_S="${GC_DOCTOR_BACKUP_STALE_S:-43200}"  # 2x 6h backup interval
 BACKUP_ARTIFACT_DIR="${GC_BACKUP_ARTIFACT_DIR:-$GC_CITY_PATH/.dolt-backup}"
-# How many live commits the lag count reads; a lag that deep reports as "N+".
-BACKUP_LAG_SCAN_COMMITS="${GC_DOCTOR_BACKUP_LAG_SCAN_COMMITS:-100}"
+# Each lag query's bound, and the budget all scopes' queries share. Scopes are
+# probed in turn inside an exec order killed at 300s, so a stalled server must
+# not cost every scope its full bound; once the budget is spent the rest are
+# judged by their push's age.
+BACKUP_LAG_TIMEOUT_SECS="${GC_DOCTOR_BACKUP_LAG_TIMEOUT_SECS:-30}"
+BACKUP_LAG_BUDGET_SECS="${GC_DOCTOR_BACKUP_LAG_BUDGET_SECS:-90}"
 # Advisory dedup state (#3409): records the signature of the last-sent [MEDIUM]
 # advisory so a persistent condition collapses into one rolling alert instead of
 # a fresh bead every 5-min tick. DOLT_STATE_DIR is set by runtime.sh.
@@ -54,10 +60,16 @@ ADVISORY_SUBJECT="Dolt health advisory [MEDIUM]"
 ADVISORY_SUBJECT_PREFIX="Dolt health advisory"
 ADVISORY_RECIPIENT="${GC_ESCALATION_RECIPIENT:-human}"
 
-dolt_sql() {
+dolt_sql_within() {
+    dolt_sql_timeout="$1"
+    shift
     DOLT_CLI_PASSWORD="${GC_DOLT_PASSWORD:-}" \
-        run_bounded 10 \
+        run_bounded "$dolt_sql_timeout" \
         dolt --host "$HOST" --port "$PORT" --user "$USER" --no-tls sql "$@"
+}
+
+dolt_sql() {
+    dolt_sql_within 10 "$@"
 }
 
 # CONN_MAX: explicit override > server @@GLOBAL.max_connections > fallback.
@@ -108,35 +120,40 @@ newest_backup_mtime_for_db() {
     printf '%s\n' "$newest_mtime"
 }
 
-# Number of live commits in a database newer than its last push, read from
-# `dolt log` in its data directory (read-only, like the `dolt backup` probe
-# below). Fails when the log cannot be read or carries no parseable Date: line,
-# so the caller falls back to judging the backup by age alone. Dates are parsed
-# in awk rather than date(1) because GNU and BSD date disagree on parsing.
+# Live commits in a database newer than its last push, counted by the server
+# within <timeout> seconds: prints "<count> <epoch of the oldest>", the epoch 0
+# when none. Read through the server because a CLI `dolt log` contends with it
+# for the database's locks (commands/health/run.sh). dolt_log dates are UTC,
+# and FROM_UNIXTIME/UNIX_TIMESTAMP use the session zone, so the session is
+# pinned to UTC. Fails on any error or unexpected row, so the caller judges the
+# backup by age.
 backup_live_lag() {
-    lag_db_dir="$1"
+    lag_db="$1"
     lag_pushed_at="$2"
-    lag_log=$(cd "$lag_db_dir" && run_bounded 30 dolt log -n "$BACKUP_LAG_SCAN_COMMITS" 2>/dev/null) || return 1
-    printf '%s\n' "$lag_log" | awk -v pushed="$lag_pushed_at" '
-        function civil_days(y, m, d,   era, yoe, doy) {
-            y -= (m <= 2)
-            era = int((y >= 0 ? y : y - 399) / 400)
-            yoe = y - era * 400
-            doy = int((153 * ((m + 9) % 12) + 2) / 5) + d - 1
-            return era * 146097 + yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy - 719468
-        }
-        # Date:  Tue Oct 13 12:59:15 -0700 2026
-        $1 == "Date:" && NF >= 7 && length($3) == 3 {
-            m = (index("JanFebMarAprMayJunJulAugSepOctNovDec", $3) + 2) / 3
-            if (m < 1 || m != int(m)) next
-            if ($4 !~ /^[0-9]+$/ || $5 !~ /^[0-9]+:[0-9]+:[0-9]+$/ || $6 !~ /^[+-][0-9][0-9][0-9][0-9]$/ || $7 !~ /^[0-9]+$/) next
-            split($5, hms, ":")
-            off = (substr($6, 2, 2) * 3600 + substr($6, 4, 2) * 60) * (substr($6, 1, 1) == "-" ? -1 : 1)
-            t = civil_days($7 + 0, m, $4 + 0) * 86400 + hms[1] * 3600 + hms[2] * 60 + hms[3] - off
-            scanned++
-            if (t > pushed) count++
-        }
-        END { if (!scanned) exit 1; print count + 0 }'
+    lag_timeout="$3"
+    lag_row=$(dolt_sql_within "$lag_timeout" -r csv -q "SET time_zone = '+00:00'; SELECT COUNT(*), FLOOR(UNIX_TIMESTAMP(MIN(date))) FROM \`${lag_db//\`/\`\`}\`.dolt_log WHERE date > FROM_UNIXTIME($lag_pushed_at)" 2>/dev/null \
+        | tail -1) || return 1
+    case "$lag_row" in
+        0,) printf '0 0\n' ;;
+        [1-9]*,[1-9]*)
+            lag_count="${lag_row%%,*}"
+            lag_oldest="${lag_row#*,}"
+            case "$lag_count$lag_oldest" in
+                *[!0-9]*) return 1 ;;
+            esac
+            printf '%s %s\n' "$lag_count" "$lag_oldest"
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+# A duration in seconds as "Nh", or "Nm" under an hour.
+backup_age_text() {
+    if [ "$1" -ge 3600 ]; then
+        printf '%sh\n' "$(($1 / 3600))"
+    else
+        printf '%sm\n' "$(($1 / 60))"
+    fi
 }
 
 # Which scope owns each database: "<db>\t<rig>\t<suspended>" lines from
@@ -299,6 +316,7 @@ if [ -n "$BACKUP_ELIGIBLE_DBS" ]; then
         BACKUP_STALE=" [WARN: backup artifact dir missing]"
     else
         NOW_S=$(date +%s)
+        BACKUP_LAG_DEADLINE=$((NOW_S + BACKUP_LAG_BUDGET_SECS))
         for db in $BACKUP_ELIGIBLE_DBS; do
             NEWEST_BACKUP_MTIME=$(newest_backup_mtime_for_db "$db")
             if [ "$NEWEST_BACKUP_MTIME" -le 0 ]; then
@@ -310,21 +328,23 @@ if [ -n "$BACKUP_ELIGIBLE_DBS" ]; then
                 BACKUP_SCOPES_CURRENT=$((BACKUP_SCOPES_CURRENT + 1))
                 continue
             fi
-            BACKUP_DETAIL="$db backup is $((BACKUP_AGE / 3600))h old"
-            if BACKUP_LAG=$(backup_live_lag "$DOLT_DATA_DIR/$db" "$NEWEST_BACKUP_MTIME"); then
-                if [ "$BACKUP_LAG" -eq 0 ]; then
+            BACKUP_LAG_LEFT=$((BACKUP_LAG_DEADLINE - $(date +%s)))
+            if [ "$BACKUP_LAG_LEFT" -le 0 ]; then
+                BACKUP_DETAIL="$db backup is $((BACKUP_AGE / 3600))h old, lag not read (freshness budget spent)"
+            elif BACKUP_LAG=$(backup_live_lag "$db" "$NEWEST_BACKUP_MTIME" \
+                "$((BACKUP_LAG_LEFT < BACKUP_LAG_TIMEOUT_SECS ? BACKUP_LAG_LEFT : BACKUP_LAG_TIMEOUT_SECS))"); then
+                read -r BACKUP_LAG_COMMITS BACKUP_LAG_OLDEST <<<"$BACKUP_LAG"
+                BACKUP_LAG_AGE=$((NOW_S - BACKUP_LAG_OLDEST))
+                if [ "$BACKUP_LAG_COMMITS" -eq 0 ] || [ "$BACKUP_LAG_AGE" -le "$BACKUP_STALE_S" ]; then
                     BACKUP_SCOPES_CURRENT=$((BACKUP_SCOPES_CURRENT + 1))
                     continue
-                fi
-                if [ "$BACKUP_LAG" -ge "$BACKUP_LAG_SCAN_COMMITS" ]; then
-                    BACKUP_DETAIL="$BACKUP_DETAIL, ${BACKUP_LAG}+ commits behind"
-                elif [ "$BACKUP_LAG" -eq 1 ]; then
-                    BACKUP_DETAIL="$BACKUP_DETAIL, 1 commit behind"
+                elif [ "$BACKUP_LAG_COMMITS" -eq 1 ]; then
+                    BACKUP_DETAIL="$db backup is 1 commit behind; oldest unpushed change is $(backup_age_text "$BACKUP_LAG_AGE") old"
                 else
-                    BACKUP_DETAIL="$BACKUP_DETAIL, $BACKUP_LAG commits behind"
+                    BACKUP_DETAIL="$db backup is $BACKUP_LAG_COMMITS commits behind; oldest unpushed change is $(backup_age_text "$BACKUP_LAG_AGE") old"
                 fi
             else
-                BACKUP_DETAIL="$BACKUP_DETAIL, live commits unreadable"
+                BACKUP_DETAIL="$db backup is $((BACKUP_AGE / 3600))h old, live commits unreadable"
             fi
             # A suspended rig is left cold by mol-dog-backup.sh, so its lag
             # waits for the rig to resume.

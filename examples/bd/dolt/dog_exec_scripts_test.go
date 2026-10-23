@@ -6347,22 +6347,21 @@ exec %s "$@"
 `, shellQuote(realGrep)))
 }
 
-// doltLogDateLayout is the Date: line format `dolt log` prints.
-const doltLogDateLayout = "Mon Jan 2 15:04:05 -0700 2006"
-
 // TestDoctorBackupFreshnessMeasuresLagNotAge asserts the doctor reports a
 // backup stale only when the live store has commits the backup lacks, not when
 // its newest artifact is merely old. A city that idles overnight leaves its rig
 // scopes with nothing to push, so `bd backup sync` writes nothing and the
 // newest artifact keeps the last push's mtime; reading that age alone reported every
-// quiet rig "12h old" (hilton-gas-city 2026-10-13). Commit dates carry a
-// non-UTC offset so the parse has to honor the zone.
+// quiet rig "12h old" (hilton-gas-city 2026-10-13). Staleness is measured
+// from the oldest commit the backup lacks, so one fresh write after a long
+// idle does not read as the push's age (hilton-gas-city 2026-10-14: the ga
+// store's first write after 13h idle read "12h old, 5 commits behind").
 func TestDoctorBackupFreshnessMeasuresLagNotAge(t *testing.T) {
 	now := time.Now()
 	push := now.Add(-2 * time.Hour)
 	for _, tc := range []struct {
 		name     string
-		commits  []time.Time // newest first; nil means `dolt log` fails
+		commits  []time.Time // nil means the lag query fails
 		want     string
 		dontWant string
 		wantOK   string
@@ -6374,13 +6373,19 @@ func TestDoctorBackupFreshnessMeasuresLagNotAge(t *testing.T) {
 			wantOK:   "backups current: 1/1",
 		},
 		{
-			name:    "commits after an old push are the lag",
-			commits: []time.Time{now.Add(-1 * time.Hour), now.Add(-90 * time.Minute), now.Add(-3 * time.Hour)},
-			want:    "prod backup is 2h old, 2 commits behind",
+			name:     "a fresh commit after an old push is current",
+			commits:  []time.Time{now.Add(-1 * time.Minute), now.Add(-3 * time.Hour)},
+			dontWant: "prod backup",
+			wantOK:   "backups current: 1/1",
+		},
+		{
+			name:    "an unpushed commit older than the threshold is stale",
+			commits: []time.Time{now.Add(-1 * time.Minute), now.Add(-90 * time.Minute), now.Add(-3 * time.Hour)},
+			want:    "prod backup is 2 commits behind; oldest unpushed change is 1h old",
 			wantOK:  "backups current: 0/1",
 		},
 		{
-			name:     "unreadable dolt log falls back to age",
+			name:     "an unreadable lag falls back to age",
 			want:     "prod backup is 2h old, live commits unreadable",
 			dontWant: "commits behind",
 			wantOK:   "backups current: 0/1",
@@ -6424,34 +6429,189 @@ func TestDoctorBackupFreshnessMeasuresLagNotAge(t *testing.T) {
 	}
 }
 
-// TestDoctorBackupLagCountIsCappedAtTheScanDepth asserts a lag deeper than the
-// commits the doctor reads is reported as a floor, not as an exact count.
-func TestDoctorBackupLagCountIsCappedAtTheScanDepth(t *testing.T) {
+// TestDoctorBackupLagCountHasNoDepthCap asserts a lag is counted back to the
+// push however many commits it holds, so a fresh burst after a long idle stays
+// current and an old one reads its exact count (hilton-gas-city 2026-10-14: gbs
+// took 129 commits in the 50 minutes after 16h idle).
+func TestDoctorBackupLagCountHasNoDepthCap(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name     string
+		oldest   time.Duration // age of the oldest of 150 unpushed commits
+		want     string
+		dontWant string
+		wantOK   string
+	}{
+		{
+			name:     "a fresh burst is current",
+			oldest:   150 * time.Second,
+			dontWant: "prod backup",
+			wantOK:   "backups current: 1/1",
+		},
+		{
+			name:   "an old burst reads its exact count",
+			oldest: 90 * time.Minute,
+			want:   "prod backup is 150 commits behind; oldest unpushed change is 1h old",
+			wantOK: "backups current: 0/1",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cityPath := t.TempDir()
+			dataDir := filepath.Join(cityPath, "dolt-data")
+			writeDoctorBackupScope(t, cityPath, dataDir, "prod", now.Add(-2*time.Hour))
+			commits := make([]time.Time, 150, 151)
+			for i := range commits {
+				commits[i] = now.Add(-tc.oldest * time.Duration(i+1) / 150)
+			}
+			commits = append(commits, now.Add(-3*time.Hour))
+
+			binDir := t.TempDir()
+			gcLogPath := writeDogFakeGC(t, binDir)
+			writeDoctorFakeDoltWithLiveLog(t, binDir, []string{"prod"}, map[string][]time.Time{"prod": commits})
+
+			out := runDogScript(t, "mol-dog-doctor.sh", binDir, cityPath, dataDir, "GC_DOCTOR_BACKUP_STALE_S=600")
+			if !strings.Contains(out, tc.wantOK) {
+				t.Fatalf("ok line lacks %q:\n%s", tc.wantOK, out)
+			}
+			gcLog := readDogGCLog(t, gcLogPath)
+			if tc.want != "" && !strings.Contains(gcLog, tc.want) {
+				t.Fatalf("want %q in log:\n%s", tc.want, gcLog)
+			}
+			if tc.dontWant != "" && strings.Contains(gcLog, tc.dontWant) {
+				t.Fatalf("unexpected %q in log:\n%s", tc.dontWant, gcLog)
+			}
+		})
+	}
+}
+
+// TestDoctorBackupLagFallsBackWhenTheServerReadFailsOrTimesOut asserts a lag
+// query that errors or outlives GC_DOCTOR_BACKUP_LAG_TIMEOUT_SECS leaves the
+// scope judged by its push's age, and that a hung query is cut at the bound
+// instead of holding the doctor past its order timeout.
+func TestDoctorBackupLagFallsBackWhenTheServerReadFailsOrTimesOut(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name    string
+		hangFor int // seconds the lag query sleeps; 0 means it errors
+	}{
+		{name: "the query errors"},
+		{name: "the query outlives its bound", hangFor: 30},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cityPath := t.TempDir()
+			dataDir := filepath.Join(cityPath, "dolt-data")
+			writeDoctorBackupScope(t, cityPath, dataDir, "prod", now.Add(-2*time.Hour))
+
+			binDir := t.TempDir()
+			gcLogPath := writeDogFakeGC(t, binDir)
+			logs := map[string][]time.Time{}
+			if tc.hangFor > 0 {
+				logs["prod"] = []time.Time{now.Add(-90 * time.Minute)}
+			}
+			writeDoctorFakeDoltWithLiveLog(t, binDir, []string{"prod"}, logs)
+			if tc.hangFor > 0 {
+				hangDoctorLagQuery(t, binDir, "prod", tc.hangFor)
+			}
+
+			start := time.Now()
+			out := runDogScript(t, "mol-dog-doctor.sh", binDir, cityPath, dataDir, doctorBackupStaleEnv,
+				"GC_DOCTOR_BACKUP_LAG_TIMEOUT_SECS=1")
+			if elapsed := time.Since(start); tc.hangFor > 0 && elapsed >= time.Duration(tc.hangFor)*time.Second/2 {
+				t.Fatalf("a hung lag query should be cut at its 1s bound, doctor took %s:\n%s", elapsed, out)
+			}
+			if !strings.Contains(out, "backups current: 0/1") {
+				t.Fatalf("ok line should count prod stale:\n%s", out)
+			}
+			gcLog := readDogGCLog(t, gcLogPath)
+			if want := "prod backup is 2h old, live commits unreadable"; !strings.Contains(gcLog, want) {
+				t.Fatalf("want %q in log:\n%s", want, gcLog)
+			}
+		})
+	}
+}
+
+// TestDoctorBackupLagProbesShareOneBudget asserts every scope's lag query draws
+// on one GC_DOCTOR_BACKUP_LAG_BUDGET_SECS budget: once it is spent the remaining
+// scopes are judged by their push's age without a query, so a stalled server
+// cannot hold the doctor past its exec order's timeout.
+func TestDoctorBackupLagProbesShareOneBudget(t *testing.T) {
 	cityPath := t.TempDir()
 	dataDir := filepath.Join(cityPath, "dolt-data")
-	artifactDir := filepath.Join(cityPath, ".dolt-backup")
-	if err := os.MkdirAll(filepath.Join(dataDir, "prod", ".dolt"), 0o755); err != nil {
-		t.Fatalf("mkdir prod: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(artifactDir, "prod"), 0o755); err != nil {
-		t.Fatalf("mkdir backup remote: %v", err)
-	}
 	now := time.Now()
-	writeBackupRemoteFile(t, filepath.Join(artifactDir, "prod", "manifest"), now.Add(-2*time.Hour))
-	commits := make([]time.Time, 3)
-	for i := range commits {
-		commits[i] = now.Add(-time.Duration(i+1) * time.Minute)
+	dbs := []string{"alpha", "bravo", "charlie"}
+	logs := map[string][]time.Time{}
+	for _, db := range dbs {
+		writeDoctorBackupScope(t, cityPath, dataDir, db, now.Add(-2*time.Hour))
+		logs[db] = []time.Time{now.Add(-90 * time.Minute)}
 	}
-
 	binDir := t.TempDir()
 	gcLogPath := writeDogFakeGC(t, binDir)
-	writeDoctorFakeDoltWithLiveLog(t, binDir, []string{"prod"}, map[string][]time.Time{"prod": commits})
-
-	runDogScript(t, "mol-dog-doctor.sh", binDir, cityPath, dataDir, doctorBackupStaleEnv,
-		"GC_DOCTOR_BACKUP_LAG_SCAN_COMMITS=3")
-	if gcLog := readDogGCLog(t, gcLogPath); !strings.Contains(gcLog, "prod backup is 2h old, 3+ commits behind") {
-		t.Fatalf("lag deeper than the scan should read as a floor, log:\n%s", gcLog)
+	writeDoctorFakeDoltWithLiveLog(t, binDir, dbs, logs)
+	for _, db := range dbs {
+		hangDoctorLagQuery(t, binDir, db, 30)
 	}
+
+	start := time.Now()
+	out := runDogScript(t, "mol-dog-doctor.sh", binDir, cityPath, dataDir, doctorBackupStaleEnv,
+		"GC_DOCTOR_BACKUP_LAG_TIMEOUT_SECS=2", "GC_DOCTOR_BACKUP_LAG_BUDGET_SECS=3")
+	if elapsed := time.Since(start); elapsed >= 15*time.Second {
+		t.Fatalf("three hung lag queries should share the 3s budget, doctor took %s:\n%s", elapsed, out)
+	}
+	if !strings.Contains(out, "backups current: 0/3") {
+		t.Fatalf("ok line should count all three scopes stale:\n%s", out)
+	}
+	gcLog := readDogGCLog(t, gcLogPath)
+	for _, want := range []string{
+		"alpha backup is 2h old, live commits unreadable",
+		"charlie backup is 2h old, lag not read (freshness budget spent)",
+	} {
+		if !strings.Contains(gcLog, want) {
+			t.Fatalf("want %q in log:\n%s", want, gcLog)
+		}
+	}
+	if !strings.Contains(gcLog, "bravo backup is 2h old, ") {
+		t.Fatalf("bravo should be judged by its push's age, log:\n%s", gcLog)
+	}
+}
+
+// TestDoctorBackupLagQueryIsCutAtWhatIsLeftOfTheBudget asserts a lag query is
+// bounded by the remaining GC_DOCTOR_BACKUP_LAG_BUDGET_SECS when that is less
+// than GC_DOCTOR_BACKUP_LAG_TIMEOUT_SECS.
+func TestDoctorBackupLagQueryIsCutAtWhatIsLeftOfTheBudget(t *testing.T) {
+	cityPath := t.TempDir()
+	dataDir := filepath.Join(cityPath, "dolt-data")
+	now := time.Now()
+	writeDoctorBackupScope(t, cityPath, dataDir, "prod", now.Add(-2*time.Hour))
+	binDir := t.TempDir()
+	gcLogPath := writeDogFakeGC(t, binDir)
+	writeDoctorFakeDoltWithLiveLog(t, binDir, []string{"prod"},
+		map[string][]time.Time{"prod": {now.Add(-90 * time.Minute)}})
+	hangDoctorLagQuery(t, binDir, "prod", 30)
+
+	start := time.Now()
+	out := runDogScript(t, "mol-dog-doctor.sh", binDir, cityPath, dataDir, doctorBackupStaleEnv,
+		"GC_DOCTOR_BACKUP_LAG_TIMEOUT_SECS=30", "GC_DOCTOR_BACKUP_LAG_BUDGET_SECS=2")
+	if elapsed := time.Since(start); elapsed >= 15*time.Second {
+		t.Fatalf("a hung lag query should be cut at the 2s budget, not its 30s bound, doctor took %s:\n%s", elapsed, out)
+	}
+	gcLog := readDogGCLog(t, gcLogPath)
+	if want := "prod backup is 2h old, live commits unreadable"; !strings.Contains(gcLog, want) {
+		t.Fatalf("want %q in log:\n%s", want, gcLog)
+	}
+}
+
+// writeDoctorBackupScope creates a database directory and its backup remote,
+// whose manifest is dated pushedAt.
+func writeDoctorBackupScope(t *testing.T, cityPath, dataDir, db string, pushedAt time.Time) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dataDir, db, ".dolt"), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", db, err)
+	}
+	remote := filepath.Join(cityPath, ".dolt-backup", db)
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatalf("mkdir backup remote %s: %v", db, err)
+	}
+	writeBackupRemoteFile(t, filepath.Join(remote, "manifest"), pushedAt)
 }
 
 // TestDoctorBackupFreshnessResolvesRigOwnership asserts the doctor maps each
@@ -6500,7 +6660,7 @@ func TestDoctorBackupFreshnessResolvesRigOwnership(t *testing.T) {
 		t.Fatalf("ok line should count hq and quiet current of three owned scopes:\n%s", out)
 	}
 	gcLog := readDogGCLog(t, gcLogPath)
-	if !strings.Contains(gcLog, "dirty backup is 2h old, 1 commit behind (rig dirty suspended)") {
+	if !strings.Contains(gcLog, "dirty backup is 1 commit behind; oldest unpushed change is 1h old (rig dirty suspended)") {
 		t.Fatalf("suspended rig with unpushed data should report stale with its lag, log:\n%s", gcLog)
 	}
 	if !strings.Contains(gcLog, "jrl: no rig; left out of backups") {
@@ -6635,21 +6795,20 @@ func writeScopeMetadata(t *testing.T, scopeDir, db string) {
 }
 
 // writeDoctorFakeDoltWithLiveLog stands in for the dolt CLI: every named
-// database has a <db>-backup remote, and `dolt log` in a database directory
-// prints that database's commits (newest first) in dolt's own layout, or
-// fails when none are given.
+// database has a <db>-backup remote, and the doctor's lag query against
+// `<db>`.dolt_log answers with the count and oldest epoch of that database's
+// commits newer than the queried push, or fails when none are given, and fails
+// the lag query unless it pins the session to UTC.
 func writeDoctorFakeDoltWithLiveLog(t *testing.T, binDir string, dbs []string, logs map[string][]time.Time) {
 	t.Helper()
-	zone := time.FixedZone("", -7*3600)
 	logDir := filepath.Join(binDir, "dolt-logs")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		t.Fatalf("mkdir dolt log dir: %v", err)
 	}
 	for db, commits := range logs {
 		var b strings.Builder
-		for i, c := range commits {
-			fmt.Fprintf(&b, "\x1b[33mcommit fake%04d \x1b[0m\nAuthor: beads <beads@local>\nDate:  %s\n\n\tbd: update\n\n",
-				i, c.In(zone).Format(doltLogDateLayout))
+		for _, c := range commits {
+			fmt.Fprintf(&b, "%d\n", c.Unix())
 		}
 		writeTestFile(t, filepath.Join(logDir, db), b.String())
 	}
@@ -6660,18 +6819,11 @@ func writeDoctorFakeDoltWithLiveLog(t *testing.T, binDir string, dbs []string, l
 	}
 	writeExecutable(t, filepath.Join(binDir, "dolt"), fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
-db=$(basename "$PWD")
-case "$1" in
-  backup)
-    printf '%%s-backup\n' "$db"
-    exit 0
-    ;;
-  log)
-    [ -f %s/"$db" ] || { echo "fatal: cannot read log" >&2; exit 1; }
-    awk -v n="$3" '/^.\[33mcommit / { c++ } c > n { exit } { print }' %s/"$db"
-    exit 0
-    ;;
-esac
+logs=%s
+if [ "$1" = backup ]; then
+  printf '%%s-backup\n' "$(basename "$PWD")"
+  exit 0
+fi
 case "$*" in
   *"COUNT(*) FROM information_schema.PROCESSLIST"*)
     printf 'COUNT(*)\n1\n'
@@ -6681,9 +6833,34 @@ case "$*" in
     printf '%s'
     exit 0
     ;;
+  *".dolt_log WHERE date > FROM_UNIXTIME("*)
+    case "$*" in
+      *"SET time_zone = '+00:00';"*) ;;
+      *) echo "lag query not pinned to UTC" >&2; exit 1 ;;
+    esac
+    q="$*"
+    db=${q%%%%.dolt_log*}
+    db=${db##* FROM }
+    db=${db//[^A-Za-z0-9_-]/}
+    pushed=$(printf '%%s\n' "$q" | sed -n 's/.*FROM_UNIXTIME(\([0-9]*\)).*/\1/p')
+    if [ -f "$logs/$db.hang" ]; then
+      exec sleep "$(cat "$logs/$db.hang")"
+    fi
+    [ -f "$logs/$db" ] || { echo "Error 1105 (HY000): cannot read dolt_log" >&2; exit 1; }
+    awk -v pushed="$pushed" '$1 > pushed { n++; if (!oldest || $1 < oldest) oldest = $1 }
+      END { printf "\nCOUNT(*),FLOOR(UNIX_TIMESTAMP(MIN(date)))\n%%d,%%s\n", n, (n ? oldest : "") }' "$logs/$db"
+    exit 0
+    ;;
 esac
 exit 0
-`, shellQuote(logDir), shellQuote(logDir), showDatabases.String()))
+`, shellQuote(logDir), showDatabases.String()))
+}
+
+// hangDoctorLagQuery makes the fake dolt's lag query for db sleep for seconds
+// before answering, as a server stalled behind a write burst does.
+func hangDoctorLagQuery(t *testing.T, binDir, db string, seconds int) {
+	t.Helper()
+	writeTestFile(t, filepath.Join(binDir, "dolt-logs", db+".hang"), fmt.Sprintf("%d\n", seconds))
 }
 
 // writeBackupRemoteFile writes one backup artifact stamped with mtime, the
