@@ -5,14 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/doctor"
 	"github.com/gastownhall/gascity/internal/doltauth"
-	"github.com/gastownhall/gascity/internal/fsys"
 )
 
 // wispChildRowsRepairBatch bounds each orphan DELETE so a backlog of millions
@@ -28,24 +26,17 @@ type wispChildRowsCheck struct {
 }
 
 func newWispChildRowsCheck(cityPath string, cfg *config.City) *wispChildRowsCheck {
-	return &wispChildRowsCheck{openDB: func() (*sql.DB, error) { return openCityDoltDB(cityPath, cfg) }}
-}
-
-func openCityDoltDB(cityPath string, cfg *config.City) (*sql.DB, error) {
-	host := strings.TrimSpace(cfg.Dolt.Host)
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	resolution := ResolveDoltPort(PortResolverInput{
-		CityPort: cfg.Dolt.Port,
-		Rigs:     loadResolverRigs(cityPath, cfg),
-		FS:       fsys.OSFS{},
-	})
-	if err := fatalPortResolutionError(resolution); err != nil {
-		return nil, fmt.Errorf("resolving dolt port: %w", err)
-	}
-	user := doltauth.Resolve(cityPath, "root", host, resolution.Port).User
-	return managedDoltOpenDB(host, strconv.Itoa(resolution.Port), user)
+	return &wispChildRowsCheck{openDB: func() (*sql.DB, error) {
+		host, port, err := resolveCityDoltEndpoint(cityPath, cfg)
+		if err != nil {
+			return nil, err
+		}
+		client, err := openSQLCleanupDoltClient(cityPath, host, port, doltauth.Resolve, managedDoltOpenDB)
+		if err != nil {
+			return nil, err
+		}
+		return client.db, nil
+	}}
 }
 
 // Name implements doctor.Check.

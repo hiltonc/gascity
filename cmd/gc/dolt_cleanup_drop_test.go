@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/doltauth"
 	"github.com/gastownhall/gascity/internal/fsys"
 )
@@ -653,5 +654,40 @@ func TestOpenSQLCleanupDoltClientUsesResolvedAuth(t *testing.T) {
 	}
 	if gotOpenHost != "127.0.0.1" || gotOpenPort != "3306" || gotOpenUser != "superlzy" {
 		t.Fatalf("open args = (%q, %q, %q), want (127.0.0.1, 3306, superlzy)", gotOpenHost, gotOpenPort, gotOpenUser)
+	}
+}
+
+func TestResolveCityDoltEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		cfg      *config.City
+		wantHost string
+		wantPort string
+	}{
+		{name: "configured host and port", cfg: &config.City{Dolt: config.DoltConfig{Host: " db.internal ", Port: 4406}}, wantHost: "db.internal", wantPort: "4406"},
+		{name: "default host", cfg: &config.City{Dolt: config.DoltConfig{Port: 4407}}, wantHost: "127.0.0.1", wantPort: "4407"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host, port, err := resolveCityDoltEndpoint(t.TempDir(), tc.cfg)
+			if err != nil {
+				t.Fatalf("resolveCityDoltEndpoint: %v", err)
+			}
+			if host != tc.wantHost || port != tc.wantPort {
+				t.Errorf("endpoint = (%q, %q), want (%q, %q)", host, port, tc.wantHost, tc.wantPort)
+			}
+		})
+	}
+}
+
+func TestResolveCityDoltEndpointReportsUnreadableRigPortFile(t *testing.T) {
+	cityDir := t.TempDir()
+	if err := os.MkdirAll(cityDir+"/.beads", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cityDir+"/.beads/dolt-server.port", []byte("not-a-port\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := resolveCityDoltEndpoint(cityDir, &config.City{}); err == nil || !strings.Contains(err.Error(), "resolving dolt port") {
+		t.Fatalf("resolveCityDoltEndpoint error = %v, want a resolving dolt port error", err)
 	}
 }

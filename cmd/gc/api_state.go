@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2282,25 +2281,11 @@ func (cs *controllerState) assertDroppableManagedDoltDatabase(rigName, dbName st
 // live Dolt server; production resolves the city's Dolt endpoint and issues the
 // identifier-escaped DROP through the same client the cleanup engine uses.
 var controllerDropManagedDoltDatabase = func(cs *controllerState, ctx context.Context, dbName string) error {
-	cfg := cs.Config()
-	host := ""
-	cityPort := 0
-	if cfg != nil {
-		host = strings.TrimSpace(cfg.Dolt.Host)
-		cityPort = cfg.Dolt.Port
+	host, port, err := resolveCityDoltEndpoint(cs.cityPath, cs.Config())
+	if err != nil {
+		return err
 	}
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	resolution := ResolveDoltPort(PortResolverInput{
-		CityPort: cityPort,
-		Rigs:     loadResolverRigs(cs.cityPath, cfg),
-		FS:       fsys.OSFS{},
-	})
-	if err := fatalPortResolutionError(resolution); err != nil {
-		return fmt.Errorf("resolving dolt port: %w", err)
-	}
-	client, err := newSQLCleanupDoltClient(cs.cityPath, host, strconv.Itoa(resolution.Port))
+	client, err := newSQLCleanupDoltClient(cs.cityPath, host, port)
 	if err != nil {
 		return fmt.Errorf("opening dolt connection: %w", err)
 	}
