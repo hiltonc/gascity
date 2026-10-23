@@ -6354,14 +6354,13 @@ exec %s "$@"
 // newest artifact keeps the last push's mtime; reading that age alone reported every
 // quiet rig "12h old" (hilton-gas-city 2026-10-13). Staleness is measured
 // from the oldest commit the backup lacks, so one fresh write after a long
-// idle does not read as the push's age (hilton-gas-city 2026-10-14: the ga
-// store's first write after 13h idle read "12h old, 5 commits behind").
+// idle does not read as the push's age.
 func TestDoctorBackupFreshnessMeasuresLagNotAge(t *testing.T) {
 	now := time.Now()
-	push := now.Add(-2 * time.Hour)
 	for _, tc := range []struct {
 		name     string
-		commits  []time.Time // nil means the lag query fails
+		pushAge  time.Duration // zero means 2h
+		commits  []time.Time   // nil means the lag query fails
 		want     string
 		dontWant string
 		wantOK   string
@@ -6390,6 +6389,13 @@ func TestDoctorBackupFreshnessMeasuresLagNotAge(t *testing.T) {
 			dontWant: "commits behind",
 			wantOK:   "backups current: 0/1",
 		},
+		{
+			name:     "an unreadable lag on a sub-hour push age reads minutes",
+			pushAge:  40 * time.Minute,
+			want:     "prod backup is 40m old, live commits unreadable",
+			dontWant: "0h old",
+			wantOK:   "backups current: 0/1",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cityPath := t.TempDir()
@@ -6401,7 +6407,11 @@ func TestDoctorBackupFreshnessMeasuresLagNotAge(t *testing.T) {
 			if err := os.MkdirAll(filepath.Join(artifactDir, "prod"), 0o755); err != nil {
 				t.Fatalf("mkdir backup remote: %v", err)
 			}
-			writeBackupRemoteFile(t, filepath.Join(artifactDir, "prod", "manifest"), push)
+			pushAge := tc.pushAge
+			if pushAge == 0 {
+				pushAge = 2 * time.Hour
+			}
+			writeBackupRemoteFile(t, filepath.Join(artifactDir, "prod", "manifest"), now.Add(-pushAge))
 
 			binDir := t.TempDir()
 			gcLogPath := writeDogFakeGC(t, binDir)
@@ -6431,8 +6441,7 @@ func TestDoctorBackupFreshnessMeasuresLagNotAge(t *testing.T) {
 
 // TestDoctorBackupLagCountHasNoDepthCap asserts a lag is counted back to the
 // push however many commits it holds, so a fresh burst after a long idle stays
-// current and an old one reads its exact count (hilton-gas-city 2026-10-14: gbs
-// took 129 commits in the 50 minutes after 16h idle).
+// current and an old one reads its exact count.
 func TestDoctorBackupLagCountHasNoDepthCap(t *testing.T) {
 	now := time.Now()
 	for _, tc := range []struct {

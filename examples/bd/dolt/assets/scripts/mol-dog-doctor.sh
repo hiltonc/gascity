@@ -13,8 +13,6 @@
 # artifact) is itself older than BACKUP_STALE_S. A scope with nothing to push
 # stays current however long ago its last push was: `bd backup sync` writes
 # nothing for it, so the artifact age alone measures idleness, not data at risk.
-# Nor does the first write after a long idle read as the push's age: its own age
-# is how long that change has gone unbacked-up.
 # With 6h backup syncs and fail-closed journal corruption recovery, maximum data
 # loss on journal corruption without manual intervention is one 6h backup interval.
 # If BACKUP_STALE_S exceeds 2x the backup interval, a single missed backup cycle
@@ -330,7 +328,7 @@ if [ -n "$BACKUP_ELIGIBLE_DBS" ]; then
             fi
             BACKUP_LAG_LEFT=$((BACKUP_LAG_DEADLINE - $(date +%s)))
             if [ "$BACKUP_LAG_LEFT" -le 0 ]; then
-                BACKUP_DETAIL="$db backup is $((BACKUP_AGE / 3600))h old, lag not read (freshness budget spent)"
+                BACKUP_DETAIL="$db backup is $(backup_age_text "$BACKUP_AGE") old, lag not read (freshness budget spent)"
             elif BACKUP_LAG=$(backup_live_lag "$db" "$NEWEST_BACKUP_MTIME" \
                 "$((BACKUP_LAG_LEFT < BACKUP_LAG_TIMEOUT_SECS ? BACKUP_LAG_LEFT : BACKUP_LAG_TIMEOUT_SECS))"); then
                 read -r BACKUP_LAG_COMMITS BACKUP_LAG_OLDEST <<<"$BACKUP_LAG"
@@ -344,7 +342,7 @@ if [ -n "$BACKUP_ELIGIBLE_DBS" ]; then
                     BACKUP_DETAIL="$db backup is $BACKUP_LAG_COMMITS commits behind; oldest unpushed change is $(backup_age_text "$BACKUP_LAG_AGE") old"
                 fi
             else
-                BACKUP_DETAIL="$db backup is $((BACKUP_AGE / 3600))h old, live commits unreadable"
+                BACKUP_DETAIL="$db backup is $(backup_age_text "$BACKUP_AGE") old, live commits unreadable"
             fi
             # A suspended rig is left cold by mol-dog-backup.sh, so its lag
             # waits for the rig to resume.
