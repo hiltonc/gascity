@@ -456,15 +456,16 @@ func (m *Manager) retryFreshStartAfterStaleKey(
 		}
 		return false, fmt.Errorf("pre-start orphan cleanup: %w", orphanErr)
 	}
-	// The relaunch keeps the failed start's continuation epoch and leaves the
-	// reset the clear just recorded to the next start, as it always has: only
-	// its generation and token are new. A relaunch that fails withdraws its
-	// mint, leaving the row on inc, unless its process may have survived
-	// (launchedUnder): then the row stays on the relaunch's, left in inc.
+	// The relaunch consumes the reset the clear just recorded: its mint bumps
+	// the continuation epoch and clears the marker in one CAS, so the runtime
+	// it starts never leaves the row reset-pending (ga-h56n). A relaunch that
+	// fails withdraws its mint, re-arming the reset and leaving the row on
+	// inc, unless its process may have survived (launchedUnder): then the row
+	// stays on the relaunch's, left in inc.
 	var next Incarnation
 	if inc != nil {
 		var err error
-		if next, err = m.mintStart(ctx, lease, inc.By, b, false); err != nil {
+		if next, err = m.mintStart(ctx, lease, inc.By, b, true); err != nil {
 			if unroute != nil {
 				unroute()
 			}

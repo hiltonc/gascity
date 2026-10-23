@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -612,10 +613,10 @@ func TestStaleKeyRetryMintsAgain(t *testing.T) {
 			first, second := sp.seen[0], sp.seen[1]
 			assertStartRanMinted(t, first, 3)
 			after := rowMeta(t, store, b.ID)
-			if after["continuation_reset_pending"] != "true" || first.env[runtime.ContinuationEpochEnv] != second.env[runtime.ContinuationEpochEnv] {
-				t.Fatalf("row %v, relaunch env %v after %v; want the same epoch and the reset left pending", after, second.env, first.env)
-			}
 			if runtimeOnly {
+				if after["continuation_reset_pending"] != "true" || first.env[runtime.ContinuationEpochEnv] != second.env[runtime.ContinuationEpochEnv] {
+					t.Fatalf("legacy row %v, relaunch env %v after %v; want the same epoch and the reset left to its caller's commit", after, second.env, first.env)
+				}
 				assertStartRanMinted(t, second, 3)
 				if second.env[runtime.InstanceTokenEnv] != first.env[runtime.InstanceTokenEnv] || after["generation"] != "4" {
 					t.Fatalf("legacy relaunch env %v after %v, row %v; want its caller's incarnation kept", second.env, first.env, after)
@@ -623,6 +624,12 @@ func TestStaleKeyRetryMintsAgain(t *testing.T) {
 				return
 			}
 			assertStartRanMinted(t, second, 4)
+			// The relaunch's mint consumes the reset the stale-key clear
+			// recorded (ga-h56n): the epoch is bumped and the marker cleared.
+			firstEpoch, _ := strconv.Atoi(first.env[runtime.ContinuationEpochEnv])
+			if after["continuation_reset_pending"] != "" || second.env[runtime.ContinuationEpochEnv] != strconv.Itoa(firstEpoch+1) || after["continuation_epoch"] != second.env[runtime.ContinuationEpochEnv] {
+				t.Fatalf("row %v, relaunch env %v after %v; want the epoch bumped and the reset consumed", after, second.env, first.env)
+			}
 			if first.env[runtime.InstanceTokenEnv] == second.env[runtime.InstanceTokenEnv] {
 				t.Fatalf("relaunch env %v after %v, want a new token", second.env, first.env)
 			}
