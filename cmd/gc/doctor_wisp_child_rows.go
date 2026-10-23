@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/gastownhall/gascity/internal/beads"
@@ -27,26 +26,17 @@ type wispChildRowsCheck struct {
 }
 
 func newWispChildRowsCheck(cityPath string, cfg *config.City) *wispChildRowsCheck {
-	return &wispChildRowsCheck{openDB: func() (*sql.DB, error) { return openCityDoltDB(cityPath, cfg) }}
-}
-
-func openCityDoltDB(cityPath string, cfg *config.City) (*sql.DB, error) {
-	host := strings.TrimSpace(cfg.Dolt.Host)
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	resolution := ResolveDoltPort(PortResolverInput{
-		CityPort: cfg.Dolt.Port,
-		CityPath: cityPath,
-	})
-	if err := fatalPortResolutionError(resolution); err != nil {
-		return nil, fmt.Errorf("resolving dolt port: %w", err)
-	}
-	if resolution.Fallback {
-		return nil, fmt.Errorf("no live managed dolt endpoint for %s (resolution fell back to legacy port %d)", cityPath, resolution.Port)
-	}
-	user := doltauth.Resolve(cityPath, "root", host, resolution.Port).User
-	return managedDoltOpenDB(host, strconv.Itoa(resolution.Port), user)
+	return &wispChildRowsCheck{openDB: func() (*sql.DB, error) {
+		host, port, err := resolveCityDoltEndpoint(cityPath, cfg, nil)
+		if err != nil {
+			return nil, err
+		}
+		client, err := openSQLCleanupDoltClient(cityPath, host, port, doltauth.Resolve, managedDoltOpenDB)
+		if err != nil {
+			return nil, err
+		}
+		return client.db, nil
+	}}
 }
 
 // Name implements doctor.Check.
