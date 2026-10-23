@@ -1064,10 +1064,6 @@ func defaultMailIdentity() string {
 
 const controllerMailIdentity = "controller"
 
-// mailSenderEnv names the sender a --from-less `gc mail send` uses when the
-// process carries no session identity. The controller sets it to
-// controllerMailIdentity on every exec order, so the supervisor's own
-// advisories and escalations are never from the operator's "human" mailbox.
 const mailSenderEnv = "GC_MAIL_FROM"
 
 // mailIdentityEnv is the environment a session's own mail identity comes
