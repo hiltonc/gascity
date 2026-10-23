@@ -147,6 +147,8 @@ func TestJSONResultStructsExposeExplicitOKField(t *testing.T) {
 		{name: "event emit", value: eventEmitJSONResult{}},
 		{name: "init", value: initJSONResult{}},
 		{name: "import status", value: ImportStatusJSON{}},
+		{name: "import list", value: importListJSON{}},
+		{name: "config explain", value: configExplainJSON{}},
 	}
 
 	for _, tc := range tests {

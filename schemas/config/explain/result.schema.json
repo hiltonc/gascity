@@ -2,61 +2,172 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "required": [
-    "ok",
-    "name",
-    "chain",
-    "resolved",
-    "provenance"
+    "ok"
   ],
   "properties": {
     "ok": {
       "const": true
-    },
-    "name": {
-      "type": "string"
-    },
-    "builtin_ancestor": {
-      "type": "string"
-    },
-    "chain": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": [
-          "kind",
-          "name"
-        ],
-        "properties": {
-          "kind": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          }
-        },
-        "additionalProperties": true
-      }
-    },
-    "resolved": {
+    }
+  },
+  "oneOf": [
+    {
       "type": "object",
-      "additionalProperties": true
-    },
-    "provenance": {
-      "type": "object",
+      "required": [
+        "ok",
+        "name",
+        "chain",
+        "resolved",
+        "provenance"
+      ],
       "properties": {
-        "field_layer": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
+        "ok": {
+          "const": true
+        },
+        "name": {
+          "type": "string"
+        },
+        "builtin_ancestor": {
+          "type": "string"
+        },
+        "chain": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "kind",
+              "name"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
           }
         },
-        "map_key_layer": {
+        "resolved": {
           "type": "object",
+          "additionalProperties": true
+        },
+        "provenance": {
+          "type": "object",
+          "properties": {
+            "field_layer": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "map_key_layer": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
           "additionalProperties": true
         }
       },
-      "additionalProperties": true
+      "additionalProperties": true,
+      "title": "gc config explain --provider --json result"
+    },
+    {
+      "title": "gc config explain --json result",
+      "description": "Every resolved key of the composed city config, one entry each, with the layer and file that declared it.",
+      "type": "object",
+      "required": [
+        "schema_version",
+        "ok",
+        "city_path",
+        "sources",
+        "entries",
+        "warnings"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "string"
+        },
+        "ok": {
+          "const": true
+        },
+        "city_path": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Config files in load order, root first."
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scope",
+              "key",
+              "value",
+              "layer",
+              "source"
+            ],
+            "properties": {
+              "scope": {
+                "enum": [
+                  "workspace",
+                  "import",
+                  "rig",
+                  "agent",
+                  "provider"
+                ],
+                "description": "What the key configures."
+              },
+              "name": {
+                "type": "string",
+                "description": "Import binding, rig name, agent qualified name, or provider name. Absent for workspace keys."
+              },
+              "key": {
+                "type": "string",
+                "description": "Dotted TOML key within the scoped object, e.g. provider or env.ANTHROPIC_MODEL. Arrays of tables are keyed by index, e.g. patches.0.env.ANTHROPIC_MODEL."
+              },
+              "value": {
+                "description": "Resolved value. <redacted> when redacted is true."
+              },
+              "layer": {
+                "enum": [
+                  "city",
+                  "pack",
+                  "import",
+                  "builtin",
+                  "provider"
+                ],
+                "description": "Where the value was declared: city.toml or a city fragment, a pack.toml, an import binding, a built-in provider, or a [providers.<name>] table."
+              },
+              "source": {
+                "type": "string",
+                "description": "File that declared the value, or the provider chain hop (builtin:<name> or providers.<name>) for provider keys."
+              },
+              "binding": {
+                "type": "string",
+                "description": "Import binding an agent arrived through."
+              },
+              "redacted": {
+                "type": "boolean",
+                "description": "True when an env value is withheld; pass --show-env to include it."
+              }
+            }
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
     }
-  },
-  "additionalProperties": true
+  ]
 }
