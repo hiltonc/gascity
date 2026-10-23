@@ -540,12 +540,38 @@ func executableWorkflowTopologyJQ() string {
 	return `select(` + strings.Join(clauses, ` and `) + `)`
 }
 
+// poolDemandTarget is the gc.routed_to queue this agent's default queries
+// serve first: the route_as queue when set, otherwise its own route.
 func (a *Agent) poolDemandTarget() string {
-	target := a.QualifiedName()
-	if a.PoolName != "" {
-		target = a.PoolName
+	if a.RouteAs != "" {
+		return a.RouteAs
 	}
-	return target
+	return a.ownRouteTarget()
+}
+
+// ownRouteTarget is the gc.routed_to value gc sling stamps for this agent: a
+// pool instance's template, otherwise its own qualified name.
+func (a *Agent) ownRouteTarget() string {
+	if a.PoolName != "" {
+		return a.PoolName
+	}
+	return a.QualifiedName()
+}
+
+// routedProbeTargets lists, in probe order, the gc.routed_to values the routed
+// tiers read: poolDemandTarget, its legacy workflow-control spelling, and the
+// agent's own route when route_as moved poolDemandTarget off it, so work slung
+// straight to a route_as agent is still served.
+func (a *Agent) routedProbeTargets() []string {
+	target := a.poolDemandTarget()
+	targets := []string{target}
+	if legacy := legacyWorkflowControlQualifiedName(target); legacy != "" {
+		targets = append(targets, legacy)
+	}
+	if own := a.ownRouteTarget(); own != target {
+		targets = append(targets, own)
+	}
+	return targets
 }
 
 // identityLoopHead opens the loop over the hook's identities — GC_SESSION_ID,
@@ -1154,34 +1180,28 @@ func (a *Agent) EffectiveWorkQueryFor(topo QueryTopology) string {
 }
 
 func buildWorkQuery(a *Agent, topo QueryTopology) string {
-	target := a.poolDemandTarget()
-	legacyTarget := legacyWorkflowControlQualifiedName(target)
-	if legacyTarget == "" {
-		script := standardAssignedWorkQueryScript(topo) +
-			poolDemandOriginGateScriptWithGraphAnchorFallback() +
-			// Define the ordinary pool reader before the narrower anchor reader.
-			// Besides keeping the generated tiers easy to identify mechanically,
-			// function definition order does not change their invocation order:
-			// the anchor probe below still runs first.
-			poolDemandFirstRowFunctionScript(topo) +
-			assignedGraphWorkflowAnchorReadyFunctionScript(topo) +
-			`probe_assigned_graph_anchor_ready "$1"; ` +
-			graphWorkflowAnchorFallbackBeforeFreshPoolScript() +
-			`probe_pool_demand "$1"; ` +
-			`printf "[]"`
-		return shellquote.Join([]string{"sh", "-c", script, "--", target})
+	assigned := standardAssignedWorkQueryScript(topo)
+	if legacyWorkflowControlQualifiedName(a.poolDemandTarget()) != "" {
+		assigned = legacyControlAssignedWorkQueryScript(topo)
 	}
-	script := legacyControlAssignedWorkQueryScript(topo) +
+	targets := a.routedProbeTargets()
+	script := assigned +
 		poolDemandOriginGateScriptWithGraphAnchorFallback() +
+		// Define the ordinary pool reader before the narrower anchor reader.
+		// Besides keeping the generated tiers easy to identify mechanically,
+		// function definition order does not change their invocation order:
+		// the anchor probes below still run first.
 		poolDemandFirstRowFunctionScript(topo) +
-		assignedGraphWorkflowAnchorReadyFunctionScript(topo) +
-		`probe_assigned_graph_anchor_ready "$1"; ` +
-		`probe_assigned_graph_anchor_ready "$2"; ` +
-		graphWorkflowAnchorFallbackBeforeFreshPoolScript() +
-		`probe_pool_demand "$1"; ` +
-		`probe_pool_demand "$2"; ` +
-		`printf "[]"`
-	return shellquote.Join([]string{"sh", "-c", script, "--", target, legacyTarget})
+		assignedGraphWorkflowAnchorReadyFunctionScript(topo)
+	for i := range targets {
+		script += fmt.Sprintf(`probe_assigned_graph_anchor_ready "$%d"; `, i+1)
+	}
+	script += graphWorkflowAnchorFallbackBeforeFreshPoolScript()
+	for i := range targets {
+		script += fmt.Sprintf(`probe_pool_demand "$%d"; `, i+1)
+	}
+	script += `printf "[]"`
+	return shellquote.Join(append([]string{"sh", "-c", script, "--"}, targets...))
 }
 
 // EffectiveAssignedInProgressQuery returns the assigned-in-progress-only command
@@ -1245,12 +1265,7 @@ func (a *Agent) EffectiveRoutedPoolQueryFor(topo QueryTopology) string {
 }
 
 func buildRoutedPoolQuery(a *Agent, topo QueryTopology) string {
-	target := a.poolDemandTarget()
-	legacyTarget := legacyWorkflowControlQualifiedName(target)
-	if legacyTarget == "" {
-		return routedPoolWorkQueryCommand(topo, target)
-	}
-	return routedPoolWorkQueryCommand(topo, target, legacyTarget)
+	return routedPoolWorkQueryCommand(topo, a.routedProbeTargets()...)
 }
 
 func legacyWorkflowControlQualifiedName(target string) string {
@@ -1283,11 +1298,7 @@ func (a *Agent) EffectiveSlingQuery() string {
 // this agent. Callers outside config should prefer this helper over rebuilding
 // the command string to preserve the bd boundary invariant.
 func (a *Agent) DefaultSlingQuery() string {
-	route := a.QualifiedName()
-	if a.PoolName != "" {
-		route = a.PoolName
-	}
-	return "bd update {} --set-metadata " + beadmeta.RoutedToMetadataKey + "=" + route
+	return "bd update {} --set-metadata " + beadmeta.RoutedToMetadataKey + "=" + a.ownRouteTarget()
 }
 
 // EffectivePoolDemandQuery returns the count-form pool-demand query the

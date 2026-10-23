@@ -931,6 +931,7 @@ func TestDeepCopyAgentCoversAllFields(t *testing.T) {
 		ScaleCheck:                   "echo 3",
 		WorkQuery:                    "bd ready",
 		SlingQuery:                   "bd update {}",
+		RouteAs:                      "myrig/owner",
 		IdleTimeout:                  "15m",
 		MaxSessionAge:                "5h",
 		MaxSessionAgeJitter:          "15m",

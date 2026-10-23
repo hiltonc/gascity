@@ -558,7 +558,7 @@ func cmdHookWithOptions(args []string, opts hookCommandOptions, stdout, stderr i
 		agentForQuery,
 		collapsedIdentity,
 	)
-	routeTargets := hookClaimRouteTargets(hookClaimPrimaryRouteTarget(&a), resolvedAgentName, strings.TrimSpace(overrides["GC_TEMPLATE"]))
+	routeTargets := hookClaimAgentRouteTargets(&a, resolvedAgentName, strings.TrimSpace(overrides["GC_TEMPLATE"]))
 	if opts.Claim {
 		claimOpts := hookClaimOptions{
 			Assignee:           assignee,
@@ -1058,6 +1058,14 @@ func hookClaimRetryWindowClosed(err error, ops *hookClaimOps) error {
 
 func hookClaimPrimaryRouteTarget(a *config.Agent) string {
 	return agentutil.RoutedToIdentity(a)
+}
+
+// hookClaimAgentRouteTargets is the set of gc.routed_to values a session of a
+// may freshly claim: its own route identities plus the route_as queue it also
+// serves. route_as stays out of RoutedToIdentity, which also names the
+// session's own template (GC_TEMPLATE, MCP).
+func hookClaimAgentRouteTargets(a *config.Agent, resolvedAgentName, template string) []string {
+	return hookClaimRouteTargets(hookClaimPrimaryRouteTarget(a), resolvedAgentName, template, a.RouteAs)
 }
 
 // singleStoreHookWorkQuery returns the agent's work query built for the SAME
