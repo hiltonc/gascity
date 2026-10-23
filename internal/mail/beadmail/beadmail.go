@@ -1022,22 +1022,22 @@ func readMessagesBefore(store beads.Store, before time.Time, limit int) ([]beads
 }
 
 // archivableReadMessages returns the read message beads, oldest first, whose
-// recipient's archive window under policy has elapsed at now. It lists once
-// with the shortest non-zero window as the cutoff, then drops each candidate
-// its own recipient's window does not yet cover (or never covers).
+// archive window under policy (from their sender and recipient) has elapsed at
+// now. It lists once with the shortest non-zero window as the cutoff, then
+// drops each candidate its own window does not yet cover (or never covers).
 //
-// limit bounds the listing only while every recipient shares one archive
-// window, because then no listed candidate is dropped. Once a recipient can
+// limit bounds the listing only while every message shares one archive
+// window, because then no listed candidate is dropped. Once a message can
 // resolve to a longer or zero window, the listing is unbounded: a bounded one
 // would fill with the oldest messages the policy skips and starve every
-// recipient behind them.
+// message behind them.
 func archivableReadMessages(store beads.Store, policy config.MailRetentionPolicy, now time.Time, limit int) ([]beads.Bead, error) {
 	shortest := policy.ShortestArchiveReadAfter()
 	if shortest <= 0 {
 		return nil, nil
 	}
 	listLimit := limit
-	if policy.ArchiveVariesByRecipient() {
+	if policy.ArchiveVariesByMessage() {
 		listLimit = 0
 	}
 	candidates, err := readMessagesBefore(store, now.Add(-shortest), listLimit)
@@ -1046,7 +1046,7 @@ func archivableReadMessages(store beads.Store, policy config.MailRetentionPolicy
 	}
 	due := make([]beads.Bead, 0, len(candidates))
 	for _, b := range candidates {
-		window := policy.For(b.Assignee).ArchiveReadAfter
+		window := policy.For(b.From, b.Assignee).ArchiveReadAfter
 		if window <= 0 || !b.CreatedAt.Before(now.Add(-window)) {
 			continue
 		}
@@ -1065,9 +1065,9 @@ func archivableReadMessages(store beads.Store, policy config.MailRetentionPolicy
 // 20-character floor satisfies validation.on-close=error.
 const RetentionSweepCloseReason = "mail gc-swept: read mail bead past gc retention window"
 
-// SweepReadMessages closes read message beads whose recipient's archive window
-// under policy has elapsed at now, oldest first, stamping closeReason as
-// "close_reason" metadata on each bead before closing it. A recipient whose
+// SweepReadMessages closes read message beads whose archive window under
+// policy has elapsed at now, oldest first, stamping closeReason as
+// "close_reason" metadata on each bead before closing it. A message whose
 // window is zero is never swept. It is the whole read-mail retention sweep: the
 // candidate query and the close-with-reason loop live here because
 // close_reason is bead-lifecycle vocabulary the mail.Message domain object
@@ -1245,9 +1245,9 @@ func CountUnreadMessagesBefore(store beads.MailStore, cutoff time.Time, limit in
 }
 
 // PurgeReadMessageWisps deletes read message beads in the wisp tier (open or
-// closed) older than their recipient's purge window under policy — the wisp-GC
-// retention sweep for consumed mail. A recipient whose window is zero is never
-// purged.
+// closed) older than their purge window under policy (from their sender and
+// recipient) — the wisp-GC retention sweep for consumed mail. A message whose
+// window is zero is never purged.
 // The candidate query and the delete loop live here because wisp-tier delete is
 // bead-lifecycle behavior the mail.Message domain object omits. Each bead's
 // dependencies are stripped before it is deleted (dependency-free single-row
@@ -1272,7 +1272,7 @@ func PurgeReadMessageWisps(store beads.MailStore, policy config.MailRetentionPol
 	var deleteErr error
 	live := beads.HandlesFor(store.Store).Live
 	for _, entry := range entries {
-		window := policy.For(entry.Assignee).RetentionTTL
+		window := policy.For(entry.From, entry.Assignee).RetentionTTL
 		if window <= 0 || entry.CreatedAt.IsZero() || !entry.CreatedAt.Before(now.Add(-window)) {
 			continue
 		}

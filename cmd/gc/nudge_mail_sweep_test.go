@@ -917,7 +917,7 @@ func archiveWindowFor(t *testing.T, cfg *config.City) time.Duration {
 	if err != nil {
 		t.Fatalf("mailRetentionPolicyForConfig: %v", err)
 	}
-	return policy.For("worker").ArchiveReadAfter
+	return policy.For("", "worker").ArchiveReadAfter
 }
 
 func TestMailRetentionPolicyForConfig_UnsetUsesDefaultArchiveWindow(t *testing.T) {
@@ -958,7 +958,7 @@ func TestMailRetentionPolicyForConfig_ArchiveReadAfterOutranksRetentionTTL(t *te
 	if err != nil {
 		t.Fatalf("mailRetentionPolicyForConfig: %v", err)
 	}
-	got := policy.For("worker")
+	got := policy.For("", "worker")
 	if got.ArchiveReadAfter != 2*time.Hour || got.RetentionTTL != 15*time.Minute {
 		t.Errorf("windows = %+v, want archive 2h and purge 15m", got)
 	}

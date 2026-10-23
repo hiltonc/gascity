@@ -555,7 +555,8 @@ MailConfig holds mail provider settings.
 | `retention_ttl` | string |  |  | RetentionTTL is how long read messages are retained before purge. Empty or "0" disables read-message purge. While archive_read_after is unset it is also how long a read mail bead stays open before the nudge-mail sweep closes it; there, empty leaves the sweep at its 1-hour default, while "0" disables its mail-close phase. |
 | `archive_read_after` | string |  | `1h` | ArchiveReadAfter is how long a read message stays in its recipient's inbox before the supervisor's mail sweep archives (closes) it. A Go duration. Empty means retention_ttl when that is set, else "1h"; "0" means read mail is never archived by the sweep. |
 | `unread_retention_ttl` | string |  |  | UnreadRetentionTTL is how long a never-read mail bead stays open before the nudge-mail sweep closes it, for every recipient. Empty or "0" disables the unread-mail phase; it is opt-in so unread mail is never closed by default. |
-| `recipient` | []MailRecipientRetention |  |  | Recipients override archive_read_after and retention_ttl for the recipients they match. The first matching entry wins; a knob an entry leaves unset falls back to the [mail] value. |
+| `recipient` | []MailRecipientRetention |  |  | Recipients override archive_read_after and retention_ttl for the recipients they match. The first matching entry wins; a knob an entry leaves unset falls back to the [mail] value. See [[mail.sender]] for a message that a sender entry also matches. |
+| `sender` | []MailSenderRetention |  |  | Senders override archive_read_after and retention_ttl for the mail their senders send. The first matching entry wins. When a sender entry and a recipient entry both match a message, each knob takes the longer window of the entries that set it ("0", never, is longest); a knob neither sets falls back to the [mail] value. |
 
 ## MailRecipientRetention
 
@@ -566,6 +567,16 @@ MailRecipientRetention overrides the [mail] read-mail retention knobs for the re
 | `match` | string | **yes** |  | Match selects recipients by their stored address: an exact address such as "human", or a path.Match glob such as "*/refinery". |
 | `archive_read_after` | string |  |  | ArchiveReadAfter overrides [mail] archive_read_after for matching recipients. "0" means never archive. |
 | `retention_ttl` | string |  |  | RetentionTTL overrides [mail] retention_ttl for matching recipients. "0" means never purge. |
+
+## MailSenderRetention
+
+MailSenderRetention overrides the [mail] read-mail retention knobs for the mail sent by the sender addresses it matches.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `match` | string | **yes** |  | Match selects senders by their stored address: an exact address such as "human", or a path.Match glob such as "gascity/*". |
+| `archive_read_after` | string |  |  | ArchiveReadAfter overrides [mail] archive_read_after for mail from matching senders. "0" means never archive. |
+| `retention_ttl` | string |  |  | RetentionTTL overrides [mail] retention_ttl for mail from matching senders. "0" means never purge. |
 
 ## MaintenanceConfig
 
