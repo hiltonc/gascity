@@ -336,6 +336,9 @@ func buildDoctorChecks(cityPath string, cfg *config.City, cfgErr error, opts bui
 		}
 	}
 	register(newDoctorDoltServerCheck(cityPath, opts.SkipCityDoltCheck))
+	if cfgErr == nil && cfg != nil && !opts.SkipCityDoltCheck {
+		register(newWispChildRowsCheck(cityPath, cfg))
+	}
 	// Host-level fork-rate watch: surfaces the per-command data-plane fork storm
 	// (gc -> bd.real -> dolt) that operators routinely misread as CPU saturation.
 	// Advisory + read-only (/proc/stat); no config needed.
