@@ -9503,12 +9503,6 @@ func TestLockedWriterSerializesConcurrentWrites(t *testing.T) {
 	}
 }
 
-// TestOrderExecEnvSetsBeadsActorToOrderName verifies that exec orders
-// spawned by the controller carry an order-scoped BEADS_ACTOR into their
-// subprocess env, so any bd shell-out from inside the order's command
-// (e.g., `gc order sweep-tracking` → `bd close`) is audit-logged as
-// "order:<name>" rather than an ambient identity. This is what gives
-// the dashboard fine-grained attribution per order.
 // TestOrderExecEnvSetsControllerMailSender pins the sender of an exec order's
 // mail: the controller runs it with no session identity, so without this its
 // `gc mail send` would fall back to the operator's "human" mailbox.
@@ -9530,6 +9524,12 @@ func TestOrderExecEnvSetsControllerMailSender(t *testing.T) {
 	}
 }
 
+// TestOrderExecEnvSetsBeadsActorToOrderName verifies that exec orders
+// spawned by the controller carry an order-scoped BEADS_ACTOR into their
+// subprocess env, so any bd shell-out from inside the order's command
+// (e.g., `gc order sweep-tracking` → `bd close`) is audit-logged as
+// "order:<name>" rather than an ambient identity. This is what gives
+// the dashboard fine-grained attribution per order.
 func TestOrderExecEnvSetsBeadsActorToOrderName(t *testing.T) {
 	t.Setenv("GC_BEADS", "bd")
 	t.Setenv("GC_DOLT", "skip")
