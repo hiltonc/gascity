@@ -1064,6 +1064,23 @@ func defaultMailIdentity() string {
 
 const controllerMailIdentity = "controller"
 
+const mailSenderEnv = "GC_MAIL_FROM"
+
+// mailIdentityEnv is the environment a session's own mail identity comes
+// from, most specific first.
+var mailIdentityEnv = []string{"GC_SESSION_ID", "GC_ALIAS", "GC_AGENT"}
+
+// ambientMailSender returns $GC_MAIL_FROM when no session identity is set,
+// else "". A session that inherits the variable still sends as itself.
+func ambientMailSender() string {
+	for _, key := range mailIdentityEnv {
+		if strings.TrimSpace(os.Getenv(key)) != "" {
+			return ""
+		}
+	}
+	return strings.TrimSpace(os.Getenv(mailSenderEnv))
+}
+
 func reservedMailSenderIdentity(identifier string) (string, bool) {
 	switch normalizeNamedSessionTarget(identifier) {
 	case "", "human":
@@ -1090,9 +1107,9 @@ func defaultMailIdentityCandidates() []string {
 		seen[v] = true
 		out = append(out, v)
 	}
-	add(os.Getenv("GC_SESSION_ID"))
-	add(os.Getenv("GC_ALIAS"))
-	add(os.Getenv("GC_AGENT"))
+	for _, key := range mailIdentityEnv {
+		add(os.Getenv(key))
+	}
 	if len(out) == 0 {
 		out = append(out, "human")
 	}
@@ -1724,7 +1741,7 @@ so on stderr, because a duplicate notification beats a dropped one.`,
 	cmd.Flags().BoolVar(&notify, "nudge", false, "alias for --notify")
 	_ = cmd.Flags().MarkHidden("nudge")
 	cmd.Flags().BoolVar(&all, "all", false, "broadcast to all live sessions (excludes sender and human)")
-	cmd.Flags().StringVar(&from, "from", "", "sender identity (default: $GC_SESSION_ID, $GC_ALIAS, $GC_AGENT, or \"human\")")
+	cmd.Flags().StringVar(&from, "from", "", "sender identity (default: $GC_SESSION_ID, $GC_ALIAS, $GC_AGENT, $GC_MAIL_FROM, or \"human\")")
 	cmd.Flags().StringVar(&to, "to", "", "recipient address (alternative to positional argument)")
 	cmd.Flags().StringVarP(&subject, "subject", "s", "", "message subject line")
 	cmd.Flags().StringVarP(&message, "message", "m", "", "message body text")
@@ -2010,6 +2027,9 @@ func cmdMailSendJSON(args []string, notify bool, all bool, from string, to strin
 		}
 	}
 
+	if from == "" {
+		from = ambientMailSender()
+	}
 	sender := from
 	if sender == "" {
 		if store != nil {
