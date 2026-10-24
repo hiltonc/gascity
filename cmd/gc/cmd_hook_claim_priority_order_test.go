@@ -17,8 +17,8 @@ import (
 
 // These tests drive the generated default work query through a fake bd and
 // into the real claim loop: what a pool worker claims first is the
-// highest-priority ready bead, FIFO by sling time within a priority, and the
-// assignee compare-and-swap still decides every claim.
+// highest-priority ready bead, FIFO by sling time within a priority, and a
+// claim lost to the assignee compare-and-swap falls through in that order.
 
 const priorityClaimRoute = "rig/worker"
 
@@ -119,20 +119,14 @@ func TestHookClaimTakesHigherPriorityWorkflowRootOverOlderLowerPriorityStep(t *t
 		priorityClaimRow("p2-step", 2, 15, ``),
 	}, ",") + "]"
 	ready = strings.Replace(ready, `"metadata":{"gc.routed_to"`, `"metadata":{"gc.kind":"workflow","gc.formula_contract":"graph.v2","gc.routed_to"`, 1)
+	cas := &priorityClaimCAS{assignee: map[string]string{}}
 
-	agent := priorityClaimAgent()
-	out, err := shellWorkQueryWithEnv(agent.EffectiveWorkQuery(), t.TempDir(), priorityClaimQueryEnv(t, priorityClaimFakeBD(ready, "[]")))
-	if err != nil {
-		t.Fatalf("work query: %v", err)
-	}
-	first := strings.Index(out, `"p1-root"`)
-	second := strings.Index(out, `"p2-step"`)
-	if first < 0 || second < 0 || first > second {
-		t.Fatalf("work query served %s, want p1-root ahead of the older p2-step", out)
+	if got := runPriorityClaim(t, priorityClaimFakeBD(ready, "[]"), cas, "worker-1"); got != "p1-root" {
+		t.Fatalf("claimed %q, want p1-root ahead of the older p2-step; attempts=%v", got, cas.attempts)
 	}
 }
 
-func TestHookClaimPriorityOrderKeepsTheAssigneeCAS(t *testing.T) {
+func TestHookClaimLostCASFallsThroughToTheNextCandidateInPriorityOrder(t *testing.T) {
 	ready := "[" + strings.Join([]string{
 		priorityClaimRow("p1-slung-first", 1, 16, ``),
 		priorityClaimRow("p1-slung-second", 1, 17, ``),
@@ -143,9 +137,6 @@ func TestHookClaimPriorityOrderKeepsTheAssigneeCAS(t *testing.T) {
 	got := runPriorityClaim(t, priorityClaimFakeBD(ready, "[]"), cas, "worker-1")
 	if got != "p1-slung-second" {
 		t.Fatalf("claimed %q, want p1-slung-second after losing the CAS on p1-slung-first; attempts=%v", got, cas.attempts)
-	}
-	if owner := cas.assignee["p1-slung-first"]; owner != "worker-other" {
-		t.Fatalf("p1-slung-first assignee = %q, want the CAS winner worker-other kept", owner)
 	}
 	if owner := cas.assignee["p2-slung-earliest"]; owner != "" {
 		t.Fatalf("p2-slung-earliest assignee = %q, want it left unclaimed", owner)

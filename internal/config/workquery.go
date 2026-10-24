@@ -480,10 +480,9 @@ func poolDemandFirstRowFunctionScript(topo QueryTopology) string {
 // candidates in order; without that preference an older root can be returned
 // forever while its ready child waits behind it. The demotion stays inside a
 // priority band: a slung root's steps inherit its priority, so the band holds
-// the child it yields to, and demoting across bands would park a P1 root
-// behind every P2 step and task. The sort is stable, so the reader's FIFO
-// order survives within each group. A malformed reader payload is preserved
-// for the hook's existing fail-open handling rather than being converted into
+// the child it yields to. The sort is stable, so the reader's FIFO order
+// survives within each group. A malformed reader payload is preserved for the
+// hook's existing fail-open handling rather than being converted into
 // false-empty demand; the claim matcher still refuses any latch it carries.
 func preferExecutablePoolDemandScript() string {
 	preferJQ := `[.[] | ` + executableWorkflowTopologyJQ() + `]` +
