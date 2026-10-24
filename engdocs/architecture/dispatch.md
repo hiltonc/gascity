@@ -177,7 +177,7 @@ reader keep that order: the preference for executable rows over graph.v2
 workflow roots demotes a root only within its own priority band, and the
 bd 1.0.4 wisp tiers, which sort unordered `bd query` rows in jq, sort by
 the same (priority, created_at, id) key. The order holds within a tier, not
-across tiers: tiers are still read in turn, and the bd 1.0.4 assigned wisp
+across tiers: tiers are read in turn, and the bd 1.0.4 assigned wisp
 tier serves a wisp with no dependencies before it checks those with
 dependencies, ranking each list on its own. The migration fallback keeps
 `--sort oldest` for its retirement window. The count form unions canonical and migration
