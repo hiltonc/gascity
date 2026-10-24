@@ -349,6 +349,16 @@ func ephemeralReadyBaseSelectorJQ(selector string, excludeServeLabels bool) stri
 	return body
 }
 
+// readyOrderPriorityJQ is a row's priority as the canonical ready order reads
+// it: a missing priority sorts as 2, matching beads.SortBeadsReadyOrder and the
+// SQL readers' COALESCE(priority, 2).
+const readyOrderPriorityJQ = `(.priority // 2)`
+
+// readyOrderSortJQ sorts rows the readers do not order (`bd query`) into the
+// canonical (priority, created_at, id) ready order, so a worker is offered the
+// highest-priority row first and the earliest one within a priority.
+const readyOrderSortJQ = `sort_by(` + readyOrderPriorityJQ + `, .created_at // "", .id // "")`
+
 // legacyEphemeralReadyFilterJQ is the fast path: it withholds any candidate
 // with a nonzero dependency_count outright, since bd query --json carries no
 // detail on whether those dependencies are still open. dependency_count == 0
@@ -359,7 +369,7 @@ func ephemeralReadyBaseSelectorJQ(selector string, excludeServeLabels bool) stri
 func legacyEphemeralReadyFilterJQ(selector string, limit int, excludeServeLabels bool) string {
 	body := ephemeralReadyBaseSelectorJQ(selector, excludeServeLabels) +
 		` | select(((.dependency_count // 0) == 0))`
-	filter := `[.[] | ` + body + `]` + ` | sort_by(.created_at // "", .id // "")`
+	filter := `[.[] | ` + body + `]` + ` | ` + readyOrderSortJQ
 	if limit > 0 {
 		filter += ` | .[:` + strconv.Itoa(limit) + `]`
 	}
@@ -374,7 +384,7 @@ func legacyEphemeralReadyFilterJQ(selector string, limit int, excludeServeLabels
 func ephemeralReadyDependencyCandidateFilterJQ(selector string, limit int, excludeServeLabels bool) string {
 	body := ephemeralReadyBaseSelectorJQ(selector, excludeServeLabels) +
 		` | select(((.dependency_count // 0) > 0))`
-	filter := `[.[] | ` + body + `]` + ` | sort_by(.created_at // "", .id // "")`
+	filter := `[.[] | ` + body + `]` + ` | ` + readyOrderSortJQ
 	if limit > 0 {
 		filter += ` | .[:` + strconv.Itoa(limit) + `]`
 	}
@@ -466,15 +476,17 @@ func poolDemandFirstRowFunctionScript(topo QueryTopology) string {
 // later tiers and targets ran, draining the worker while the controller still
 // counts the shadowed work. Then it keeps the remaining graph-v2 workflow
 // roots, the never-expanded launch targets, available as fallbacks behind
-// executable routed work. The claim hook consumes candidates in order; without
-// that preference an older root can be returned forever while its ready child
-// waits behind it. A malformed reader payload is preserved for the hook's
-// existing fail-open handling rather than being converted into false-empty
-// demand; the claim matcher still refuses any latch it carries.
+// executable routed work of the same priority. The claim hook consumes
+// candidates in order; without that preference an older root can be returned
+// forever while its ready child waits behind it. The demotion stays inside a
+// priority band: a slung root's steps inherit its priority, so the band holds
+// the child it yields to. The sort is stable, so the reader's FIFO order
+// survives within each group. A malformed reader payload is preserved for the
+// hook's existing fail-open handling rather than being converted into
+// false-empty demand; the claim matcher still refuses any latch it carries.
 func preferExecutablePoolDemandScript() string {
-	predicate := graphWorkflowAnchorJQPredicate()
 	preferJQ := `[.[] | ` + executableWorkflowTopologyJQ() + `]` +
-		` | [.[] | select((` + predicate + `) | not)] + [.[] | select(` + predicate + `)]`
+		` | sort_by(` + readyOrderPriorityJQ + `, (` + graphWorkflowAnchorJQPredicate() + `))`
 	return `gc_preferred_pool_demand=$(printf "%s" "$r" | jq -c ` + shellquote.Quote(preferJQ) + ` 2>/dev/null); ` +
 		`[ -n "$gc_preferred_pool_demand" ] && r="$gc_preferred_pool_demand"; `
 }
