@@ -94,7 +94,7 @@ func assertLiveWithoutResetPending(t *testing.T, store beads.Store, sp *runtime.
 
 // A resume whose key is stale dies at startup and is relaunched fresh. That
 // fresh start is the reset: it must not leave continuation_reset_pending armed
-// behind a runtime it already started (ga-h56n).
+// behind a runtime it already started.
 func TestEnsureRunning_StaleKeyFreshRetryConsumesContinuationReset(t *testing.T) {
 	store := beads.NewMemStore()
 	sp := &startupDeathProvider{Fake: runtime.NewFake(), armed: true}
@@ -127,26 +127,34 @@ func TestEnsureRunning_StaleKeyDetectedAfterStartConsumesContinuationReset(t *te
 }
 
 // A fresh relaunch that fails leaves the reset pending, so the next start
-// rotates the continuation again rather than resuming nothing.
+// rotates the continuation again rather than resuming nothing. Without a prior
+// reset, only the relaunch's own withdrawal restores the marker.
 func TestEnsureRunning_StaleKeyFreshRetryFailureKeepsResetPending(t *testing.T) {
-	store := beads.NewMemStore()
-	sp := &startupDeathProvider{Fake: runtime.NewFake(), armed: true, failRetry: true}
-	mgr := newTestManager(t, store, sp, WithStaleKeyDetectionWaiter(immediateStaleKeyDetectionWaiter))
-	id := seedStaleKeyResumeSession(t, store)
+	for name, priorReset := range map[string]string{"prior reset": "true", "no prior reset": ""} {
+		t.Run(name, func(t *testing.T) {
+			store := beads.NewMemStore()
+			sp := &startupDeathProvider{Fake: runtime.NewFake(), armed: true, failRetry: true}
+			mgr := newTestManager(t, store, sp, WithStaleKeyDetectionWaiter(immediateStaleKeyDetectionWaiter))
+			id := seedStaleKeyResumeSession(t, store)
+			if err := store.SetMetadata(id, "continuation_reset_pending", priorReset); err != nil {
+				t.Fatalf("SetMetadata: %v", err)
+			}
 
-	if err := mgr.Start(context.Background(), testActor(mgr, ActorOperator), id, staleKeyTestResumeCmd, runtime.Config{WorkDir: "/tmp"}); err == nil {
-		t.Fatal("Start succeeded, want the fresh relaunch's failure")
-	}
+			if err := mgr.Start(context.Background(), testActor(mgr, ActorOperator), id, staleKeyTestResumeCmd, runtime.Config{WorkDir: "/tmp"}); err == nil {
+				t.Fatal("Start succeeded, want the fresh relaunch's failure")
+			}
 
-	b, err := store.Get(id)
-	if err != nil {
-		t.Fatalf("Get bead: %v", err)
-	}
-	if got := b.Metadata["continuation_reset_pending"]; got != "true" {
-		t.Errorf("continuation_reset_pending = %q, want true after a failed fresh relaunch", got)
-	}
-	if got := b.Metadata["session_key"]; got != "" {
-		t.Errorf("session_key = %q, want the stale key cleared", got)
+			b, err := store.Get(id)
+			if err != nil {
+				t.Fatalf("Get bead: %v", err)
+			}
+			if got := b.Metadata["continuation_reset_pending"]; got != "true" {
+				t.Errorf("continuation_reset_pending = %q, want true after a failed fresh relaunch", got)
+			}
+			if got := b.Metadata["session_key"]; got != "" {
+				t.Errorf("session_key = %q, want the stale key cleared", got)
+			}
+		})
 	}
 }
 

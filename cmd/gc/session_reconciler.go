@@ -3757,17 +3757,18 @@ func reconcileSessionBeadsTracedWithNamedDemand(
 				// release to wait on. Fall through so the wake decision
 				// can pick up the freshly cleared metadata and emit a
 				// start_candidate on this same tick. See #2345.
-			} else if running && alive && sessionpkg.OrphanedContinuationReset(infoByID[id]) {
+			} else if alive && sessionpkg.OrphanedContinuationReset(infoByID[id]) {
 				// A continuation reset no pending request owns, on a committed
 				// row whose runtime is live, was left by a start that already
 				// happened: nothing will consume it, and it pins the row
-				// reset-pending (ga-h56n). Converge on the live runtime.
+				// reset-pending. Converge on the live runtime. The clear stays
+				// unthreaded: the marker has no same-tick Info reader whose
+				// verdict the residue changes.
 				cleared, err := sessFront.ClearOrphanedContinuationReset(id)
 				switch {
 				case err != nil:
 					fmt.Fprintf(stderr, "session reconciler: clearing orphaned continuation reset for live session %s (bead %s): %v\n", name, id, err) //nolint:errcheck
 				case cleared:
-					tick.apply(id, sessionpkg.MetadataPatch{"continuation_reset_pending": ""})
 					fmt.Fprintf(stderr, "session reconciler: cleared orphaned continuation reset for live session %s (bead %s)\n", name, id) //nolint:errcheck
 				}
 			}

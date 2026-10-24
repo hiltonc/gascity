@@ -18,8 +18,9 @@ func orphanedResetMeta() map[string]string {
 
 func TestOrphanedContinuationReset(t *testing.T) {
 	cases := map[string]struct {
-		move map[string]string
-		want bool
+		move   map[string]string
+		status string
+		want   bool
 	}{
 		"awake row":                       {want: true},
 		"active row":                      {move: map[string]string{"state": string(StateActive)}, want: true},
@@ -34,6 +35,7 @@ func TestOrphanedContinuationReset(t *testing.T) {
 		"draining row":                    {move: map[string]string{"state": string(StateDraining)}},
 		"marker spelled other than true":  {move: map[string]string{"continuation_reset_pending": "yes"}},
 		"restart requested on asleep row": {move: map[string]string{"state": string(StateAsleep), "restart_requested": "true"}},
+		"closed row":                      {status: "closed"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -41,7 +43,11 @@ func TestOrphanedContinuationReset(t *testing.T) {
 			for k, v := range c.move {
 				meta[k] = v
 			}
-			info := infoFromPersistedBead(beads.Bead{ID: "s-1", Type: BeadType, Status: "open", Metadata: meta})
+			status := "open"
+			if c.status != "" {
+				status = c.status
+			}
+			info := infoFromPersistedBead(beads.Bead{ID: "s-1", Type: BeadType, Status: status, Metadata: meta})
 			if got := OrphanedContinuationReset(info); got != c.want {
 				t.Fatalf("OrphanedContinuationReset = %v, want %v", got, c.want)
 			}
