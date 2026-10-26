@@ -1302,10 +1302,41 @@ func (t *Tmux) KillServer() error {
 }
 
 // ConfigureServer sets tmux server options required for Gas City lifecycle
-// ownership. It is safe to call repeatedly because the wrapper may outlive the
-// server bound to its socket.
+// ownership and for forwarding OSC 8 hyperlinks. It is safe to call repeatedly
+// because the wrapper may outlive the server bound to its socket.
 func (t *Tmux) ConfigureServer() error {
-	return t.SetExitEmpty(false)
+	if err := t.SetExitEmpty(false); err != nil {
+		return err
+	}
+	return t.ensureTerminalFeature(hyperlinksTerminalFeature)
+}
+
+// hyperlinksTerminalFeature turns on tmux's hyperlinks feature for every xterm
+// terminal type. tmux enables it by itself only for terminals it recognizes by
+// XTVERSION, so a client that attaches as plain xterm-256color (Ghostty) would
+// otherwise have every OSC 8 link stripped before it reaches the client.
+const hyperlinksTerminalFeature = "xterm*:hyperlinks"
+
+// ensureTerminalFeature appends feature to the server's terminal-features
+// unless an entry already equals it: the option is an array, and each append
+// adds an entry, so a blind append on every call would grow it without bound.
+func (t *Tmux) ensureTerminalFeature(feature string) error {
+	out, err := t.run("show-options", "-sv", "terminal-features")
+	if errors.Is(err, ErrNoServer) {
+		return nil // No server to configure
+	}
+	if err != nil {
+		return fmt.Errorf("reading terminal-features: %w", err)
+	}
+	for _, entry := range strings.Split(out, "\n") {
+		if strings.Trim(strings.TrimSpace(entry), `"`) == feature {
+			return nil
+		}
+	}
+	if _, err := t.run("set-option", "-as", "terminal-features", feature); err != nil && !errors.Is(err, ErrNoServer) {
+		return fmt.Errorf("appending %s to terminal-features: %w", feature, err)
+	}
+	return nil
 }
 
 // TeardownServer terminates the tmux server after all sessions are drained.
