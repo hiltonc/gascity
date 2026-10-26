@@ -777,6 +777,12 @@ resource = "subprocess"
 calls = 5
 
 [[count]]
+path = "cmd/gc/external_command_unix_test.go"
+resource = "subprocess"
+calls = 1
+tagged = true
+
+[[count]]
 path = "cmd/gc/fast_loop_helpers_test.go"
 resource = "fixed_sleep"
 calls = 1
