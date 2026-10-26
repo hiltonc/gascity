@@ -3165,10 +3165,16 @@ func TestReaperScriptSQLReflectsCurrentSchema(t *testing.T) {
 	if !containsReaperCloseCleanupEdgePredicate(script) {
 		t.Fatalf("reaper script does not include the close ownership predicate:\n%s", script)
 	}
-	// The closed-wisp purge is bd purge's job, including the live-dependent
-	// protection; the script carries no SQL mutation of its own.
-	if !strings.Contains(script, `purge_args=(purge "$PURGE_PLANE_FLAG" --older-than "$PURGE_AGE" --json)`) {
-		t.Fatalf("reaper script does not purge closed wisps through bd purge over the wisps plane:\n%s", script)
+	// The closed-wisp purge selects its rows read-only, never mail, and
+	// deletes them through bd; the script carries no SQL mutation of its own.
+	for _, want := range []string{
+		"COALESCE(w.issue_type, '') <> 'message'",
+		"l.label = 'gc:message'",
+		`scope_bd delete --force --json --from-file "$ids_file"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("reaper script's closed-wisp purge is missing %q:\n%s", want, script)
+		}
 	}
 	for _, forbidden := range []string{"DELETE FROM", "UPDATE `", "DOLT_COMMIT", "dolt_sql", "dolt --host"} {
 		if strings.Contains(script, forbidden) {
@@ -3249,7 +3255,7 @@ exit 0
 		"GC_DOLT_PORT":     "3307",
 		"GC_DOLT_USER":     "root",
 		"GC_DOLT_PASSWORD": "",
-		"DOLT_PURGE_COUNT": "1",
+		"DOLT_PURGE_IDS":   "bd-wisp-old",
 		"BD_CALL_LOG":      bdLog,
 		"PATH":             binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
 		// No GC_REAPER_DRY_RUN — the purge runs for real.
@@ -3287,8 +3293,8 @@ exit 0
 	if err != nil {
 		t.Fatalf("ReadFile(bd log): %v", err)
 	}
-	if !strings.Contains(string(bdData), "args=purge --wisps-plane --older-than 168h --json --force --limit 500") {
-		t.Errorf("reaper did not purge closed wisps through bd purge over the wisps plane:\n%s", bdData)
+	if !strings.Contains(string(bdData), "args=delete --force --json --from-file ") {
+		t.Errorf("reaper did not purge the selected closed wisps through bd delete:\n%s", bdData)
 	}
 
 	gcData, err := os.ReadFile(gcLog)
@@ -3773,7 +3779,7 @@ func TestReaperCountQueriesIgnoreSuccessfulStderrWarnings(t *testing.T) {
 	writeExecutable(t, filepath.Join(binDir, "dolt"), `#!/bin/sh
 printf '%s\n' "$*" >> "$DOLT_ARGS_LOG"
 case "$*" in
-  *"SELECT DISTINCT w.id"*)
+`+maintenancePurgeCandidateCases+`  *"SELECT DISTINCT w.id"*)
     if [ -f "$CLOSED_FLAG" ]; then
       printf 'id,owner_id,depth,state,mode\n'
     else
@@ -3803,7 +3809,7 @@ exit 0
 		"DOLT_ARGS_LOG":  doltLog,
 		"GC_CALL_LOG":    gcLog,
 		"BD_CALL_LOG":    bdLog,
-		"BD_PURGE_COUNT": "1",
+		"DOLT_PURGE_IDS": "bd-wisp-old",
 		"CLOSED_FLAG":    filepath.Join(t.TempDir(), "closed"),
 		"GC_CITY":        cityDir,
 		"GC_CITY_PATH":   cityDir,
@@ -4454,7 +4460,7 @@ func TestReaperDoesNotCountFailedPurgeAsSuccess(t *testing.T) {
 	writeExecutable(t, filepath.Join(binDir, "dolt"), `#!/bin/sh
 printf '%s\n' "$*" >> "$DOLT_ARGS_LOG"
 case "$*" in
-  *"SHOW TABLES FROM"*"LIKE 'wisps'"*)
+`+maintenancePurgeCandidateCases+`  *"SHOW TABLES FROM"*"LIKE 'wisps'"*)
     printf 'Tables_in_db\nwisps\n'
     ;;
   *"SHOW DATABASES"*)
@@ -4479,7 +4485,8 @@ exit 0
 
 	env := map[string]string{
 		"DOLT_ARGS_LOG":    doltLog,
-		"BD_PURGE_FAIL":    "Error: purge failed: delete failed",
+		"DOLT_PURGE_IDS":   "bd-wisp-old",
+		"BD_DELETE_FAIL":   "Error: purge failed: delete failed",
 		"GC_CALL_LOG":      gcLog,
 		"GC_CITY":          cityDir,
 		"GC_CITY_PATH":     cityDir,
@@ -4512,7 +4519,7 @@ func TestReaperFailureAnomalyPreservesDoltErrorTail(t *testing.T) {
 
 	writeExecutable(t, filepath.Join(binDir, "dolt"), `#!/bin/sh
 case "$*" in
-  *"SHOW TABLES FROM"*"LIKE 'wisps'"*)
+`+maintenancePurgeCandidateCases+`  *"SHOW TABLES FROM"*"LIKE 'wisps'"*)
     printf 'Tables_in_db\nwisps\n'
     ;;
   *"SHOW DATABASES"*)
@@ -4537,7 +4544,8 @@ exit 0
 
 	env := map[string]string{
 		"GC_CALL_LOG":      gcLog,
-		"BD_PURGE_FAIL":    "stdout-query-preview:" + strings.Repeat("Q", 700) + "\nError 1105 (HY000): wisp_dependencies.depends_on_id missing from schema",
+		"DOLT_PURGE_IDS":   "bd-wisp-old",
+		"BD_DELETE_FAIL":   "stdout-query-preview:" + strings.Repeat("Q", 700) + "\nError 1105 (HY000): wisp_dependencies.depends_on_id missing from schema",
 		"GC_CITY":          cityDir,
 		"GC_CITY_PATH":     cityDir,
 		"GC_DOLT_HOST":     "127.0.0.1",
@@ -4575,7 +4583,7 @@ func TestReaperFailureAnomalyPreservesDoltErrorTailForLongQuery(t *testing.T) {
 
 	writeExecutable(t, filepath.Join(binDir, "dolt"), `#!/bin/sh
 case "$*" in
-  *"SHOW TABLES FROM"*"LIKE 'wisps'"*)
+`+maintenancePurgeCandidateCases+`  *"SHOW TABLES FROM"*"LIKE 'wisps'"*)
     printf 'Tables_in_db\nwisps\n'
     ;;
   *"SHOW DATABASES"*)
@@ -4600,7 +4608,8 @@ exit 0
 
 	env := map[string]string{
 		"GC_CALL_LOG":      gcLog,
-		"BD_PURGE_FAIL":    "error on line 1 for query " + strings.Repeat("x", 4200) + ": WITH RECURSIVE iteration limit exceeded",
+		"DOLT_PURGE_IDS":   "bd-wisp-old",
+		"BD_DELETE_FAIL":   "error on line 1 for query " + strings.Repeat("x", 4200) + ": WITH RECURSIVE iteration limit exceeded",
 		"GC_CITY":          cityDir,
 		"GC_CITY_PATH":     cityDir,
 		"GC_DOLT_HOST":     "127.0.0.1",
@@ -4635,7 +4644,7 @@ func TestReaperCommitReportsOnlySuccessfulPurgeRows(t *testing.T) {
 	writeExecutable(t, filepath.Join(binDir, "dolt"), `#!/bin/sh
 printf '%s\n' "$*" >> "$DOLT_ARGS_LOG"
 case "$*" in
-  *"SHOW TABLES FROM"*"LIKE 'wisps'"*)
+`+maintenancePurgeCandidateCases+`  *"SHOW TABLES FROM"*"LIKE 'wisps'"*)
     printf 'Tables_in_db\nwisps\n'
     ;;
   *"SHOW DATABASES"*)
@@ -4675,7 +4684,8 @@ exit 0
 
 	env := map[string]string{
 		"CLOSE_COUNT_STATE": closeCountState,
-		"BD_PURGE_FAIL":     "delete failed",
+		"DOLT_PURGE_IDS":    "bd-wisp-old",
+		"BD_DELETE_FAIL":    "delete failed",
 		"DOLT_ARGS_LOG":     doltLog,
 		"GC_CALL_LOG":       gcLog,
 		"GC_CITY":           cityDir,
@@ -6280,7 +6290,7 @@ case "$*" in
     printf 'ROW_COUNT()\n0\n'
   fi
   ;;
-*"session_prune_candidates"*)
+`+maintenancePurgeCandidateCases+`*"session_prune_candidates"*)
   # The reaper's count of bd prune's candidates: as many as the bd double
   # prunes.
   printf 'COUNT(*)\n%s\n' "${BD_PRUNE_COUNT:-0}"
@@ -6302,6 +6312,29 @@ esac
 exit 0
 	`)
 }
+
+// maintenancePurgeCandidateCases are the dolt double's case arms for the
+// reaper's Step 3 selects: the dry-run count answers DOLT_PURGE_COUNT, and the
+// candidate select answers the ids in DOLT_PURGE_IDS (space-separated) on
+// every call, or, with DOLT_PURGE_STATE set, on the first DOLT_PURGE_BATCHES
+// calls only (default 1).
+const maintenancePurgeCandidateCases = `*"purge_candidate_count"*)
+  printf 'purge_candidate_count\n%s\n' "${DOLT_PURGE_COUNT:-0}"
+  ;;
+*"purge_candidate_id"*)
+  printf 'purge_candidate_id\n'
+  emit=1
+  if [ -n "${DOLT_PURGE_STATE:-}" ]; then
+    printf 'x' >> "$DOLT_PURGE_STATE"
+    [ "$(wc -c < "$DOLT_PURGE_STATE" | tr -d ' ')" -le "${DOLT_PURGE_BATCHES:-1}" ] || emit=0
+  fi
+  if [ "$emit" = 1 ]; then
+    for id in ${DOLT_PURGE_IDS:-}; do
+      printf '%s\n' "$id"
+    done
+  fi
+  ;;
+`
 
 func writeReaperCloseFixtureDoltStub(t *testing.T, path string) {
 	t.Helper()
@@ -6369,14 +6402,14 @@ func writeMaintenanceBdStub(t *testing.T, path string) {
 // maintenanceBdStubBody is the default bd test double behind the fake gc's
 // `gc bd` route. It logs every call (with the gc scope it was routed to) to
 // BD_CALL_LOG and answers the verbs the maintenance orders use:
-//   - prune/purge report BD_PRUNE_COUNT / BD_PURGE_COUNT; BD_PURGE_FAIL makes
-//     purge fail with that text on stderr.
+//   - prune reports BD_PRUNE_COUNT.
 //   - backup status reports the timestamp in $BEADS_DIR/backup/backup_state.json
 //     (written by writeFreshBackupState) or BD_BACKUP_STATUS_JSON verbatim;
 //     BD_BACKUP_STATUS_FAIL makes it fail with that text.
-//   - close/update/delete succeed unless BD_CLOSE_FAIL is set.
+//   - close/update succeed unless BD_CLOSE_FAIL is set; delete reports the ids
+//     it was handed unless BD_DELETE_FAIL (or BD_CLOSE_FAIL) is set.
 //
-// maintenanceBdPurgeAndBackupVerbs answers `bd prune`, `bd purge` and `bd backup status`
+// maintenanceBdPurgeAndBackupVerbs answers `bd prune`, `bd delete` and `bd backup status`
 // the way maintenanceBdStubBody does, for test-specific bd doubles that
 // otherwise only log their calls.
 const maintenanceBdPurgeAndBackupVerbs = `case "$1" in
@@ -6384,12 +6417,12 @@ const maintenanceBdPurgeAndBackupVerbs = `case "$1" in
     printf '{"pruned_count":%s}\n' "${BD_PRUNE_COUNT:-0}"
     exit 0
     ;;
-  close|update|delete)
+  close|update)
 ` + maintenanceBdAppliedIDsJSON + `
     exit 0
     ;;
-  purge)
-    printf '{"purged_count":%s,"purge_count":%s}\n' "${BD_PURGE_COUNT:-0}" "${BD_PURGE_COUNT:-0}"
+  delete)
+` + maintenanceBdDeleteJSON + `
     exit 0
     ;;
   backup)
@@ -6412,22 +6445,6 @@ fi
 case "$1" in
   prune)
     printf '{"pruned_count":%s}\n' "${BD_PRUNE_COUNT:-0}"
-    ;;
-  purge)
-    if [ -n "${BD_PURGE_FAIL:-}" ]; then
-      printf '%s\n' "$BD_PURGE_FAIL" >&2
-      exit 1
-    fi
-    # BD_PURGE_MORE_BATCHES=N reports has_more for the first N calls
-    # (counted in BD_PURGE_STATE).
-    more=false
-    if [ -n "${BD_PURGE_STATE:-}" ]; then
-      printf 'x' >> "$BD_PURGE_STATE"
-      if [ "$(wc -c < "$BD_PURGE_STATE" | tr -d ' ')" -le "${BD_PURGE_MORE_BATCHES:-0}" ]; then
-        more=true
-      fi
-    fi
-    printf '{"purged_count":%s,"purge_count":%s,"has_more":%s}\n' "${BD_PURGE_COUNT:-0}" "${BD_PURGE_COUNT:-0}" "$more"
     ;;
   backup)
     if [ "${2:-}" = "status" ]; then
@@ -6452,8 +6469,19 @@ case "$1" in
 ` + maintenanceBdAppliedIDsJSON + `
     ;;
   delete)
-    if [ -n "${BD_CLOSE_FAIL:-}" ]; then
-      printf '%s\n' "$BD_CLOSE_FAIL" >&2
+` + maintenanceBdDeleteJSON + `
+    ;;
+esac
+exit 0
+`
+
+// maintenanceBdDeleteJSON is the body of a bd double's delete arm: it fails
+// with BD_DELETE_FAIL (or BD_CLOSE_FAIL) on stderr when that is set, and
+// otherwise reports every id in its --from-file as deleted, in bd's --json
+// shape.
+const maintenanceBdDeleteJSON = `    fail="${BD_DELETE_FAIL:-${BD_CLOSE_FAIL:-}}"
+    if [ -n "$fail" ]; then
+      printf '%s\n' "$fail" >&2
       exit 1
     fi
     n=0
@@ -6463,11 +6491,7 @@ case "$1" in
       fi
       shift
     done
-    printf '{"deleted_count":%s}\n' "$n"
-    ;;
-esac
-exit 0
-`
+    printf '{"deleted_count":%s}\n' "$n"`
 
 // maintenanceBdAppliedIDsJSON is the body of a bd double's close/update/
 // delete arm: it fails every id with BD_CLOSE_FAIL on stderr when that is

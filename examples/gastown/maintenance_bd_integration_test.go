@@ -24,10 +24,8 @@ import (
 // learn which topology they are on.
 //
 // bd comes from GC_TEST_BD_BIN or PATH (CI pins v1.3.0). Steps that need a bd
-// newer than the pin skip with the reason when bd lacks them:
-//   - the reaper's Step 3 needs `bd purge --wisps-plane --limit` (the beads
-//     purge hotfix);
-//   - backing up a proxied scope needs proxied `bd backup` (beads PR 6879).
+// newer than the pin skip with the reason when bd lacks them: backing up a
+// proxied scope needs proxied `bd backup` (beads PR 6879).
 // Fixtures live in t.TempDir with an isolated HOME and never touch port 3307.
 
 type bdTopologyScope struct {
@@ -306,16 +304,12 @@ func (c *bdTopologyCity) sqlValue(t *testing.T, s bdTopologyScope, query string)
 	return strings.TrimSpace(lines[len(lines)-1])
 }
 
-func (c *bdTopologyCity) bdSupportsPurgeWispsPlane(t *testing.T) bool {
-	t.Helper()
-	out, _ := c.run(t, c.root, nil, c.bd, "purge", "--help")
-	return strings.Contains(out, "--wisps-plane") && strings.Contains(out, "--limit")
-}
-
 // seedScope creates, in one scope: an old closed parent wisp with an old open
 // child (Step 1 closes the child), an old stale durable task (Step 5 closes it
 // in the city), an expired unassigned gc:nudge bead (Step 4 closes it in any
-// scope) and an old closed standalone wisp (Step 3 purges it).
+// scope), an old closed standalone wisp (Step 3 purges it) and two pieces of
+// old closed mail, one by type and one by its gc:message label, that Step 3
+// must leave to the mail retention policy.
 func (c *bdTopologyCity) seedScope(t *testing.T, s bdTopologyScope) map[string]string {
 	t.Helper()
 	ids := map[string]string{}
@@ -339,10 +333,12 @@ func (c *bdTopologyCity) seedScope(t *testing.T, s bdTopologyScope) map[string]s
 	create("heldYoung", "-t", "task", "young leaf", "--ephemeral", "--parent", ids["heldMid"])
 	create("stale", "-t", "task", "-p", "3", "stale durable task")
 	create("nudge", "-t", "task", "expired nudge", "-l", "gc:nudge", "--metadata", `{"expires_at":"2020-01-01T00:00:00Z"}`)
-	c.bdIn(t, s, "close", ids["parent"], ids["purgeable"], ids["protected"], ids["chainRoot"], ids["heldRoot"], "--force", "--reason", "seed")
+	create("archivedMail", "-t", "message", "archived mail", "--ephemeral")
+	create("labelledMail", "-t", "task", "mail by label", "--ephemeral", "-l", "gc:message")
+	c.bdIn(t, s, "close", ids["parent"], ids["purgeable"], ids["protected"], ids["chainRoot"], ids["heldRoot"], ids["archivedMail"], ids["labelledMail"], "--force", "--reason", "seed")
 	c.bdIn(t, s, "sql", fmt.Sprintf(
-		"UPDATE wisps SET created_at = DATE_SUB(NOW(), INTERVAL 48 HOUR), updated_at = DATE_SUB(NOW(), INTERVAL 48 HOUR), closed_at = IF(status = 'closed', DATE_SUB(NOW(), INTERVAL 400 HOUR), closed_at) WHERE id IN ('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s')",
-		ids["parent"], ids["child"], ids["purgeable"], ids["protected"], ids["chainRoot"], ids["chainMid"], ids["chainLeaf"], ids["heldRoot"], ids["heldMid"]))
+		"UPDATE wisps SET created_at = DATE_SUB(NOW(), INTERVAL 48 HOUR), updated_at = DATE_SUB(NOW(), INTERVAL 48 HOUR), closed_at = IF(status = 'closed', DATE_SUB(NOW(), INTERVAL 400 HOUR), closed_at) WHERE id IN ('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s')",
+		ids["parent"], ids["child"], ids["purgeable"], ids["protected"], ids["chainRoot"], ids["chainMid"], ids["chainLeaf"], ids["heldRoot"], ids["heldMid"], ids["archivedMail"], ids["labelledMail"]))
 	c.bdIn(t, s, "sql", fmt.Sprintf("UPDATE issues SET updated_at = DATE_SUB(NOW(), INTERVAL 800 HOUR) WHERE id = '%s'", ids["stale"]))
 	if !s.proxied {
 		c.bdIn(t, s, "dolt", "commit", "-m", "seed maintenance fixture")
@@ -449,17 +445,22 @@ func TestMaintenanceOrdersOnRealBdTopologies(t *testing.T) {
 				if got := c.status(t, s, ids["stale"]); got != wantStale {
 					t.Errorf("%s: stale task %s = %s, want %s (Step 5 closes city issues only)", s.dir, ids["stale"], got, wantStale)
 				}
-				if c.bdSupportsPurgeWispsPlane(t) {
-					if got := c.status(t, s, ids["purgeable"]); got != "gone" {
-						t.Errorf("%s: old closed wisp %s = %s, want purged (Step 3)", s.dir, ids["purgeable"], got)
-					}
-					// bd purge keeps a closed wisp that a live wisp still
-					// depends on (parent-child here).
-					if got := c.status(t, s, ids["protected"]); got != "closed" {
-						t.Errorf("%s: closed parent %s of a live child = %s, want kept (Step 3 live-dependent protection)", s.dir, ids["protected"], got)
-					}
-					if got := c.status(t, s, ids["live"]); got != "open" {
-						t.Errorf("%s: young live child %s = %s, want open", s.dir, ids["live"], got)
+				if got := c.status(t, s, ids["purgeable"]); got != "gone" {
+					t.Errorf("%s: old closed wisp %s = %s, want purged (Step 3)", s.dir, ids["purgeable"], got)
+				}
+				// Step 3 keeps a closed wisp that a live wisp still depends on
+				// (parent-child here).
+				if got := c.status(t, s, ids["protected"]); got != "closed" {
+					t.Errorf("%s: closed parent %s of a live child = %s, want kept (Step 3 live-dependent protection)", s.dir, ids["protected"], got)
+				}
+				if got := c.status(t, s, ids["live"]); got != "open" {
+					t.Errorf("%s: young live child %s = %s, want open", s.dir, ids["live"], got)
+				}
+				// Closed mail past the purge age is the mail retention
+				// policy's to delete, never the reaper's.
+				for _, key := range []string{"archivedMail", "labelledMail"} {
+					if got := c.status(t, s, ids[key]); got != "closed" {
+						t.Errorf("%s: closed mail %s %s = %s, want kept (Step 3 never purges mail)", s.dir, key, ids[key], got)
 					}
 				}
 				if !s.proxied {
@@ -468,9 +469,6 @@ func TestMaintenanceOrdersOnRealBdTopologies(t *testing.T) {
 						t.Errorf("%s: %s durable table(s) left uncommitted after the reaper", s.dir, dirty)
 					}
 				}
-			}
-			if !c.bdSupportsPurgeWispsPlane(t) && !strings.Contains(outcome, "bd-purge-unsupported") {
-				t.Errorf("bd without wisps-plane purge must be declared, outcome = %s", outcome)
 			}
 			if gcLog, _ := os.ReadFile(c.gcLog); strings.Contains(string(gcLog), "ESCALATION") {
 				for _, bad := range []string{"unreachable", "open child", "close failed"} {
