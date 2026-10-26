@@ -92,7 +92,7 @@ func TestMaintenanceOrdersRunFromInstalledPackLayouts(t *testing.T) {
 				env  map[string]string
 				want string
 			}{
-				{filepath.Join(coreDir, "assets", "scripts", "reaper.sh"), nil, "--rig api purge --wisps-plane"},
+				{filepath.Join(coreDir, "assets", "scripts", "reaper.sh"), map[string]string{"DOLT_PURGE_IDS": "bd-wisp-old"}, "--rig api delete --force --json --from-file "},
 				{filepath.Join(coreDir, "assets", "scripts", "jsonl-export.sh"), nil, "--rig api export --all -o "},
 				{filepath.Join(doltDir, "assets", "scripts", "mol-dog-backup.sh"), map[string]string{"GC_PACK_DIR": doltDir}, "--rig api backup sync --json"},
 			} {

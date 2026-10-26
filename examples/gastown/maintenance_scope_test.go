@@ -55,7 +55,7 @@ if [ -z "${GC_FAKE_SCOPE:-}" ]; then
 fi
 printf '%s|%s\n' "$GC_FAKE_SCOPE" "$*" >> "$DOLT_ARGS_LOG"
 case "$*" in
-`+storeCases+`
+`+storeCases+maintenancePurgeCandidateCases+`
   *"session_prune_candidates"*)
     printf 'COUNT(*)\n%s\n' "${BD_PRUNE_COUNT:-0}"
     ;;
@@ -314,18 +314,24 @@ func TestReaperDeclaresSkippedWhenNoScopeIsReachable(t *testing.T) {
 	}
 }
 
-func TestReaperPurgesClosedWispsThroughBdPurgeOverTheWispsPlane(t *testing.T) {
+func TestReaperPurgesSelectedClosedWispsThroughBdDelete(t *testing.T) {
 	f := newScopeFixture(t, "")
 	f.env["FAKE_RIG_LIST_JSON"] = `{"rigs":[{"name":"api","hq":false}]}`
 	f.env["FAKE_SCOPE_DBS"] = "rig:api=apidb"
-	f.env["BD_PURGE_COUNT"] = "3"
+	f.env["DOLT_PURGE_IDS"] = "bd-wisp-a bd-wisp-b bd-wisp-c"
 	f.env["GC_REAPER_PURGE_AGE"] = "36h"
 	f.runReaper(t)
 
 	bdLog := f.read(t, f.bdLog)
 	for _, scope := range []string{"scope=city", "scope=rig:api"} {
-		if !strings.Contains(bdLog, scope+" args=purge --wisps-plane --older-than 36h --json --force --limit 500") {
-			t.Fatalf("reaper did not purge %s through bd purge over the wisps plane:\n%s", scope, bdLog)
+		if !strings.Contains(bdLog, scope+" args=delete --force --json --from-file ") {
+			t.Fatalf("reaper did not purge %s's selected closed wisps through bd delete:\n%s", scope, bdLog)
+		}
+	}
+	doltLog := f.read(t, f.doltLog)
+	for _, scope := range []string{"city|", "rig:api|"} {
+		if !strings.Contains(doltLog, scope) || !strings.Contains(doltLog, "INTERVAL 36 HOUR") {
+			t.Fatalf("reaper did not select %s's closed wisps past the purge age:\n%s", scope, doltLog)
 		}
 	}
 	if !strings.Contains(f.read(t, f.gcLog), "purged:6") {
@@ -336,38 +342,33 @@ func TestReaperPurgesClosedWispsThroughBdPurgeOverTheWispsPlane(t *testing.T) {
 func TestReaperDryRunPurgePreviewsOnly(t *testing.T) {
 	f := newScopeFixture(t, "")
 	f.env["GC_REAPER_DRY_RUN"] = "1"
-	f.env["BD_PURGE_COUNT"] = "4"
+	f.env["DOLT_PURGE_COUNT"] = "4"
+	f.env["DOLT_PURGE_IDS"] = "bd-wisp-a"
 	f.runReaper(t)
 
-	bdLog := f.read(t, f.bdLog)
-	if !strings.Contains(bdLog, "args=purge --wisps-plane --older-than 168h --json --dry-run") || strings.Contains(bdLog, "--force") {
-		t.Fatalf("dry run must preview the purge without --force:\n%s", bdLog)
+	if bdLog := f.read(t, f.bdLog); strings.Contains(bdLog, "args=delete") {
+		t.Fatalf("dry run must not delete:\n%s", bdLog)
 	}
 	if !strings.Contains(f.read(t, f.gcLog), "would_purge:4") {
 		t.Fatalf("dry-run summary missing would_purge:\n%s", f.read(t, f.gcLog))
 	}
 }
 
-// TestReaperReportsPurgeUnsupportedWithoutEscalating covers a bd whose purge
-// cannot select the wisps plane yet (bd v1.3.0): the step is declared skipped
-// every run, and nothing escalates.
-func TestReaperReportsPurgeUnsupportedWithoutEscalating(t *testing.T) {
-	// bd v1.3.0 has neither flag; a build with --wisps-plane but no --limit
-	// fails on the second one.
-	for _, missing := range []string{"--wisps-plane", "--limit"} {
-		t.Run(missing, func(t *testing.T) {
-			f := newScopeFixture(t, "")
-			f.env["BD_PURGE_FAIL"] = "Error: unknown flag: " + missing
-			f.runReaper(t)
+func TestReaperSkipsPurgeWhenThePurgeAgeIsNotInHours(t *testing.T) {
+	f := newScopeFixture(t, "")
+	f.env["GC_REAPER_PURGE_AGE"] = "7d"
+	f.env["DOLT_PURGE_IDS"] = "bd-wisp-a"
+	f.runReaper(t)
 
-			if gcLog := f.read(t, f.gcLog); strings.Contains(gcLog, "ESCALATION") {
-				t.Fatalf("an unsupported purge flag must not escalate:\n%s", gcLog)
-			}
-			out, ok := f.outcome(t)
-			if !ok || out.Outcome != "partial" || !out.hasScope("city", "bd-purge-unsupported") {
-				t.Fatalf("outcome = %+v (declared %v), want partial with bd-purge-unsupported", out, ok)
-			}
-		})
+	if bdLog := f.read(t, f.bdLog); strings.Contains(bdLog, "args=delete") {
+		t.Fatalf("an unreadable purge age must delete nothing:\n%s", bdLog)
+	}
+	if gcLog := f.read(t, f.gcLog); !strings.Contains(gcLog, "GC_REAPER_PURGE_AGE=7d is not a whole number of hours") {
+		t.Fatalf("an unreadable purge age must be reported:\n%s", gcLog)
+	}
+	out, ok := f.outcome(t)
+	if !ok || !out.hasScope("city", "purge age unreadable") {
+		t.Fatalf("outcome = %+v (declared %v), want the purge declared skipped", out, ok)
 	}
 }
 
@@ -969,15 +970,16 @@ func TestMaintenanceOrdersSkipNonBdStoresQuietly(t *testing.T) {
 
 func TestReaperPurgesBacklogInBoundedBatches(t *testing.T) {
 	f := newScopeFixture(t, "")
-	f.env["BD_PURGE_COUNT"] = "500"
-	f.env["BD_PURGE_STATE"] = filepath.Join(t.TempDir(), "purge-calls")
-	f.env["BD_PURGE_MORE_BATCHES"] = "2"
+	f.env["GC_REAPER_PURGE_BATCH"] = "2"
+	f.env["DOLT_PURGE_IDS"] = "bd-wisp-a bd-wisp-b"
+	f.env["DOLT_PURGE_STATE"] = filepath.Join(t.TempDir(), "purge-selects")
+	f.env["DOLT_PURGE_BATCHES"] = "3"
 	f.runReaper(t)
 
-	if got := strings.Count(f.read(t, f.bdLog), "args=purge --wisps-plane"); got != 3 {
-		t.Fatalf("purge ran %d batch(es), want 3 (two reported more, the third did not):\n%s", got, f.read(t, f.bdLog))
+	if got := strings.Count(f.read(t, f.bdLog), "args=delete --force --json --from-file"); got != 3 {
+		t.Fatalf("purge ran %d batch(es), want 3 (three full selects, then an empty one):\n%s", got, f.read(t, f.bdLog))
 	}
-	if !strings.Contains(f.read(t, f.gcLog), "purged:1500") {
+	if !strings.Contains(f.read(t, f.gcLog), "purged:6") {
 		t.Fatalf("summary did not add every batch:\n%s", f.read(t, f.gcLog))
 	}
 	if _, declared := f.outcome(t); declared {
@@ -987,13 +989,12 @@ func TestReaperPurgesBacklogInBoundedBatches(t *testing.T) {
 
 func TestReaperStopsPurgingAtItsBudgetAndDeclaresTheBacklog(t *testing.T) {
 	f := newScopeFixture(t, "")
-	f.env["BD_PURGE_COUNT"] = "500"
-	f.env["BD_PURGE_STATE"] = filepath.Join(t.TempDir(), "purge-calls")
-	f.env["BD_PURGE_MORE_BATCHES"] = "99"
+	f.env["GC_REAPER_PURGE_BATCH"] = "2"
+	f.env["DOLT_PURGE_IDS"] = "bd-wisp-a bd-wisp-b"
 	f.env["GC_REAPER_PURGE_BUDGET_SECS"] = "0"
 	f.runReaper(t)
 
-	if got := strings.Count(f.read(t, f.bdLog), "args=purge --wisps-plane"); got != 1 {
+	if got := strings.Count(f.read(t, f.bdLog), "args=delete --force --json --from-file"); got != 1 {
 		t.Fatalf("purge ran %d batch(es) with no budget left, want 1:\n%s", got, f.read(t, f.bdLog))
 	}
 	out, ok := f.outcome(t)

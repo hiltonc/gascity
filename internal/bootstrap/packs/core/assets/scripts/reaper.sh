@@ -6,8 +6,8 @@
 # `gc bd --city <city> [--rig <rig>]`, and bd picks the transport for it, so
 # this script is the same for proxied, direct-server and mixed cities.
 # Selections that no gc bd verb can express run as read-only `gc bd sql` queries;
-# every mutation is a gc bd verb (close, update, purge, prune, delete) that owns
-# its own commit.
+# every mutation is a gc bd verb (close, update, prune, delete) that owns its
+# own commit.
 #
 # Runs as an exec order (no LLM, no agent, no wisp).
 set -euo pipefail
@@ -150,14 +150,14 @@ if ! [[ "$WORKFLOW_ROOT_CENSUS_START" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
     WORKFLOW_ROOT_CENSUS_START=""
 fi
 STALE_WISP_CLOSE_REASON="stale wisp whose owning parent or root is closed, auto-closed by reaper"
-# Step 3 purges the whole wisps plane (including --no-history rows, which is
-# where gc keeps order-tracking beads) and relies on gc bd purge to keep a closed
-# wisp that an open, hooked or in-progress wisp still depends on through
-# parent-child, tracks or blocks.
-PURGE_PLANE_FLAG="${GC_REAPER_PURGE_PLANE_FLAG:---wisps-plane}"
-# Closed wisps deleted per bd purge call, and the wall-clock budget (seconds,
-# shared by every scope) the purge step may spend per run. Both keep a large
-# backlog from outrunning the order timeout.
+# Step 3 purges closed rows across the whole wisps plane (including
+# --no-history rows, which is where gc keeps order-tracking beads), except mail
+# and what bd purge itself would keep: a pinned row, and a closed row that a bead
+# not yet closed still depends on through one of these edges.
+PURGE_LIVE_DEPENDENT_EDGE_TYPES="'parent-child', 'tracks', 'blocks'"
+# Closed wisps deleted per gc bd delete call, and the wall-clock budget
+# (seconds, shared by every scope) the purge step may spend per run. Both keep a
+# large backlog from outrunning the order timeout.
 PURGE_BATCH="${GC_REAPER_PURGE_BATCH:-500}"
 case "$PURGE_BATCH" in ''|*[!0-9]*|0) PURGE_BATCH=500 ;; esac
 PURGE_BUDGET_SECS="${GC_REAPER_PURGE_BUDGET_SECS:-300}"
@@ -185,6 +185,7 @@ duration_to_hours() {
 
 MAX_AGE_H=$(duration_to_hours "$MAX_AGE")
 STALE_AGE_H=$(duration_to_hours "$STALE_ISSUE_AGE")
+PURGE_AGE_H=$(duration_to_hours "$PURGE_AGE")
 
 TOTAL_SCOPES=0
 TOTAL_STALE_WISPS=0
@@ -960,10 +961,7 @@ reap_scope() {
 
     run_budget_exhausted && return 0
 
-    # Step 3: purge closed wisps past purge_age through gc bd purge, which keeps
-    # a closed wisp that a live wisp still depends on (parent-child, tracks,
-    # blocks) and removes each purged wisp's labels, dependencies, comments
-    # and events with it.
+    # Step 3: purge closed wisps past purge_age, never mail.
     reap_scope_purge
 
     run_budget_exhausted && return 0
@@ -1110,77 +1108,110 @@ reap_scope() {
     fi
 }
 
-# reap_scope_purge is Step 3 for the current scope.
-reap_scope_purge() {
-    local out
-    local err_file
-    local count
-    local more
-    local batches=0
-    local purge_args=(purge "$PURGE_PLANE_FLAG" --older-than "$PURGE_AGE" --json)
+# purge_candidates_query selects $1 (the candidate ids, or their count) from
+# the current scope's closed wisps-plane rows past PURGE_AGE that Step 3 may
+# delete. A message is never one of them, whether its type or its gc:message
+# label says so: mail is left to the mail retention policy ([mail]
+# retention_ttl, [[mail.recipient]]). bd purge cannot leave a type out, which
+# is why the step selects its rows here. The rest is what bd purge keeps: a
+# pinned row, and a closed row that a bead not yet closed, in either plane,
+# still depends on through PURGE_LIVE_DEPENDENT_EDGE_TYPES. $2 is appended.
+purge_candidates_query() {
+    local select="$1"
+    local tail="${2:-}"
+    cat <<SQL
+SELECT $select
+FROM \`$DB\`.wisps w
+WHERE w.status = 'closed'
+AND w.closed_at IS NOT NULL
+AND w.closed_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL ${PURGE_AGE_H} HOUR)
+AND COALESCE(w.pinned, 0) = 0
+AND COALESCE(w.issue_type, '') <> 'message'
+AND NOT EXISTS (
+    SELECT 1 FROM \`$DB\`.wisp_labels l
+    WHERE l.issue_id = w.id AND l.label = 'gc:message'
+)
+AND NOT EXISTS (
+    SELECT 1 FROM \`$DB\`.wisp_dependencies d
+    INNER JOIN \`$DB\`.wisps dependent ON dependent.id = d.issue_id
+    WHERE d.depends_on_wisp_id = w.id
+    AND d.type IN ($PURGE_LIVE_DEPENDENT_EDGE_TYPES)
+    AND dependent.status <> 'closed'
+)
+AND NOT EXISTS (
+    SELECT 1 FROM \`$DB\`.dependencies d
+    INNER JOIN \`$DB\`.issues dependent ON dependent.id = d.issue_id
+    WHERE d.depends_on_wisp_id = w.id
+    AND d.type IN ($PURGE_LIVE_DEPENDENT_EDGE_TYPES)
+    AND dependent.status <> 'closed'
+)
+$tail
+SQL
+}
 
+# reap_scope_purge is Step 3 for the current scope: it deletes the candidates
+# through gc bd delete in bounded batches, oldest closed first, within this
+# run's purge budget; whatever is left is picked up by the next run.
+reap_scope_purge() {
+    local ids_file
+    local err_file
+    local out
+    local selected
+    local count
+
+    case "$PURGE_AGE_H" in
+        ''|*[!0-9]*)
+            scope_anomaly "purge skipped for $SCOPE_DB: GC_REAPER_PURGE_AGE=$PURGE_AGE is not a whole number of hours (e.g. 168h)"
+            order_outcome_scope_skipped "$SCOPE_LABEL" "purge age unreadable"
+            return 0
+            ;;
+    esac
     if [ -n "$DRY_RUN" ]; then
-        purge_args+=(--dry-run)
-    else
-        # One purge runs in one transaction, so a large backlog is cleared in
-        # bounded batches (oldest closed first) within this run's purge
-        # budget; whatever is left is picked up by the next run.
-        purge_args+=(--force --limit "$PURGE_BATCH")
+        if get_sql_count "purgeable closed wisp" "$(purge_candidates_query "COUNT(*) AS purge_candidate_count")"; then
+            TOTAL_WOULD_PURGE=$((TOTAL_WOULD_PURGE + SQL_COUNT_RESULT))
+        fi
+        return 0
     fi
     if [ -z "$PURGE_DEADLINE" ]; then
         PURGE_DEADLINE=$(( $(date +%s) + PURGE_BUDGET_SECS ))
     fi
-    err_file=$(mktemp)
     while :; do
-        if ! out=$(scope_bd "${purge_args[@]}" 2>"$err_file"); then
-            out="$(cat "$err_file" 2>/dev/null) $out"
-            case "$out" in
-                *"unknown flag: $PURGE_PLANE_FLAG"* | *"unknown flag: --limit"*)
-                    # A bd whose purge cannot select the wisps plane or purge
-                    # in bounded batches (bd v1.3.0, and builds between). The
-                    # store is fine; the step waits for a bd that supports
-                    # both, and the run says so without escalating.
-                    order_outcome_scope_skipped "$SCOPE_LABEL" "bd-purge-unsupported"
-                    rm -f "$err_file"
-                    return 0
-                    ;;
-            esac
-            scope_anomaly "purging closed wisps failed for $SCOPE_DB: $(sanitize_output "$out")"
+        if ! get_sql_rows "purgeable closed wisp" "$(purge_candidates_query "w.id AS purge_candidate_id" "ORDER BY w.closed_at, w.id LIMIT $PURGE_BATCH")"; then
             order_outcome_scope_skipped "$SCOPE_LABEL" "purge failed"
-            rm -f "$err_file"
             return 0
         fi
-        if [ -n "$DRY_RUN" ]; then
-            count=$(printf '%s' "$out" | jq -r '.purge_count // .purged_count // 0' 2>/dev/null || echo 0)
-            case "$count" in ''|*[!0-9]*) count=0 ;; esac
-            TOTAL_WOULD_PURGE=$((TOTAL_WOULD_PURGE + count))
-            break
+        selected=$(count_lines "$SQL_ROWS_RESULT")
+        [ "$selected" -gt 0 ] || break
+        ids_file=$(mktemp)
+        err_file=$(mktemp)
+        printf '%s\n' "$SQL_ROWS_RESULT" >"$ids_file"
+        count=""
+        if out=$(scope_bd delete --force --json --from-file "$ids_file" 2>"$err_file"); then
+            count=$(printf '%s' "$out" | jq -r '.deleted_count // empty' 2>/dev/null || true)
+        else
+            out="$(cat "$err_file" 2>/dev/null) $out"
         fi
-        count=$(printf '%s' "$out" | jq -r '.purged_count // 0' 2>/dev/null || echo "")
+        rm -f "$ids_file" "$err_file"
         case "$count" in
             ''|*[!0-9]*)
-                scope_anomaly "gc bd purge returned an unreadable result for $SCOPE_DB: $(sanitize_output "$out")"
-                break
+                scope_anomaly "purging closed wisps failed for $SCOPE_DB: $(sanitize_output "$out")"
+                order_outcome_scope_skipped "$SCOPE_LABEL" "purge failed"
+                return 0
                 ;;
         esac
         TOTAL_PURGED=$((TOTAL_PURGED + count))
-        batches=$((batches + 1))
-        # bd reports whether closed wisps are left beyond this batch; a
-        # result without that signal is read as "a full batch may have more".
-        more=$(printf '%s' "$out" | jq -r --argjson limit "$PURGE_BATCH" '
-            if has("has_more") then .has_more
-            elif has("remaining") then (.remaining > 0)
-            else (.purged_count // 0) >= $limit end' 2>/dev/null || echo false)
-        if [ "$more" != "true" ] || [ "$count" -eq 0 ]; then
+        if [ "$count" -eq 0 ]; then
+            # A batch that deleted nothing would select the same rows again.
+            scope_anomaly "gc bd delete purged none of $selected closed wisp(s) selected in $SCOPE_DB"
             break
         fi
+        [ "$selected" -ge "$PURGE_BATCH" ] || break
         if [ "$(date +%s)" -ge "$PURGE_DEADLINE" ]; then
             order_outcome_scope_skipped "$SCOPE_LABEL" "purge backlog remains after this run's purge budget"
             break
         fi
         run_budget_exhausted && break
     done
-    rm -f "$err_file"
 }
 
 # Scopes are resolved first so that scopes sharing one database (a rig bound
