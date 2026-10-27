@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,8 +15,9 @@ import (
 
 // writeConfigExplainFixtureCity builds a city whose resolved config draws a
 // key from each layer: city.toml (workspace, an inline agent, a rig, a
-// custom provider), the city's own pack (a convention agent), and an
-// import binding (an imported pack's agent).
+// custom provider, an agent patch), the city's own pack (a convention
+// agent), an import binding (an imported pack's agent), and the custom
+// provider's implicit agents.
 func writeConfigExplainFixtureCity(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -42,6 +44,13 @@ provider = "mine"
 [agent.env]
 ANTHROPIC_API_KEY = "sk-city-secret"
 ANTHROPIC_MODEL = "claude-city-model"
+
+[[patches.agent]]
+name = "planner"
+
+[patches.agent.env]
+CITY_PATCH_TOKEN = "city-patch-secret"
+CITY_PATCH_MODEL = "city-patch-model"
 
 [providers.mine]
 base = "builtin:claude"
@@ -121,6 +130,8 @@ func TestConfigExplainJSONCoversEveryLayerWithSource(t *testing.T) {
 		{scope: "agent", name: "local", key: "provider", value: "mine", layer: "city", source: cityToml},
 		{scope: "agent", name: "planner", key: "name", value: "planner", layer: "pack", source: packToml},
 		{scope: "agent", name: "tools.worker", key: "name", value: "worker", layer: "import", source: toolsPackToml},
+		{scope: "agent", name: "mine", key: "name", value: "mine", layer: "implicit", source: "(implicit)"},
+		{scope: "agent", name: "myrig/mine", key: "dir", value: "myrig", layer: "implicit", source: "(implicit)"},
 		{scope: "provider", name: "mine", key: "env.MINE_MODEL", value: "provider-model", layer: "provider", source: "providers.mine"},
 	}
 	for _, tc := range tests {
@@ -146,7 +157,7 @@ func TestConfigExplainJSONRedactsEnvExceptModel(t *testing.T) {
 	dir := writeConfigExplainFixtureCity(t)
 	doc, raw := runConfigExplainJSON(t, dir)
 
-	for _, secret := range []string{"sk-city-secret", "provider-secret", "rig-patch-secret"} {
+	for _, secret := range []string{"sk-city-secret", "provider-secret", "rig-patch-secret", "city-patch-secret"} {
 		if bytes.Contains(raw, []byte(secret)) {
 			t.Fatalf("explain JSON leaks env value %q:\n%s", secret, raw)
 		}
@@ -155,6 +166,7 @@ func TestConfigExplainJSONRedactsEnvExceptModel(t *testing.T) {
 		{"agent", "local", "env.ANTHROPIC_API_KEY"},
 		{"provider", "mine", "env.MINE_TOKEN"},
 		{"rig", "myrig", "patches.0.env.RIG_PATCH_TOKEN"},
+		{"agent", "planner", "env.CITY_PATCH_TOKEN"},
 	} {
 		e := findExplainEntry(t, doc, tc.scope, tc.name, tc.key)
 		if !e.Redacted || e.Value != runtime.RedactedValue {
@@ -165,6 +177,7 @@ func TestConfigExplainJSONRedactsEnvExceptModel(t *testing.T) {
 		{"agent", "local", "env.ANTHROPIC_MODEL", "claude-city-model"},
 		{"provider", "mine", "env.MINE_MODEL", "provider-model"},
 		{"rig", "myrig", "patches.0.env.RIG_PATCH_MODEL", "rig-patch-model"},
+		{"agent", "planner", "env.CITY_PATCH_MODEL", "city-patch-model"},
 	} {
 		e := findExplainEntry(t, doc, tc.scope, tc.name, tc.key)
 		if e.Redacted || e.Value != tc.want {
@@ -187,7 +200,6 @@ func TestConfigExplainBuilderRedactsEnvAtAnyDepth(t *testing.T) {
 		{"agent", flatten(&config.Agent{Name: "a", Env: env}), "env"},
 		{"rig patch", flatten(config.Rig{Name: "r", RigPatches: []config.AgentOverride{{Agent: "a", Env: env}}}), "patches.0.env"},
 		{"rig override", flatten(config.Rig{Name: "r", Overrides: []config.AgentOverride{{Agent: "a"}, {Agent: "b", Env: env}}}), "overrides.1.env"},
-		{"city agent patch", flatten(config.Patches{Agents: []config.AgentPatch{{Name: "a", Env: env}}}), "agent.0.env"},
 		{"provider", func(b *configExplainBuilder) error {
 			b.addProvider("p", config.ResolvedProvider{Env: env, Provenance: config.ProviderProvenance{
 				MapKeyLayer: map[string]map[string]string{"env": {"TOKEN": "providers.p", "X_MODEL": "providers.p"}},
@@ -243,6 +255,19 @@ func TestConfigExplainJSONAgentFilter(t *testing.T) {
 		}
 	}
 	findExplainEntry(t, doc, "agent", "planner", "name")
+	findExplainEntry(t, doc, "workspace", "", "name")
+
+	doc, _ = runConfigExplainJSON(t, dir, "--rig", "myrig")
+	rigAgents := map[string]bool{}
+	for _, e := range doc.Entries {
+		if e.Scope == "agent" {
+			rigAgents[e.Name] = true
+		}
+	}
+	if want := map[string]bool{"myrig/mine": true, "myrig/tools.worker": true}; !maps.Equal(rigAgents, want) {
+		t.Fatalf("--rig myrig emitted agents %v, want %v", rigAgents, want)
+	}
+	findExplainEntry(t, doc, "rig", "myrig", "name")
 	findExplainEntry(t, doc, "workspace", "", "name")
 
 	var stdout, stderr bytes.Buffer

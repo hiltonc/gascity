@@ -141,13 +141,14 @@
                   "pack",
                   "import",
                   "builtin",
-                  "provider"
+                  "provider",
+                  "implicit"
                 ],
-                "description": "Where the value was declared: city.toml or a city fragment, a pack.toml, an import binding, a built-in provider, or a [providers.<name>] table."
+                "description": "Where the value was declared: city.toml or a city fragment, a pack.toml, an import binding, a built-in provider, a [providers.<name>] table, or implicit for an agent generated for a configured provider."
               },
               "source": {
                 "type": "string",
-                "description": "File that declared the value, or the provider chain hop (builtin:<name> or providers.<name>) for provider keys."
+                "description": "File that declared the value, the provider chain hop (builtin:<name> or providers.<name>) for provider keys, or (implicit) for implicit agents and imports."
               },
               "binding": {
                 "type": "string",

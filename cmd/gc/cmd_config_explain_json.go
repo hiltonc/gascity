@@ -34,7 +34,12 @@ const (
 	configExplainLayerImport   = "import"
 	configExplainLayerBuiltin  = "builtin"
 	configExplainLayerProvider = "provider"
+	configExplainLayerImplicit = "implicit"
 )
+
+// configExplainSourceImplicit is the source of a value no file declared,
+// matching the sentinel config.Provenance uses for implicit imports.
+const configExplainSourceImplicit = "(implicit)"
 
 // configExplainJSON is the "gc config explain --json" document: every
 // resolved key of the composed config with its value and provenance.
@@ -63,11 +68,12 @@ type configExplainEntry struct {
 	Value any    `json:"value"`
 	// Layer is where the value was declared: city (city.toml or a city
 	// fragment), pack (a pack.toml), import (an import binding),
-	// builtin (a built-in provider), or provider (a [providers.<name>]
-	// table).
+	// builtin (a built-in provider), provider (a [providers.<name>]
+	// table), or implicit (an agent generated for a configured provider).
 	Layer string `json:"layer"`
-	// Source is the file that declared the value, or the provider chain
-	// hop ("builtin:<name>" or "providers.<name>") for provider keys.
+	// Source is the file that declared the value, the provider chain
+	// hop ("builtin:<name>" or "providers.<name>") for provider keys, or
+	// "(implicit)" for implicit agents and imports.
 	Source string `json:"source"`
 	// Binding is the import binding an agent arrived through.
 	Binding string `json:"binding,omitempty"`
@@ -152,7 +158,10 @@ func buildConfigExplainJSON(cityPath string, cfg *config.City, prov *config.Prov
 			source = prov.Root
 		}
 		base := configExplainEntry{Scope: configExplainScopeAgent, Name: qn, Layer: b.layerForFile(source), Source: source, Binding: a.BindingName}
-		if a.BindingName != "" {
+		switch {
+		case a.Implicit:
+			base.Layer, base.Source = configExplainLayerImplicit, configExplainSourceImplicit
+		case a.BindingName != "":
 			base.Layer = configExplainLayerImport
 		}
 		if err := b.addFlattened(a, base, nil); err != nil {
@@ -185,9 +194,6 @@ type configExplainBuilder struct {
 
 // layerForFile classifies a config file path as a pack or city layer.
 func (b *configExplainBuilder) layerForFile(path string) string {
-	if path == "(implicit)" {
-		return configExplainLayerImport
-	}
 	if path != b.root && filepath.Base(path) == "pack.toml" {
 		return configExplainLayerPack
 	}
