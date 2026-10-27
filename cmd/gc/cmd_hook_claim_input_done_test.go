@@ -520,6 +520,50 @@ func TestWorkflowInputDoneTrueWhenInputClosedBeforeDrainRan(t *testing.T) {
 	}
 }
 
+// recordDrainManifest closes the drain step of rootID with manifest recorded.
+func recordDrainManifest(t *testing.T, store *beads.MemStore, rootID, manifest string) {
+	t.Helper()
+	drains, err := store.List(beads.ListQuery{
+		Metadata: map[string]string{
+			beadmeta.RootBeadIDMetadataKey: rootID,
+			beadmeta.KindMetadataKey:       beadmeta.KindDrain,
+		},
+		IncludeClosed: true,
+	})
+	if err != nil || len(drains) != 1 {
+		t.Fatalf("listing drains of %s = %d, %v; want 1 drain", rootID, len(drains), err)
+	}
+	if err := store.SetMetadata(drains[0].ID, beadmeta.DrainManifestMetadataKey, manifest); err != nil {
+		t.Fatalf("record manifest: %v", err)
+	}
+	if _, err := store.CloseAll([]string{drains[0].ID}, map[string]string{beadmeta.OutcomeMetadataKey: beadmeta.OutcomePass}); err != nil {
+		t.Fatalf("close drain: %v", err)
+	}
+}
+
+// A drain that ran after its input already closed records no row for it, so it
+// never took the input: the workflow is still retired.
+func TestWorkflowInputDoneTrueWhenDrainRanAfterInputClosed(t *testing.T) {
+	store, root, review := seedDrainedWorkflow(t, false)
+	recordDrainManifest(t, store, root.ID, `{"version":1,"parent_convoy_id":"`+root.Metadata[beadmeta.InputConvoyIDMetadataKey]+`","rows":[]}`)
+	_, done, err := workflowInputDone(store, review, nil)
+	if err != nil {
+		t.Fatalf("workflowInputDone: %v", err)
+	}
+	if !done {
+		t.Fatalf("workflowInputDone(%s) = not done for an input closed before the drain of %s ran, want done", review.ID, root.ID)
+	}
+}
+
+// A drain manifest that does not decode is an error, not a guess either way.
+func TestWorkflowInputDoneErrorsOnMalformedDrainManifest(t *testing.T) {
+	store, root, review := seedDrainedWorkflow(t, false)
+	recordDrainManifest(t, store, root.ID, `{"rows":`)
+	if _, done, err := workflowInputDone(store, review, nil); err == nil {
+		t.Fatalf("workflowInputDone(%s) = done=%v, nil error for a malformed drain manifest, want error", review.ID, done)
+	}
+}
+
 // While the drain's item workflow holds the input, its seat is not one of the
 // parent workflow's step seats, but the input was not handed off either.
 func TestWorkflowInputDoneFalseWhenOwnDrainHoldsTheInput(t *testing.T) {
