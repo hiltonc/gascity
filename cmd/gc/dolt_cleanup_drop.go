@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/doltauth"
 )
 
@@ -183,45 +182,11 @@ type sqlCleanupDoltClient struct {
 	db *sql.DB
 }
 
-// resolveCityDoltEndpoint returns the host and port of the city's live
-// managed Dolt server: cfg's host (default 127.0.0.1) and the port
-// ResolveDoltPort finds from city config or the live server. liveResolve
-// overrides the live resolution chain in tests; nil uses the default. A
-// resolution that falls back to the legacy default port is an error, because
-// every caller writes to the server and a stopped managed dolt must not send
-// it to whatever happens to be listening there. A nil cfg uses the defaults.
-func resolveCityDoltEndpoint(cityPath string, cfg *config.City, liveResolve func(string) (liveDoltPortResolution, error)) (host, port string, err error) {
-	cityPort := 0
-	if cfg != nil {
-		host = strings.TrimSpace(cfg.Dolt.Host)
-		cityPort = cfg.Dolt.Port
-	}
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	resolution := ResolveDoltPort(PortResolverInput{
-		CityPort:    cityPort,
-		CityPath:    cityPath,
-		LiveResolve: liveResolve,
-	})
-	if err := fatalPortResolutionError(resolution); err != nil {
-		return "", "", fmt.Errorf("resolving dolt port: %w", err)
-	}
-	if resolution.Fallback {
-		return "", "", fmt.Errorf("no live managed dolt endpoint for %s (resolution fell back to legacy port %d)", cityPath, resolution.Port)
-	}
-	return host, strconv.Itoa(resolution.Port), nil
-}
-
 // newSQLCleanupDoltClient opens a connection to the resolved Dolt server.
 // The backing *sql.DB is the shared pooled handle from internal/doltpool,
 // so Close() on the client is a no-op rather than an owner release.
 func newSQLCleanupDoltClient(cityPath, host, port string) (CleanupDoltClient, error) {
-	client, err := openSQLCleanupDoltClient(cityPath, host, port, doltauth.Resolve, managedDoltOpenDB)
-	if err != nil {
-		return nil, err
-	}
-	return client, nil
+	return openSQLCleanupDoltClient(cityPath, host, port, doltauth.Resolve, managedDoltOpenDB)
 }
 
 type (
@@ -229,7 +194,7 @@ type (
 	cleanupDoltDBOpener     func(host, port, user string) (*sql.DB, error)
 )
 
-func openSQLCleanupDoltClient(cityPath, host, port string, resolve cleanupDoltAuthResolver, open cleanupDoltDBOpener) (*sqlCleanupDoltClient, error) {
+func openSQLCleanupDoltClient(cityPath, host, port string, resolve cleanupDoltAuthResolver, open cleanupDoltDBOpener) (CleanupDoltClient, error) {
 	portNum, err := strconv.Atoi(strings.TrimSpace(port))
 	if err != nil {
 		return nil, fmt.Errorf("invalid dolt port %q: %w", port, err)

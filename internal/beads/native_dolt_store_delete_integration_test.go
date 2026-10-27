@@ -85,34 +85,35 @@ func assertNoChildRows(t *testing.T, db *sql.DB, ids ...string) {
 	}
 }
 
-// dropWispChildCascades reproduces a database whose wisp child tables lost
-// their ON DELETE CASCADE foreign keys.
-func dropWispChildCascades(t *testing.T, db *sql.DB) {
+// severWispForeignKeys drops every foreign key on the wisp tables, the state
+// CALL DOLT_RESET('--hard') leaves dolt_ignored tables in.
+func severWispForeignKeys(t *testing.T, db *sql.DB) {
 	t.Helper()
-	for _, c := range WispChildTables {
-		if c.Table == "wisp_dependencies" {
-			continue
-		}
-		if _, err := db.Exec("ALTER TABLE `" + c.Table + "` DROP FOREIGN KEY `" + c.FK + "`"); err != nil {
-			t.Fatalf("drop %s: %v", c.FK, err)
-		}
-	}
-}
-
-func inspectWispChildRows(t *testing.T, db *sql.DB) map[string]WispChildTableState {
-	t.Helper()
-	states, err := InspectWispChildRows(context.Background(), db, wispChildRowsTestDatabase)
+	rows, err := db.Query(`SELECT TABLE_NAME, CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS
+		WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME LIKE 'wisp%' AND CONSTRAINT_TYPE = 'FOREIGN KEY'`)
 	if err != nil {
-		t.Fatalf("InspectWispChildRows: %v", err)
+		t.Fatalf("list wisp foreign keys: %v", err)
 	}
-	byTable := make(map[string]WispChildTableState, len(states))
-	for _, s := range states {
-		byTable[s.Table] = s
+	defer rows.Close() //nolint:errcheck // test cleanup
+	var keys [][2]string
+	for rows.Next() {
+		var table, constraint string
+		if err := rows.Scan(&table, &constraint); err != nil {
+			t.Fatalf("scan wisp foreign key: %v", err)
+		}
+		keys = append(keys, [2]string{table, constraint})
 	}
-	if len(byTable) != len(WispChildTables) {
-		t.Fatalf("InspectWispChildRows returned %d tables, want %d: %+v", len(byTable), len(WispChildTables), states)
+	if err := rows.Err(); err != nil {
+		t.Fatalf("list wisp foreign keys: %v", err)
 	}
-	return byTable
+	if len(keys) == 0 {
+		t.Fatal("no wisp foreign keys to sever")
+	}
+	for _, k := range keys {
+		if _, err := db.Exec("ALTER TABLE `" + k[0] + "` DROP FOREIGN KEY `" + k[1] + "`"); err != nil {
+			t.Fatalf("drop %s.%s: %v", k[0], k[1], err)
+		}
+	}
 }
 
 func TestNativeDoltStoreDeleteWispRemovesChildRows(t *testing.T) {
@@ -137,70 +138,14 @@ func TestNativeDoltStoreBulkDeleteWispsRemovesChildRows(t *testing.T) {
 		}
 	}
 	assertNoChildRows(t, db, ids...)
-	for table, s := range inspectWispChildRows(t, db) {
-		if !s.Healthy() {
-			t.Errorf("%s = %+v, want healthy", table, s)
-		}
-	}
 }
 
-func TestRepairWispChildRowsDeletesOrphansAndRestoresCascade(t *testing.T) {
+func TestNativeDoltStoreDeleteWispRemovesChildRowsWithoutForeignKeys(t *testing.T) {
 	store, db := openServerNativeDoltStoreWithDB(t)
-	dropWispChildCascades(t, db)
-	kept := createWispWithChildRows(t, store, db)
-	orphaned := make([]string, 3)
-	for i := range orphaned {
-		orphaned[i] = createWispWithChildRows(t, store, db)
-		if err := store.Delete(orphaned[i]); err != nil {
-			t.Fatalf("Delete %s: %v", orphaned[i], err)
-		}
+	severWispForeignKeys(t, db)
+	id := createWispWithChildRows(t, store, db)
+	if err := store.Delete(id); err != nil {
+		t.Fatalf("Delete: %v", err)
 	}
-
-	before := inspectWispChildRows(t, db)
-	for _, table := range []string{"wisp_labels", "wisp_events", "wisp_comments"} {
-		s := before[table]
-		if s.Orphans == 0 || s.HasCascade {
-			t.Errorf("%s before repair = %+v, want orphans and no cascade", table, s)
-		}
-	}
-	if s := before["wisp_dependencies"]; !s.Healthy() {
-		t.Errorf("wisp_dependencies before repair = %+v, want healthy", s)
-	}
-
-	deleted, err := RepairWispChildRows(context.Background(), db, wispChildRowsTestDatabase, 2)
-	if err != nil {
-		t.Fatalf("RepairWispChildRows: %v", err)
-	}
-	for _, table := range []string{"wisp_labels", "wisp_events", "wisp_comments"} {
-		if deleted[table] != before[table].Orphans {
-			t.Errorf("deleted %s = %d, want %d", table, deleted[table], before[table].Orphans)
-		}
-	}
-	for table, s := range inspectWispChildRows(t, db) {
-		if !s.Healthy() {
-			t.Errorf("%s after repair = %+v, want healthy", table, s)
-		}
-	}
-	if n := countChildRows(t, db, "wisp_labels", kept); n != 2 {
-		t.Errorf("wisp_labels rows for live wisp %s = %d, want 2", kept, n)
-	}
-
-	if err := store.Delete(kept); err != nil {
-		t.Fatalf("Delete %s after repair: %v", kept, err)
-	}
-	assertNoChildRows(t, db, kept)
-}
-
-func TestInspectWispChildRowsSkipsDatabaseWithoutWisps(t *testing.T) {
-	_, db := openServerNativeDoltStoreWithDB(t)
-	if _, err := db.Exec("CREATE DATABASE no_wisps"); err != nil {
-		t.Fatalf("create database: %v", err)
-	}
-	states, err := InspectWispChildRows(context.Background(), db, "no_wisps")
-	if err != nil {
-		t.Fatalf("InspectWispChildRows: %v", err)
-	}
-	if len(states) != 0 {
-		t.Fatalf("InspectWispChildRows = %+v, want none", states)
-	}
+	assertNoChildRows(t, db, id)
 }

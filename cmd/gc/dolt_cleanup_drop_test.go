@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/doltauth"
 	"github.com/gastownhall/gascity/internal/fsys"
 )
@@ -804,47 +803,5 @@ func TestOpenSQLCleanupDoltClientUsesResolvedAuth(t *testing.T) {
 	}
 	if gotOpenHost != "127.0.0.1" || gotOpenPort != "3306" || gotOpenUser != "superlzy" {
 		t.Fatalf("open args = (%q, %q, %q), want (127.0.0.1, 3306, superlzy)", gotOpenHost, gotOpenPort, gotOpenUser)
-	}
-}
-
-func TestResolveCityDoltEndpoint(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		cfg      *config.City
-		wantHost string
-		wantPort string
-	}{
-		{name: "configured host and port", cfg: &config.City{Dolt: config.DoltConfig{Host: " db.internal ", Port: 4406}}, wantHost: "db.internal", wantPort: "4406"},
-		{name: "default host", cfg: &config.City{Dolt: config.DoltConfig{Port: 4407}}, wantHost: "127.0.0.1", wantPort: "4407"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			host, port, err := resolveCityDoltEndpoint(t.TempDir(), tc.cfg, nil)
-			if err != nil {
-				t.Fatalf("resolveCityDoltEndpoint: %v", err)
-			}
-			if host != tc.wantHost || port != tc.wantPort {
-				t.Errorf("endpoint = (%q, %q), want (%q, %q)", host, port, tc.wantHost, tc.wantPort)
-			}
-		})
-	}
-}
-
-func TestResolveCityDoltEndpointUsesTheLiveServer(t *testing.T) {
-	live := func(string) (liveDoltPortResolution, error) {
-		return liveDoltPortResolution{Port: 4408, Source: "managed runtime handle"}, nil
-	}
-	host, port, err := resolveCityDoltEndpoint(t.TempDir(), &config.City{}, live)
-	if err != nil {
-		t.Fatalf("resolveCityDoltEndpoint: %v", err)
-	}
-	if host != "127.0.0.1" || port != "4408" {
-		t.Errorf("endpoint = (%q, %q), want (127.0.0.1, 4408)", host, port)
-	}
-}
-
-func TestResolveCityDoltEndpointRefusesTheLegacyFallback(t *testing.T) {
-	stopped := func(string) (liveDoltPortResolution, error) { return liveDoltPortResolution{}, nil }
-	if _, _, err := resolveCityDoltEndpoint(t.TempDir(), &config.City{}, stopped); err == nil || !strings.Contains(err.Error(), "no live managed dolt endpoint") {
-		t.Fatalf("resolveCityDoltEndpoint error = %v, want a refused legacy fallback", err)
 	}
 }
