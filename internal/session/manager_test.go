@@ -277,13 +277,6 @@ func (s failMetadataKeyStore) SetMetadata(id, key, value string) error {
 	return s.MemStore.SetMetadata(id, key, value)
 }
 
-func (s failMetadataKeyStore) SetMetadataBatch(id string, kvs map[string]string) error {
-	if _, ok := kvs[s.key]; ok {
-		return errors.New("set metadata failed")
-	}
-	return s.MemStore.SetMetadataBatch(id, kvs)
-}
-
 func (s waitFailStore) List(query beads.ListQuery) ([]beads.Bead, error) {
 	if query.Label == WaitBeadLabel || strings.HasPrefix(query.Label, "session:") {
 		return nil, errors.New("wait list failed")
@@ -5717,7 +5710,7 @@ func TestEnsureRunning_StartupDeathClearMetadataFailurePropagates(t *testing.T) 
 	if err == nil {
 		t.Fatal("Send should fail when stale resume metadata cannot be cleared")
 	}
-	if !strings.Contains(err.Error(), "clearing stale resume metadata") {
+	if !strings.Contains(err.Error(), "clearing stale resume metadata session_key") {
 		t.Fatalf("Send error = %v, want stale metadata clear failure", err)
 	}
 

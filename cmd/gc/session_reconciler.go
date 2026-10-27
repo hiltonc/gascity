@@ -3758,10 +3758,6 @@ func reconcileSessionBeadsTracedWithNamedDemand(
 				// can pick up the freshly cleared metadata and emit a
 				// start_candidate on this same tick. See #2345.
 			} else if running && alive && sessionpkg.OrphanedContinuationReset(infoByID[id]) {
-				// A continuation reset no pending request owns, on a committed
-				// row whose runtime is live, was left by a start that already
-				// happened: nothing will consume it, and it pins the row
-				// reset-pending (ga-h56n). Converge on the live runtime.
 				cleared, err := sessFront.ClearOrphanedContinuationReset(id)
 				switch {
 				case err != nil:

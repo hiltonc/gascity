@@ -8,9 +8,8 @@ import (
 	sessionpkg "github.com/gastownhall/gascity/internal/session"
 )
 
-// seedLiveResetPendingSession is the row ga-h56n left behind: committed awake
-// on a live runtime named after its alias, with a continuation reset nothing
-// will ever consume.
+// seedLiveResetPendingSession seeds a row committed awake on a live runtime
+// named by its alias, with continuation_reset_pending set.
 func seedLiveResetPendingSession(t *testing.T, env *reconcilerTestEnv, extra map[string]string) beads.Bead {
 	t.Helper()
 	env.addDesired("minion", "minion", true)
@@ -70,5 +69,21 @@ func TestReconcileSessionBeads_LiveRuntimeKeepsCommittedRestartReset(t *testing.
 
 	if got := env.sessionInfo(session.ID).ContinuationResetPending; got != "true" {
 		t.Fatalf("continuation_reset_pending = %q, want the committed restart's marker kept", got)
+	}
+}
+
+// A wake on a committed row with a live runtime is served, so it does not
+// keep the marker.
+func TestReconcileSessionBeads_LiveRuntimeClearsResetBehindServedWake(t *testing.T) {
+	env := newReconcilerTestEnv(t)
+	session := seedLiveResetPendingSession(t, env, map[string]string{
+		"wake_request":      "explicit",
+		"wake_requested_at": env.clk.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
+	})
+
+	env.reconcile([]beads.Bead{session})
+
+	if got := env.sessionInfo(session.ID).ContinuationResetPending; got != "" {
+		t.Fatalf("continuation_reset_pending = %q, want cleared behind a served wake", got)
 	}
 }

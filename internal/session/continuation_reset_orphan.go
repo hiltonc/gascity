@@ -10,10 +10,11 @@ const orphanedResetClearAttempts = 3
 // left over from a start that already happened, given that the caller observed
 // info's runtime live. The marker means "the next start begins a fresh
 // conversation"; once a committed row runs a runtime, every start that would
-// consume it is past. A marker some pending request still owns is not
-// orphaned: a restart request or its committed reset (the controller stops the
-// runtime and starts fresh), a wake request or create claim (a start is on its
-// way), and any row that is not committed awake or active.
+// consume it is past, and a wake request on it is served, not pending. A marker
+// some pending request still owns is not orphaned: a restart request or its
+// committed reset (the controller stops the runtime and starts fresh), a create
+// claim (a start is on its way), and any row that is not committed awake or
+// active.
 func OrphanedContinuationReset(info Info) bool {
 	if info.Closed || strings.TrimSpace(info.ContinuationResetPending) != "true" {
 		return false
@@ -25,7 +26,6 @@ func OrphanedContinuationReset(info Info) bool {
 	}
 	return strings.TrimSpace(info.RestartRequested) != "true" &&
 		strings.TrimSpace(info.ResetCommittedAt) == "" &&
-		strings.TrimSpace(info.WakeRequest) == "" &&
 		!info.PendingCreateClaim
 }
 
