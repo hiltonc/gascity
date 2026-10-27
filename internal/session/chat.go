@@ -458,7 +458,7 @@ func (m *Manager) retryFreshStartAfterStaleKey(
 	}
 	// The relaunch consumes the reset the clear just recorded: its mint bumps
 	// the continuation epoch and clears the marker in one CAS, so the runtime
-	// it starts never leaves the row reset-pending (ga-h56n). A relaunch that
+	// it starts never leaves the row reset-pending. A relaunch that
 	// fails withdraws its mint, re-arming the reset and leaving the row on
 	// inc, unless its process may have survived (launchedUnder): then the row
 	// stays on the relaunch's, left in inc.

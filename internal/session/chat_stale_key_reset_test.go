@@ -94,7 +94,7 @@ func assertLiveWithoutResetPending(t *testing.T, store beads.Store, sp *runtime.
 
 // A resume whose key is stale dies at startup and is relaunched fresh. That
 // fresh start is the reset: it must not leave continuation_reset_pending armed
-// behind a runtime it already started (ga-h56n).
+// behind a runtime it already started.
 func TestEnsureRunning_StaleKeyFreshRetryConsumesContinuationReset(t *testing.T) {
 	store := beads.NewMemStore()
 	sp := &startupDeathProvider{Fake: runtime.NewFake(), armed: true}

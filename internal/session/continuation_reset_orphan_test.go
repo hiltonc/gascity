@@ -26,7 +26,7 @@ func TestOrphanedContinuationReset(t *testing.T) {
 		"no marker":                       {move: map[string]string{"continuation_reset_pending": ""}},
 		"restart requested":               {move: map[string]string{"restart_requested": "true"}},
 		"reset committed by a restart":    {move: map[string]string{ResetCommittedAtKey: "2026-10-16T20:16:00Z"}},
-		"wake requested":                  {move: map[string]string{"wake_request": "explicit"}},
+		"wake request served":             {move: map[string]string{"wake_request": "explicit"}, want: true},
 		"create claim held":               {move: map[string]string{"pending_create_claim": "true"}},
 		"asleep row":                      {move: map[string]string{"state": string(StateAsleep)}},
 		"drained row":                     {move: map[string]string{"state": string(StateDrained)}},
