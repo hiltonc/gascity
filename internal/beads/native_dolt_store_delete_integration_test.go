@@ -13,7 +13,7 @@ import (
 	beadslib "github.com/steveyegge/beads"
 )
 
-const wispChildRowsTestDatabase = "beads"
+const wispDeleteTestDatabase = "beads"
 
 func openServerNativeDoltStoreWithDB(t *testing.T) (*NativeDoltStore, *sql.DB) {
 	t.Helper()
@@ -24,7 +24,7 @@ func openServerNativeDoltStoreWithDB(t *testing.T) (*NativeDoltStore, *sql.DB) {
 	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
 		t.Fatalf("create .beads directory: %v", err)
 	}
-	metadata := fmt.Sprintf(`{"backend":"dolt","database":%q,"dolt_mode":"server","dolt_server_host":"127.0.0.1","dolt_server_port":%d}`, wispChildRowsTestDatabase, port)
+	metadata := fmt.Sprintf(`{"backend":"dolt","database":%q,"dolt_mode":"server","dolt_server_host":"127.0.0.1","dolt_server_port":%d}`, wispDeleteTestDatabase, port)
 	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), []byte(metadata), 0o644); err != nil {
 		t.Fatalf("write metadata.json: %v", err)
 	}
@@ -40,11 +40,11 @@ func openServerNativeDoltStoreWithDB(t *testing.T) (*NativeDoltStore, *sql.DB) {
 	if !ok {
 		t.Skip("storage does not expose a raw DB")
 	}
-	return newNativeDoltStoreWithStorageAndPrefix(storage, "wisp-child-rows", "gc"), accessor.DB()
+	return newNativeDoltStoreWithStorageAndPrefix(storage, "wisp-delete-test", "gc"), accessor.DB()
 }
 
-// createWispWithChildRows creates a wisp that has label, event and comment
-// rows, the shape order-tracking wisps leave behind.
+// createWispWithChildRows creates a wisp that has label, event, comment and
+// dependency rows, the shape order-tracking wisps leave behind.
 func createWispWithChildRows(t *testing.T, store *NativeDoltStore, db *sql.DB) string {
 	t.Helper()
 	wisp, err := store.Create(Bead{Title: "tracking wisp", Ephemeral: true, Labels: []string{"order-tracking", "exec"}})
@@ -54,16 +54,25 @@ func createWispWithChildRows(t *testing.T, store *NativeDoltStore, db *sql.DB) s
 	if err := store.SetMetadata(wisp.ID, "k", "v"); err != nil {
 		t.Fatalf("SetMetadata: %v", err)
 	}
+	work, err := store.Create(Bead{Title: "tracked work"})
+	if err != nil {
+		t.Fatalf("Create tracked work: %v", err)
+	}
+	if err := store.DepAdd(wisp.ID, work.ID, "blocks"); err != nil {
+		t.Fatalf("DepAdd: %v", err)
+	}
 	if _, err := db.Exec("INSERT INTO wisp_comments (id, issue_id, author, text) VALUES (UUID(), ?, 'test', 'note')", wisp.ID); err != nil {
 		t.Fatalf("seed wisp comment: %v", err)
 	}
-	for _, table := range []string{"wisp_labels", "wisp_events", "wisp_comments"} {
+	for _, table := range wispChildTables {
 		if n := countChildRows(t, db, table, wisp.ID); n == 0 {
 			t.Fatalf("%s rows for %s = 0, want seeded rows", table, wisp.ID)
 		}
 	}
 	return wisp.ID
 }
+
+var wispChildTables = []string{"wisp_labels", "wisp_events", "wisp_comments", "wisp_dependencies"}
 
 func countChildRows(t *testing.T, db *sql.DB, table, id string) int {
 	t.Helper()
@@ -77,7 +86,7 @@ func countChildRows(t *testing.T, db *sql.DB, table, id string) int {
 func assertNoChildRows(t *testing.T, db *sql.DB, ids ...string) {
 	t.Helper()
 	for _, id := range ids {
-		for _, table := range []string{"wisp_labels", "wisp_events", "wisp_comments", "wisp_dependencies"} {
+		for _, table := range wispChildTables {
 			if n := countChildRows(t, db, table, id); n != 0 {
 				t.Errorf("%s rows for deleted wisp %s = %d, want 0", table, id, n)
 			}
