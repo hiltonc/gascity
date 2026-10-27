@@ -2525,18 +2525,31 @@ func workflowInputDone(store beads.Store, candidate beads.Bead, identityCandidat
 		}
 		return root.ID, false, nil
 	}
-	drained, err := workflowDrainRecordedInput(store, root.ID)
+	memberIDs := make([]string, 0, len(members))
+	for _, m := range members {
+		memberIDs = append(memberIDs, m.ID)
+	}
+	drained, err := workflowDrainRecordedInput(store, root.ID, memberIDs)
 	if err != nil {
 		return root.ID, false, err
 	}
 	return root.ID, !drained, nil
 }
 
+// workflowDrainManifestRows is the part of a drain's gc.drain_manifest.v1
+// that names the input convoy members the drain took.
+type workflowDrainManifestRows struct {
+	Rows []struct {
+		MemberID string `json:"member_id"`
+	} `json:"rows"`
+}
+
 // workflowDrainRecordedInput reports whether a drain step of the workflow
-// rooted at rootID has recorded its manifest. A drain always drains its root's
-// input convoy, and it writes the manifest before it expands any item, so a
-// manifest means the workflow took its input; a drain without one has not.
-func workflowDrainRecordedInput(store beads.Store, rootID string) (bool, error) {
+// rooted at rootID recorded one of memberIDs in its manifest. A drain lists
+// only the open members of its input convoy, so a row means the workflow took
+// that member; a drain without a manifest, or one that ran after its input
+// closed and recorded no row for it, has not.
+func workflowDrainRecordedInput(store beads.Store, rootID string, memberIDs []string) (bool, error) {
 	drains, err := store.List(beads.ListQuery{
 		Metadata: map[string]string{
 			beadmeta.RootBeadIDMetadataKey: rootID,
@@ -2549,8 +2562,18 @@ func workflowDrainRecordedInput(store beads.Store, rootID string) (bool, error) 
 		return false, fmt.Errorf("listing drain steps of %s: %w", rootID, err)
 	}
 	for _, drain := range drains {
-		if strings.TrimSpace(drain.Metadata[beadmeta.DrainManifestMetadataKey]) != "" {
-			return true, nil
+		raw := strings.TrimSpace(drain.Metadata[beadmeta.DrainManifestMetadataKey])
+		if raw == "" {
+			continue
+		}
+		var manifest workflowDrainManifestRows
+		if err := json.Unmarshal([]byte(raw), &manifest); err != nil {
+			return false, fmt.Errorf("decoding drain manifest of %s: %w", drain.ID, err)
+		}
+		for _, row := range manifest.Rows {
+			if slices.Contains(memberIDs, row.MemberID) {
+				return true, nil
+			}
 		}
 	}
 	return false, nil
