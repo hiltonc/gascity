@@ -3818,7 +3818,7 @@ type Agent struct {
 	// routed queue this agent also serves. The default work_query reads
 	// gc.routed_to=<route_as> first, then this agent's own route, and gc hook
 	// --claim accepts both; the shared assignee compare-and-swap keeps each
-	// bead to one claimant. Default pool demand is still counted per route, so
+	// bead to one claimant. Default pool demand is counted per route, so
 	// work routed to route_as wakes only that agent's pool: give this agent a
 	// scale_check or min_active_sessions to say when it should run beside it.
 	RouteAs string `toml:"route_as,omitempty"`
