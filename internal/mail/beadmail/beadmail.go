@@ -1308,7 +1308,7 @@ func CountUnreadMessagesBefore(store beads.MailStore, cutoff time.Time, limit in
 
 // PurgeReadMessageWisps deletes read message beads in the wisp tier (open or
 // closed) older than their purge window under policy (from their sender and
-// recipient) — the wisp-GC retention sweep for consumed mail. A message whose
+// recipient): the wisp-GC retention sweep for consumed mail. A message whose
 // window is zero is never purged.
 // The candidate query and the delete loop live here because wisp-tier delete is
 // bead-lifecycle behavior the mail.Message domain object omits. Each bead's
