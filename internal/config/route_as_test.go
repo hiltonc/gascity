@@ -69,8 +69,8 @@ func TestRouteAsTargetsSharedQueueThenOwnRoute(t *testing.T) {
 				t.Errorf("%s %s does not probe the shared queue then its own route %q:\n%s", a.QualifiedName(), kind, probes, cmd)
 			}
 		}
-		if cmd, want := a.EffectivePoolDemandQuery(), shellquote.Join([]string{"--", owner.QualifiedName()}); !strings.HasSuffix(cmd, " "+want) {
-			t.Errorf("%s pool demand query does not count the shared queue %q:\n%s", a.QualifiedName(), want, cmd)
+		if cmd, want := a.EffectivePoolDemandQuery(), shellquote.Join([]string{"--", borrower.QualifiedName()}); !strings.HasSuffix(cmd, " "+want) {
+			t.Errorf("%s pool demand query does not count only its own route %q:\n%s", a.QualifiedName(), want, cmd)
 		}
 	}
 }

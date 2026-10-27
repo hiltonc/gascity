@@ -1342,8 +1342,7 @@ func (a *Agent) EffectivePoolDemandQueryFor(topo QueryTopology) string {
 }
 
 func buildPoolDemandQuery(a *Agent, topo QueryTopology) string {
-	target := a.poolDemandTarget()
-	return poolDemandCountShell(target, topo)
+	return poolDemandCountShell(a.ownRouteTarget(), topo)
 }
 
 // Query-override names as they are spelled in pack.toml / city.toml, for

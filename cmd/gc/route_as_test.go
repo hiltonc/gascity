@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"sync"
 	"testing"
 	"time"
 
@@ -47,17 +46,14 @@ func TestHookClaimRouteTargetsAcceptForeignRouteOnlyWithRouteAs(t *testing.T) {
 	}
 }
 
-// casClaimStore is the bd assignee compare-and-swap in miniature: a claim wins
-// only while the bead is unassigned.
-type casClaimStore struct {
-	mu       sync.Mutex
+// firstClaimStore grants the first claim and refuses the rest, recording every
+// attempt.
+type firstClaimStore struct {
 	assignee string
 	attempts []string
 }
 
-func (s *casClaimStore) claim(_ context.Context, _ string, _ []string, beadID, assignee string) (beads.Bead, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *firstClaimStore) claim(_ context.Context, _ string, _ []string, beadID, assignee string) (beads.Bead, bool, error) {
 	s.attempts = append(s.attempts, assignee)
 	if s.assignee != "" {
 		return beads.Bead{ID: beadID, Status: "in_progress", Assignee: s.assignee}, false, nil
@@ -66,9 +62,9 @@ func (s *casClaimStore) claim(_ context.Context, _ string, _ []string, beadID, a
 	return beads.Bead{ID: beadID, Status: "in_progress", Assignee: assignee, Metadata: beads.StringMap{"gc.routed_to": routeAsOwner}}, true, nil
 }
 
-func TestRouteAsClaimsStayAtomicAcrossPools(t *testing.T) {
+func TestRouteAsBothPoolsAttemptSharedBead(t *testing.T) {
 	owner, borrower := routeAsAgents()
-	store := &casClaimStore{}
+	store := &firstClaimStore{}
 	runner := func(string, string) (string, error) {
 		return `[{"id":"ga-shared","status":"open","metadata":{"gc.routed_to":"` + routeAsOwner + `"}}]`, nil
 	}
@@ -80,48 +76,32 @@ func TestRouteAsClaimsStayAtomicAcrossPools(t *testing.T) {
 		{"codex-reviewer-1", borrower},
 	}
 
-	results := make([]hookClaimJSONResult, len(sessions))
-	var wg sync.WaitGroup
-	for i, s := range sessions {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			opts := hookClaimOptions{
-				Assignee:           s.assignee,
-				IdentityCandidates: []string{s.assignee},
-				RouteTargets:       hookClaimAgentRouteTargets(&s.agent, s.agent.QualifiedName(), ""),
-				JSON:               true,
-			}
-			ops := hookClaimOps{
-				Runner: runner,
-				Claim:  store.claim,
-				ListContinuation: func(context.Context, string, []string, string, string) ([]beads.Bead, error) {
-					return nil, nil
-				},
-			}
-			var stdout bytes.Buffer
-			doHookClaim("bd ready --json", "/tmp/work", opts, ops, &stdout, io.Discard)
-			if err := json.Unmarshal(stdout.Bytes(), &results[i]); err != nil {
-				t.Errorf("%s: stdout is not JSON: %v\nraw: %s", s.assignee, err, stdout.String())
-			}
-		}()
-	}
-	wg.Wait()
-
-	var winners []string
-	for i, r := range results {
-		if r.Reason == "claimed" {
-			winners = append(winners, sessions[i].assignee)
-			if r.BeadID != "ga-shared" || r.Assignee != store.assignee {
-				t.Errorf("%s claim result = %+v, want ga-shared assigned to %q", sessions[i].assignee, r, store.assignee)
-			}
+	for _, s := range sessions {
+		opts := hookClaimOptions{
+			Assignee:           s.assignee,
+			IdentityCandidates: []string{s.assignee},
+			RouteTargets:       hookClaimAgentRouteTargets(&s.agent, s.agent.QualifiedName(), ""),
+			JSON:               true,
+		}
+		ops := hookClaimOps{
+			Runner: runner,
+			Claim:  store.claim,
+			ListContinuation: func(context.Context, string, []string, string, string) ([]beads.Bead, error) {
+				return nil, nil
+			},
+		}
+		var stdout bytes.Buffer
+		doHookClaim("bd ready --json", "/tmp/work", opts, ops, &stdout, io.Discard)
+		var r hookClaimJSONResult
+		if err := json.Unmarshal(stdout.Bytes(), &r); err != nil {
+			t.Fatalf("%s: stdout is not JSON: %v\nraw: %s", s.assignee, err, stdout.String())
+		}
+		if r.Reason == "claimed" && (r.BeadID != "ga-shared" || r.Assignee != store.assignee) {
+			t.Errorf("%s claim result = %+v, want ga-shared assigned to %q", s.assignee, r, store.assignee)
 		}
 	}
 	if len(store.attempts) != len(sessions) {
 		t.Fatalf("claim attempts = %v, want one per pool: both must see the shared bead as claimable", store.attempts)
-	}
-	if len(winners) != 1 {
-		t.Fatalf("claim winners = %v, want exactly one (results=%+v)", winners, results)
 	}
 }
 

@@ -176,7 +176,7 @@
         },
         "route_as": {
           "type": "string",
-          "description": "RouteAs is the qualified name of another agent in the same rig whose\nrouted queue this agent also serves. The default work_query reads\ngc.routed_to=\u003croute_as\u003e first, then this agent's own route, and gc hook\n--claim accepts both; the shared assignee compare-and-swap keeps each\nbead to one claimant. Default pool demand is still counted per route, so\nwork routed to route_as wakes only that agent's pool: give this agent a\nscale_check or min_active_sessions to say when it should run beside it."
+          "description": "RouteAs is the qualified name of another agent in the same rig whose\nrouted queue this agent also serves. The default work_query reads\ngc.routed_to=\u003croute_as\u003e first, then this agent's own route, and gc hook\n--claim accepts both; the shared assignee compare-and-swap keeps each\nbead to one claimant. Default pool demand is counted per route, so\nwork routed to route_as wakes only that agent's pool: give this agent a\nscale_check or min_active_sessions to say when it should run beside it."
         },
         "idle_timeout": {
           "type": "string",
