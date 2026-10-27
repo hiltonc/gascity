@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2780,13 +2781,31 @@ var controllerLiveDoltPortResolve func(cityPath string) (liveDoltPortResolution,
 // live Dolt server; production resolves the city's Dolt endpoint and issues the
 // identifier-escaped DROP through the same client the cleanup engine uses.
 var controllerDropManagedDoltDatabase = func(cs *controllerState, ctx context.Context, dbName string) error {
-	// This is a DROP DATABASE: a resolution that falls back to the legacy
-	// default is refused rather than dropped against whatever listens there.
-	host, port, err := resolveCityDoltEndpoint(cs.cityPath, cs.Config(), controllerLiveDoltPortResolve)
-	if err != nil {
-		return fmt.Errorf("refusing to drop dolt database %q: %w", dbName, err)
+	cfg := cs.Config()
+	host := ""
+	cityPort := 0
+	if cfg != nil {
+		host = strings.TrimSpace(cfg.Dolt.Host)
+		cityPort = cfg.Dolt.Port
 	}
-	client, err := newSQLCleanupDoltClient(cs.cityPath, host, port)
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	resolution := ResolveDoltPort(PortResolverInput{
+		CityPort:    cityPort,
+		CityPath:    cs.cityPath,
+		LiveResolve: controllerLiveDoltPortResolve,
+	})
+	if err := fatalPortResolutionError(resolution); err != nil {
+		return fmt.Errorf("resolving dolt port: %w", err)
+	}
+	// This is a DROP DATABASE. With the port file out of the chain, a stopped
+	// managed dolt is a clean miss that lands on the legacy default — refuse
+	// rather than drop against whatever happens to be listening on 3307.
+	if resolution.Fallback {
+		return fmt.Errorf("refusing to drop dolt database %q: no live managed dolt endpoint for %s (resolution fell back to legacy port %d)", dbName, cs.cityPath, resolution.Port)
+	}
+	client, err := newSQLCleanupDoltClient(cs.cityPath, host, strconv.Itoa(resolution.Port))
 	if err != nil {
 		return fmt.Errorf("opening dolt connection: %w", err)
 	}
