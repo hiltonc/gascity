@@ -625,7 +625,7 @@ func TestStaleKeyRetryMintsAgain(t *testing.T) {
 			}
 			assertStartRanMinted(t, second, 4)
 			// The relaunch's mint consumes the reset the stale-key clear
-			// recorded (ga-h56n): the epoch is bumped and the marker cleared.
+			// recorded: the epoch is bumped and the marker cleared.
 			firstEpoch, _ := strconv.Atoi(first.env[runtime.ContinuationEpochEnv])
 			if after["continuation_reset_pending"] != "" || second.env[runtime.ContinuationEpochEnv] != strconv.Itoa(firstEpoch+1) || after["continuation_epoch"] != second.env[runtime.ContinuationEpochEnv] {
 				t.Fatalf("row %v, relaunch env %v after %v; want the epoch bumped and the reset consumed", after, second.env, first.env)
