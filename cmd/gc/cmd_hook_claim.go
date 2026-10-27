@@ -2478,7 +2478,8 @@ func hookSkipIfInputDone(candidate beads.Bead, opts hookClaimOptions, ops hookCl
 // but handed off to an assignee outside identityCandidates (no longer ours to
 // wait on). A member that is still unassigned, or still assigned to one of
 // identityCandidates, blocks. A root with no input convoy, or a convoy with
-// no resolvable members, is never "done".
+// no resolvable members, is never "done", and neither is a root whose own
+// drain took the input: its stages after the drain are still to run.
 func workflowInputDone(store beads.Store, candidate beads.Bead, identityCandidates []string) (string, bool, error) {
 	root := candidate
 	if strings.TrimSpace(root.Metadata[beadmeta.InputConvoyIDMetadataKey]) == "" {
@@ -2524,7 +2525,35 @@ func workflowInputDone(store beads.Store, candidate beads.Bead, identityCandidat
 		}
 		return root.ID, false, nil
 	}
-	return root.ID, true, nil
+	drained, err := workflowDrainRecordedInput(store, root.ID)
+	if err != nil {
+		return root.ID, false, err
+	}
+	return root.ID, !drained, nil
+}
+
+// workflowDrainRecordedInput reports whether a drain step of the workflow
+// rooted at rootID has recorded its manifest. A drain always drains its root's
+// input convoy, and it writes the manifest before it expands any item, so a
+// manifest means the workflow took its input; a drain without one has not.
+func workflowDrainRecordedInput(store beads.Store, rootID string) (bool, error) {
+	drains, err := store.List(beads.ListQuery{
+		Metadata: map[string]string{
+			beadmeta.RootBeadIDMetadataKey: rootID,
+			beadmeta.KindMetadataKey:       beadmeta.KindDrain,
+		},
+		IncludeClosed: true,
+		TierMode:      beads.TierBoth,
+	})
+	if err != nil {
+		return false, fmt.Errorf("listing drain steps of %s: %w", rootID, err)
+	}
+	for _, drain := range drains {
+		if strings.TrimSpace(drain.Metadata[beadmeta.DrainManifestMetadataKey]) != "" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // workflowStepAssignees lists every seat recorded on any step (open or closed)

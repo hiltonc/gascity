@@ -442,3 +442,156 @@ func TestDoHookClaimStillClaimsWhenInputNotDone(t *testing.T) {
 		t.Fatalf("claimed = %q, want root-1", claimedID)
 	}
 }
+
+// seedDrainedWorkflow builds a build-from-bead shaped workflow whose input
+// convoy item was taken by the workflow's own drain step and closed with
+// gc.outcome=pass when its item published, plus an open, ready review step
+// that runs after the drain. manifest controls whether the drain recorded the
+// input (expanded) or never started (no manifest).
+func seedDrainedWorkflow(t *testing.T, manifest bool) (*beads.MemStore, beads.Bead, beads.Bead) {
+	t.Helper()
+	store, root, _ := seedDoneWorkflow(t, "open")
+	members, err := convoy.Members(store, root.Metadata[beadmeta.InputConvoyIDMetadataKey], true)
+	if err != nil || len(members) != 1 {
+		t.Fatalf("convoy.Members = %d, %v; want 1 member", len(members), err)
+	}
+	if _, err := store.CloseAll([]string{members[0].ID}, map[string]string{beadmeta.OutcomeMetadataKey: beadmeta.OutcomePass}); err != nil {
+		t.Fatalf("close work: %v", err)
+	}
+	drainMeta := map[string]string{
+		beadmeta.RootBeadIDMetadataKey: root.ID,
+		beadmeta.KindMetadataKey:       beadmeta.KindDrain,
+		beadmeta.RoutedToMetadataKey:   "rig/control-dispatcher",
+	}
+	if manifest {
+		drainMeta[beadmeta.DrainStateMetadataKey] = beadmeta.DrainStateSucceeded
+		drainMeta[beadmeta.DrainManifestMetadataKey] = `{"version":1,"rows":[{"index":0,"member_id":"` + members[0].ID + `","status":"wired"}]}`
+	}
+	drain, err := store.Create(beads.Bead{Title: "Drain implementation convoy", Metadata: drainMeta})
+	if err != nil {
+		t.Fatalf("create drain: %v", err)
+	}
+	if manifest {
+		if _, err := store.CloseAll([]string{drain.ID}, map[string]string{beadmeta.OutcomeMetadataKey: beadmeta.OutcomePass}); err != nil {
+			t.Fatalf("close drain: %v", err)
+		}
+	}
+	review, err := store.Create(beads.Bead{Title: "Review", Metadata: map[string]string{
+		beadmeta.RootBeadIDMetadataKey:        root.ID,
+		beadmeta.ContinuationGroupMetadataKey: "pool-workflow",
+		beadmeta.RoutedToMetadataKey:          "rig/worker",
+	}})
+	if err != nil {
+		t.Fatalf("create review: %v", err)
+	}
+	if err := store.DepAdd(review.ID, drain.ID, "blocks"); err != nil {
+		t.Fatalf("review depends on drain: %v", err)
+	}
+	return store, root, review
+}
+
+// An input item the workflow's own drain took and closed with
+// gc.outcome=pass is the workflow's output, not work finished elsewhere: the
+// review, repair, publish and finalize stages after the drain are still the
+// workflow's to run.
+func TestWorkflowInputDoneFalseWhenOwnDrainClosedTheInput(t *testing.T) {
+	store, root, review := seedDrainedWorkflow(t, true)
+	for _, candidate := range []beads.Bead{root, review} {
+		_, done, err := workflowInputDone(store, candidate, []string{"rig__worker-gc-fresh"})
+		if err != nil {
+			t.Fatalf("workflowInputDone(%s): %v", candidate.ID, err)
+		}
+		if done {
+			t.Fatalf("workflowInputDone(%s) = done after the workflow's own drain closed the input, want not done", candidate.ID)
+		}
+	}
+}
+
+// A drain that has not recorded the input yet has not taken it: an input
+// closed elsewhere before the drain ran still retires the workflow.
+func TestWorkflowInputDoneTrueWhenInputClosedBeforeDrainRan(t *testing.T) {
+	store, root, review := seedDrainedWorkflow(t, false)
+	_, done, err := workflowInputDone(store, review, nil)
+	if err != nil {
+		t.Fatalf("workflowInputDone: %v", err)
+	}
+	if !done {
+		t.Fatalf("workflowInputDone(%s) = not done for an input closed before the drain of %s recorded it, want done", review.ID, root.ID)
+	}
+}
+
+// While the drain's item workflow holds the input, its seat is not one of the
+// parent workflow's step seats, but the input was not handed off either.
+func TestWorkflowInputDoneFalseWhenOwnDrainHoldsTheInput(t *testing.T) {
+	store, root, review := seedDrainedWorkflow(t, true)
+	members, err := convoy.Members(store, root.Metadata[beadmeta.InputConvoyIDMetadataKey], true)
+	if err != nil || len(members) != 1 {
+		t.Fatalf("convoy.Members = %d, %v; want 1 member", len(members), err)
+	}
+	if err := store.Update(members[0].ID, beads.UpdateOpts{Status: strPtr("in_progress"), Assignee: strPtr("rig__item-worker-gc-other")}); err != nil {
+		t.Fatalf("update work: %v", err)
+	}
+	_, done, err := workflowInputDone(store, review, []string{"rig__worker-gc-fresh"})
+	if err != nil {
+		t.Fatalf("workflowInputDone: %v", err)
+	}
+	if done {
+		t.Fatal("workflowInputDone = done while the workflow's own drain item holds the input, want not done")
+	}
+}
+
+// A fresh seat claiming the post-drain review step of a workflow whose input
+// item closed with gc.outcome=pass claims it, and leaves the workflow alone.
+func TestDoHookClaimClaimsPostDrainStepAfterInputPassed(t *testing.T) {
+	store, root, review := seedDrainedWorkflow(t, true)
+	output, err := json.Marshal([]beads.Bead{review})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	claimedID := ""
+	ops := hookClaimOps{
+		Runner: func(string, string) (string, error) { return string(output), nil },
+		Claim: func(_ context.Context, _ string, _ []string, beadID, assignee string) (beads.Bead, bool, error) {
+			claimedID = beadID
+			return beads.Bead{ID: beadID, Assignee: assignee, Status: "in_progress", Metadata: review.Metadata}, true, nil
+		},
+		InputDone: func(_ context.Context, _ string, _ []string, candidate beads.Bead, identities []string) (string, bool, error) {
+			return workflowInputDone(store, candidate, identities)
+		},
+		SkipDoneWorkflow: func(_ context.Context, _ string, _ []string, rootID string) error {
+			return skipDoneWorkflow(store, rootID)
+		},
+		ListContinuation: func(_ context.Context, _ string, _ []string, _, _ string) ([]beads.Bead, error) {
+			return nil, nil
+		},
+		AssignContinuation: func(_ context.Context, _ string, _ []string, _, _ string) error { return nil },
+		ResolveWorkBranch:  func(hookClaimWorkTree) string { return "" },
+		StampWorkMeta: func(_ context.Context, _ string, _ []string, _, _ string, _ map[string]string) error {
+			return nil
+		},
+		PublishRunMap: func(_, _ string, _ ...string) error { return nil },
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := doHookClaim("query", "/rig", hookClaimOptions{
+		Assignee:     "rig__worker-gc-fresh",
+		RouteTargets: []string{"rig/worker"},
+		JSON:         true,
+	}, ops, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("doHookClaim = %d, want 0 (stderr=%q)", code, stderr.String())
+	}
+	if claimedID != review.ID {
+		t.Fatalf("claimed = %q, want review step %s (stdout=%q stderr=%q)", claimedID, review.ID, stdout.String(), stderr.String())
+	}
+	for _, id := range []string{root.ID, review.ID} {
+		got, err := store.Get(id)
+		if err != nil {
+			t.Fatalf("get %s: %v", id, err)
+		}
+		if got.Status == "closed" || got.Metadata[beadmeta.OutcomeMetadataKey] == beadmeta.OutcomeSkipped {
+			t.Fatalf("%s status=%q gc.outcome=%q, want left open by the claim", id, got.Status, got.Metadata[beadmeta.OutcomeMetadataKey])
+		}
+	}
+}
