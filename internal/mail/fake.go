@@ -79,6 +79,31 @@ func (f *Fake) Send(from, to, subject, body string) (Message, error) {
 	return m, nil
 }
 
+// SendInThread implements [ThreadedSender] in memory.
+func (f *Fake) SendInThread(from, to, subject, body, threadID, replyTo string) (Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.broken {
+		return Message{}, fmt.Errorf("mail provider unavailable")
+	}
+	if threadID == "" {
+		threadID = f.nextThreadID()
+	}
+	f.seq++
+	m := Message{
+		ID:        fmt.Sprintf("fake-%d", f.seq),
+		From:      from,
+		To:        to,
+		Subject:   subject,
+		Body:      body,
+		CreatedAt: f.now(),
+		ThreadID:  threadID,
+		ReplyTo:   replyTo,
+	}
+	f.messages = append(f.messages, fakeMsg{msg: m})
+	return m, nil
+}
+
 // Inbox returns unread, non-archived messages for the recipient.
 func (f *Fake) Inbox(recipient string) ([]Message, error) {
 	f.mu.Lock()

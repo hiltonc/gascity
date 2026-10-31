@@ -2060,11 +2060,37 @@
           },
           "type": "array",
           "description": "Senders override archive_read_after and retention_ttl for the mail\ntheir senders send. The first matching entry wins. When a sender entry\nand a recipient entry both match a message, each knob takes the longer\nwindow of the entries that set it (\"0\", never, is longest); a knob\nneither sets falls back to the [mail] value."
+        },
+        "peer": {
+          "items": {
+            "$ref": "#/$defs/MailPeer"
+          },
+          "type": "array",
+          "description": "Peers are the other cities this city exchanges agent mail with, as\nagent@city. See [MailPeer]."
         }
       },
       "additionalProperties": false,
       "type": "object",
       "description": "MailConfig holds mail provider settings."
+    },
+    "MailPeer": {
+      "properties": {
+        "city": {
+          "type": "string",
+          "description": "City is the peer's city name, the city part of an agent@city address."
+        },
+        "token_file": {
+          "type": "string",
+          "description": "TokenFile holds the secret the two cities share: this city sends it\nwith mail to the peer and requires it on mail from the peer, so a\ncaller without it cannot send as one of the peer's agents. A relative\npath resolves against the city directory."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "city",
+        "token_file"
+      ],
+      "description": "MailPeer is another city whose agents exchange mail with this city's, as agent@city."
     },
     "MailRecipientRetention": {
       "properties": {

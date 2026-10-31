@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "fake.go",
         "mail.go",
+        "peer.go",
         "resolve.go",
     ],
     importpath = "github.com/gastownhall/gascity/internal/mail",
@@ -15,6 +16,7 @@ go_test(
     name = "mail_test",
     srcs = [
         "fake_conformance_test.go",
+        "peer_test.go",
         "resolve_test.go",
         "testenv_import_test.go",
     ],

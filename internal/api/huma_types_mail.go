@@ -56,12 +56,15 @@ type MailGetInput struct {
 type MailSendInput struct {
 	CityScope
 	IdempotencyKey string `header:"Idempotency-Key" required:"false" doc:"Idempotency key for safe retries."`
+	PeerToken      string `header:"X-GC-Mail-Peer-Token" required:"false" doc:"Secret this city shares with the sender's city, required when from is agent@city naming another city: it must match the token_file of that city's [[mail.peer]] entry (403 otherwise)."`
 	Body           struct {
-		Rig     string `json:"rig,omitempty" doc:"Rig name."`
-		From    string `json:"from,omitempty" doc:"Sender: the operator (human, or the dashboard's wire alias DASHBOARD_OPERATOR_WIRE_ALIAS), a configured agent, a configured named session, or a live session of a configured agent. Optional in the schema, but an empty or unconfigured sender is refused (422 at body.from)."`
-		To      string `json:"to" doc:"Recipient name." minLength:"1"`
-		Subject string `json:"subject" doc:"Message subject." minLength:"1"`
-		Body    string `json:"body,omitempty" doc:"Message body."`
+		Rig      string `json:"rig,omitempty" doc:"Rig name."`
+		From     string `json:"from,omitempty" doc:"Sender: the operator (human, or the dashboard's wire alias DASHBOARD_OPERATOR_WIRE_ALIAS), a configured agent, a configured named session, a live session of a configured agent, or agent@city for an agent of a [[mail.peer]] city. Optional in the schema, but an empty or unconfigured sender is refused (422 at body.from)."`
+		To       string `json:"to" doc:"Recipient name." minLength:"1"`
+		Subject  string `json:"subject" doc:"Message subject." minLength:"1"`
+		Body     string `json:"body,omitempty" doc:"Message body."`
+		ThreadID string `json:"thread_id,omitempty" doc:"Thread the message joins; empty starts a new thread."`
+		ReplyTo  string `json:"reply_to,omitempty" doc:"ID of the message this one answers, which may live in another city."`
 	}
 }
 

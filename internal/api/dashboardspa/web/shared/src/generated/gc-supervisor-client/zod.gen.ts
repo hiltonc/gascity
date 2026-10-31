@@ -1042,8 +1042,10 @@ export const zMailReplyInputBody = z.object({
 export const zMailSendInputBody = z.object({
     body: z.string().optional(),
     from: z.string().optional(),
+    reply_to: z.string().optional(),
     rig: z.string().optional(),
     subject: z.string().min(1),
+    thread_id: z.string().optional(),
     to: z.string().min(1)
 });
 
@@ -9934,7 +9936,8 @@ export const zSendMailBody = zMailSendInputBody;
 
 export const zSendMailHeaders = z.object({
     'X-GC-Request': z.string().min(1),
-    'Idempotency-Key': z.string().optional()
+    'Idempotency-Key': z.string().optional(),
+    'X-GC-Mail-Peer-Token': z.string().optional()
 });
 
 export const zSendMailPath = z.object({
