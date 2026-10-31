@@ -3769,14 +3769,20 @@ type MailSendInputBody struct {
 	// Body Message body.
 	Body *string `json:"body,omitempty"`
 
-	// From Sender: the operator (human, or the dashboard's wire alias DASHBOARD_OPERATOR_WIRE_ALIAS), a configured agent, a configured named session, or a live session of a configured agent. Optional in the schema, but an empty or unconfigured sender is refused (422 at body.from).
+	// From Sender: the operator (human, or the dashboard's wire alias DASHBOARD_OPERATOR_WIRE_ALIAS), a configured agent, a configured named session, a live session of a configured agent, or agent@city for an agent of a [[mail.peer]] city. Optional in the schema, but an empty or unconfigured sender is refused (422 at body.from).
 	From *string `json:"from,omitempty"`
+
+	// ReplyTo ID of the message this one answers, which may live in another city.
+	ReplyTo *string `json:"reply_to,omitempty"`
 
 	// Rig Rig name.
 	Rig *string `json:"rig,omitempty"`
 
 	// Subject Message subject.
 	Subject string `json:"subject"`
+
+	// ThreadId Thread the message joins; empty starts a new thread.
+	ThreadId *string `json:"thread_id,omitempty"`
 
 	// To Recipient name.
 	To string `json:"to"`
@@ -12101,6 +12107,9 @@ type SendMailParams struct {
 
 	// IdempotencyKey Idempotency key for safe retries.
 	IdempotencyKey *string `json:"Idempotency-Key,omitempty"`
+
+	// XGCMailPeerToken Secret this city shares with the sender's city, required when from is agent@city naming another city: it must match the token_file of that city's [[mail.peer]] entry (403 otherwise).
+	XGCMailPeerToken *string `json:"X-GC-Mail-Peer-Token,omitempty"`
 }
 
 // GetV0CityByCityNameMailCountParams defines parameters for GetV0CityByCityNameMailCount.
@@ -32092,6 +32101,17 @@ func NewSendMailRequestWithBody(server string, cityName string, params *SendMail
 			}
 
 			req.Header.Set("Idempotency-Key", headerParam1)
+		}
+
+		if params.XGCMailPeerToken != nil {
+			var headerParam2 string
+
+			headerParam2, err = runtime.StyleParamWithOptions("simple", false, "X-GC-Mail-Peer-Token", *params.XGCMailPeerToken, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-GC-Mail-Peer-Token", headerParam2)
 		}
 
 	}

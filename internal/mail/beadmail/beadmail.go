@@ -181,15 +181,32 @@ func (p *Provider) sendWithExtraMetadata(from, to, subject, body string, extra m
 	threadID := generateThreadID()
 	labels := []string{"thread:" + threadID}
 
-	title := subject
-	if title == "" && body != "" {
-		title = strings.SplitN(body, "\n", 2)[0]
-		if len(title) > 80 {
-			title = title[:77] + "..."
-		}
+	b, err := p.createMessageBead(mail.DeriveSubject(subject, body), body, from, to, labels, metadata)
+	if err != nil {
+		return mail.Message{}, fmt.Errorf("beadmail send: %w", err)
 	}
+	return beadToMessage(b), nil
+}
 
-	b, err := p.createMessageBead(title, body, from, to, labels, metadata)
+// SendInThread implements [mail.ThreadedSender]: it creates a message labeled
+// with threadID (a new thread when empty) and, when replyTo is set, with the
+// message it answers, which may live in another city's store.
+func (p *Provider) SendInThread(from, to, subject, body, threadID, replyTo string) (mail.Message, error) {
+	if to == "" {
+		return mail.Message{}, fmt.Errorf("beadmail send: recipient is required")
+	}
+	from, metadata, err := p.resolveSenderRoute(from)
+	if err != nil {
+		return mail.Message{}, fmt.Errorf("beadmail send: %w", err)
+	}
+	if threadID == "" {
+		threadID = generateThreadID()
+	}
+	labels := []string{"thread:" + threadID}
+	if replyTo != "" {
+		labels = append(labels, "reply-to:"+replyTo)
+	}
+	b, err := p.createMessageBead(mail.DeriveSubject(subject, body), body, from, to, labels, metadata)
 	if err != nil {
 		return mail.Message{}, fmt.Errorf("beadmail send: %w", err)
 	}
@@ -856,7 +873,7 @@ func (p *Provider) Reply(id, from, subject, body string) (mail.Message, error) {
 	labels := []string{"thread:" + threadID, "reply-to:" + id}
 
 	b, err := p.store.Create(beads.Bead{
-		Title:       deriveReplyTitle(subject, original.Title, body),
+		Title:       mail.ReplySubject(subject, original.Title, body),
 		Description: body,
 		Type:        messageBeadType,
 		Assignee:    to, // reply goes back to sender
@@ -912,32 +929,6 @@ func isRemovedMessageBead(b beads.Bead) bool {
 	// reasons are system-aged, so neither is hidden here.
 	reason := b.Metadata["close_reason"]
 	return reason != RetentionSweepCloseReason && reason != UnreadRetentionSweepCloseReason
-}
-
-// deriveReplyTitle returns a non-empty title for a reply message. Callers
-// that go through bd create fail validation ("title is required") if the
-// reply's title is empty, so this fallback chain always returns a usable
-// string. Precedence: explicit subject → "Re: <original>" (deduped) →
-// first line of reply body → literal "(reply)".
-func deriveReplyTitle(subject, originalTitle, body string) string {
-	if subject != "" {
-		return subject
-	}
-	if originalTitle != "" {
-		trimmed := strings.TrimLeft(originalTitle, " \t")
-		if strings.HasPrefix(strings.ToLower(trimmed), "re:") {
-			return originalTitle
-		}
-		return "Re: " + originalTitle
-	}
-	snippet := strings.SplitN(body, "\n", 2)[0]
-	if len(snippet) > 80 {
-		snippet = snippet[:77] + "..."
-	}
-	if snippet != "" {
-		return snippet
-	}
-	return "(reply)"
 }
 
 // Thread returns all messages sharing a thread ID, ordered by creation time.
@@ -1672,4 +1663,7 @@ func generateThreadID() string {
 }
 
 // Compile-time interface check.
-var _ mail.Provider = (*Provider)(nil)
+var (
+	_ mail.Provider       = (*Provider)(nil)
+	_ mail.ThreadedSender = (*Provider)(nil)
+)

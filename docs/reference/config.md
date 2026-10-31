@@ -569,6 +569,16 @@ MailConfig holds mail provider settings.
 | `unread_retention_ttl` | string |  |  | UnreadRetentionTTL is how long a never-read mail bead stays open before the nudge-mail sweep closes it, for every recipient. Empty or "0" disables the unread-mail phase; it is opt-in so unread mail is never closed by default. |
 | `recipient` | []MailRecipientRetention |  |  | Recipients override archive_read_after and retention_ttl for the recipients they match. The first matching entry wins; a knob an entry leaves unset falls back to the [mail] value. See [[mail.sender]] for a message that a sender entry also matches. |
 | `sender` | []MailSenderRetention |  |  | Senders override archive_read_after and retention_ttl for the mail their senders send. The first matching entry wins. When a sender entry and a recipient entry both match a message, each knob takes the longer window of the entries that set it ("0", never, is longest); a knob neither sets falls back to the [mail] value. |
+| `peer` | []MailPeer |  |  | Peers are the other cities this city exchanges agent mail with, as agent@city. See [MailPeer]. |
+
+## MailPeer
+
+MailPeer is another city whose agents exchange mail with this city's, as agent@city.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `city` | string | **yes** |  | City is the peer's city name, the city part of an agent@city address. |
+| `token_file` | string | **yes** |  | TokenFile holds the secret the two cities share: this city sends it with mail to the peer and requires it on mail from the peer, so a caller without it cannot send as one of the peer's agents. A relative path resolves against the city directory. |
 
 ## MailRecipientRetention
 

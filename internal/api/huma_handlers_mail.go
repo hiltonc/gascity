@@ -379,7 +379,7 @@ func (s *Server) humaHandleMailGet(ctx context.Context, input *MailGetInput) (*I
 // the framework from MailSendInput's struct tags.
 func (s *Server) humaHandleMailSend(ctx context.Context, input *MailSendInput) (*IndexOutput[mail.Message], error) {
 	index := s.latestIndex()
-	if err := s.refuseUnconfiguredMailSender(ctx, input.Body.From); err != nil {
+	if err := s.authorizeMailSender(ctx, input.Body.From, input.PeerToken); err != nil {
 		return nil, err
 	}
 	resolved, resolveErr := s.resolveMailSendRecipientWithContext(ctx, input.Body.To)
@@ -401,10 +401,10 @@ func (s *Server) humaHandleMailSend(ctx context.Context, input *MailSendInput) (
 	// head. The helper guarantees the reservation is released on a send error.
 	res, err := withIndexedIdempotency(s.idem, "/v0/mail", input.IdempotencyKey, input.Body, index,
 		func() (mail.Message, error) {
-			sent, sendErr := mp.Send(input.Body.From, resolved, input.Body.Subject, input.Body.Body)
+			sent, sendErr := sendMailInThread(mp, input.Body.From, resolved, input.Body.Subject, input.Body.Body, input.Body.ThreadID, input.Body.ReplyTo)
 			telemetry.RecordMailOp(ctx, "send", sendErr)
 			if sendErr != nil {
-				return mail.Message{}, apierr.Internal.Msg(sendErr.Error())
+				return mail.Message{}, sendErr
 			}
 			sent.Rig = input.Body.Rig
 			s.recordMailEvent(events.MailSent, sent.From, sent.ID, input.Body.Rig, &sent)

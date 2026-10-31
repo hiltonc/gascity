@@ -5591,7 +5591,11 @@
             "type": "string"
           },
           "from": {
-            "description": "Sender: the operator (human, or the dashboard's wire alias DASHBOARD_OPERATOR_WIRE_ALIAS), a configured agent, a configured named session, or a live session of a configured agent. Optional in the schema, but an empty or unconfigured sender is refused (422 at body.from).",
+            "description": "Sender: the operator (human, or the dashboard's wire alias DASHBOARD_OPERATOR_WIRE_ALIAS), a configured agent, a configured named session, a live session of a configured agent, or agent@city for an agent of a [[mail.peer]] city. Optional in the schema, but an empty or unconfigured sender is refused (422 at body.from).",
+            "type": "string"
+          },
+          "reply_to": {
+            "description": "ID of the message this one answers, which may live in another city.",
             "type": "string"
           },
           "rig": {
@@ -5601,6 +5605,10 @@
           "subject": {
             "description": "Message subject.",
             "minLength": 1,
+            "type": "string"
+          },
+          "thread_id": {
+            "description": "Thread the message joins; empty starts a new thread.",
             "type": "string"
           },
           "to": {
@@ -41797,6 +41805,15 @@
             "name": "Idempotency-Key",
             "schema": {
               "description": "Idempotency key for safe retries.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Secret this city shares with the sender's city, required when from is agent@city naming another city: it must match the token_file of that city's [[mail.peer]] entry (403 otherwise).",
+            "in": "header",
+            "name": "X-GC-Mail-Peer-Token",
+            "schema": {
+              "description": "Secret this city shares with the sender's city, required when from is agent@city naming another city: it must match the token_file of that city's [[mail.peer]] entry (403 otherwise).",
               "type": "string"
             }
           }

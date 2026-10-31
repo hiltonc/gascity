@@ -1711,6 +1711,13 @@ Use --to as an alternative to the positional <to> argument.
 Use -s/--subject for the summary line and -m/--message for the body text.
 Use --all to broadcast to all live sessions (excluding sender and "human").
 
+Address an agent in another city as <agent>@<city>. The city must be a gc
+context of the same name (gc context add <city> --url ...) and a [[mail.peer]]
+entry in city.toml, whose token_file holds the secret the two cities share.
+The message is created in that city from <sender>@<this city>, a read copy
+stays here, and gc mail reply and gc mail thread work across the two. A bare
+name, or <agent>@<this city>, is an agent here.
+
 Use --dedup <key> for repeating notifications (patrol and cooldown orders
 that re-detect the same condition every run): the send is suppressed while
 a previous message with the same key is still live (un-archived) in the same
@@ -1723,6 +1730,7 @@ so on stderr, because a duplicate notification beats a dropped one.`,
 		Example: `  gc mail send mayor "Build is green"
   gc mail send mayor -s "Build is green"
   gc mail send myrig/reviewer -s "Need investigation" -m "Attach logs from the last failed run"
+  gc mail send jane@ansible -s "Deploy done" -m "v1.4 is live" --notify
   gc mail send --to mayor "Build is green"
   gc mail send human "Review needed for PR #42"
   gc mail send worker "Priority task" --notify
@@ -1826,6 +1834,7 @@ func newMailReplyCmd(stdout, stderr io.Writer) *cobra.Command {
 		Long: `Reply to a message. The reply is addressed to the original sender.
 
 Inherits the thread ID from the original message for conversation tracking.
+A message from <agent>@<city> is answered in that city (see gc mail send).
 Use --notify to request a recipient turn after replying. In a managed city,
 it can request a wake for a non-running recipient.
 Unread mail alone does not request a wake.
@@ -2102,6 +2111,14 @@ func cmdMailSendJSON(args []string, notify bool, all bool, from string, to strin
 			args = []string{args[0], subject, body}
 		}
 	}
+	if !all && len(args) > 0 && cfg != nil {
+		if addr, ok := mail.ParsePeerAddress(args[0]); ok {
+			if addr.City != loadedCityName(cfg, cityPath) {
+				return cmdMailSendPeer(mp, cfg, cityPath, sender, addr, args, notify, dedupKey, jsonOut, stdout, stderr)
+			}
+			args[0] = addr.Agent
+		}
+	}
 	if !all && len(args) > 0 && store != nil {
 		canonicalTo, err := resolveMailRecipientIdentityCached(cityPath, cfg, sessStore, args[0], idCache)
 		if err != nil {
@@ -2135,20 +2152,10 @@ func doMailSend(mp mail.Provider, rec events.Recorder, validRecipients map[strin
 // capability; providers without it fall back to a plain send (fail-open, since
 // a duplicate notification beats a silently dropped one).
 func doMailSendJSON(mp mail.Provider, rec events.Recorder, validRecipients map[string]bool, sender string, args []string, nudgeFn nudgeFunc, dedupKey string, jsonOut bool, stdout, stderr io.Writer) int {
-	if len(args) < 2 {
+	to, subject, body, ok := mailSendParts(args)
+	if !ok {
 		fmt.Fprintln(stderr, "gc mail send: usage: gc mail send <to> <body>  OR  gc mail send <to> -s <subject> [-m <body>]") //nolint:errcheck // best-effort stderr
 		return 1
-	}
-	to := args[0]
-
-	var subject, body string
-	if len(args) >= 3 {
-		// [to, subject, body] — from -s/-m flags.
-		subject = args[1]
-		body = args[2]
-	} else {
-		// [to, body] — positional arg, no subject.
-		body = strings.Join(args[1:], " ")
 	}
 
 	if validRecipients != nil && !validRecipients[to] {
@@ -2214,6 +2221,19 @@ func doMailSendJSON(mp mail.Provider, rec events.Recorder, validRecipients map[s
 		return writeCLIJSONLineOrExit(stdout, stderr, "gc mail send", mailActionResult{SchemaVersion: "1", OK: true, Command: "mail.send", Action: "send", ID: m.ID, Message: &summary, Messages: []mailMessageSummary{summary}, Count: intRef(1), Notified: notified, NotifyOpIDs: notifyOps})
 	}
 	return 0
+}
+
+// mailSendParts splits gc mail send's args: [to, subject, body] from the
+// -s/-m flags, or [to, body] positionally with no subject.
+func mailSendParts(args []string) (to, subject, body string, ok bool) {
+	switch {
+	case len(args) < 2:
+		return "", "", "", false
+	case len(args) >= 3:
+		return args[0], args[1], args[2], true
+	default:
+		return args[0], "", args[1], true
+	}
 }
 
 // doMailSendAll broadcasts a message to all live session mailboxes (excluding the
@@ -2579,6 +2599,24 @@ func cmdMailReplyJSON(args []string, subject, message string, notify bool, jsonO
 	body := message
 	if body == "" && len(args) > 1 {
 		body = strings.Join(args[1:], " ")
+	}
+
+	if original, err := mp.Get(args[0]); err == nil {
+		if from, ok := mail.ParsePeerAddress(original.From); ok {
+			if cfg == nil {
+				if cityPath, err = resolveCity(); err != nil {
+					fmt.Fprintf(stderr, "gc mail reply: replying to %s needs this city: %v\n", original.From, err) //nolint:errcheck // best-effort stderr
+					return 1
+				}
+				if cfg, err = loadCityConfig(cityPath, stderr); err != nil {
+					fmt.Fprintf(stderr, "gc mail reply: %v\n", err) //nolint:errcheck // best-effort stderr
+					return 1
+				}
+			}
+			if from.City != loadedCityName(cfg, cityPath) {
+				return cmdMailReplyPeer(mp, cfg, cityPath, sender, original, from, subject, body, notify, jsonOut, stdout, stderr)
+			}
+		}
 	}
 
 	var nf nudgeFunc

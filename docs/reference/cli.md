@@ -2719,6 +2719,7 @@ gc mail read <id> [flags]
 Reply to a message. The reply is addressed to the original sender.
 
 Inherits the thread ID from the original message for conversation tracking.
+A message from &lt;agent&gt;@&lt;city&gt; is answered in that city (see gc mail send).
 Use --notify to request a recipient turn after replying. In a managed city,
 it can request a wake for a non-running recipient.
 Unread mail alone does not request a wake.
@@ -2748,6 +2749,13 @@ Use --to as an alternative to the positional &lt;to&gt; argument.
 Use -s/--subject for the summary line and -m/--message for the body text.
 Use --all to broadcast to all live sessions (excluding sender and "human").
 
+Address an agent in another city as &lt;agent&gt;@&lt;city&gt;. The city must be a gc
+context of the same name (gc context add &lt;city&gt; --url ...) and a [[mail.peer]]
+entry in city.toml, whose token_file holds the secret the two cities share.
+The message is created in that city from &lt;sender&gt;@&lt;this city&gt;, a read copy
+stays here, and gc mail reply and gc mail thread work across the two. A bare
+name, or &lt;agent&gt;@&lt;this city&gt;, is an agent here.
+
 Use --dedup &lt;key&gt; for repeating notifications (patrol and cooldown orders
 that re-detect the same condition every run): the send is suppressed while
 a previous message with the same key is still live (un-archived) in the same
@@ -2768,6 +2776,7 @@ gc mail send [<to>] [<body>] [flags]
 gc mail send mayor "Build is green"
 gc mail send mayor -s "Build is green"
 gc mail send myrig/reviewer -s "Need investigation" -m "Attach logs from the last failed run"
+gc mail send jane@ansible -s "Deploy done" -m "v1.4 is live" --notify
 gc mail send --to mayor "Build is green"
 gc mail send human "Review needed for PR #42"
 gc mail send worker "Priority task" --notify

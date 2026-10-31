@@ -2020,6 +2020,9 @@ type MailConfig struct {
 	// window of the entries that set it ("0", never, is longest); a knob
 	// neither sets falls back to the [mail] value.
 	Senders []MailSenderRetention `toml:"sender,omitempty"`
+	// Peers are the other cities this city exchanges agent mail with, as
+	// agent@city. See [MailPeer].
+	Peers []MailPeer `toml:"peer,omitempty"`
 }
 
 // MailRecipientRetention overrides the [mail] read-mail retention knobs for

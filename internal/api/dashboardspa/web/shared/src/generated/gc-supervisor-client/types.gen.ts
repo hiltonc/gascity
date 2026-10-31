@@ -2333,9 +2333,13 @@ export type MailSendInputBody = {
      */
     body?: string;
     /**
-     * Sender: the operator (human, or the dashboard's wire alias DASHBOARD_OPERATOR_WIRE_ALIAS), a configured agent, a configured named session, or a live session of a configured agent. Optional in the schema, but an empty or unconfigured sender is refused (422 at body.from).
+     * Sender: the operator (human, or the dashboard's wire alias DASHBOARD_OPERATOR_WIRE_ALIAS), a configured agent, a configured named session, a live session of a configured agent, or agent@city for an agent of a [[mail.peer]] city. Optional in the schema, but an empty or unconfigured sender is refused (422 at body.from).
      */
     from?: string;
+    /**
+     * ID of the message this one answers, which may live in another city.
+     */
+    reply_to?: string;
     /**
      * Rig name.
      */
@@ -2344,6 +2348,10 @@ export type MailSendInputBody = {
      * Message subject.
      */
     subject: string;
+    /**
+     * Thread the message joins; empty starts a new thread.
+     */
+    thread_id?: string;
     /**
      * Recipient name.
      */
@@ -16121,6 +16129,10 @@ export type SendMailData = {
          * Idempotency key for safe retries.
          */
         'Idempotency-Key'?: string;
+        /**
+         * Secret this city shares with the sender's city, required when from is agent@city naming another city: it must match the token_file of that city's [[mail.peer]] entry (403 otherwise).
+         */
+        'X-GC-Mail-Peer-Token'?: string;
     };
     path: {
         /**
