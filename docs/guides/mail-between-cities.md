@@ -56,6 +56,13 @@ two share.
 The token proves which city a message came from, not which agent in it: any
 holder of the `ansible` token can send as any `<agent>@ansible`.
 
+The token authenticates only `<agent>@<peer>` senders. Mail sent to a city's
+API from that city's own identities (its agents, or `human`) needs no token,
+and neither does the session-message endpoint behind `--notify`. Both still
+rely on network trust: anyone who can reach the city's API can write mail or
+session messages as a local identity. Follow-up `ga-xolz` tracks
+authenticating those writes.
+
 ## Teach agents the address form
 
 Add one line to each city's `AGENTS.md` (or the prompt your agents share):

@@ -159,13 +159,14 @@ func (p *Provider) Send(from, to, subject, body string) (mail.Message, error) {
 	if to == "" {
 		return mail.Message{}, fmt.Errorf("beadmail send: recipient is required")
 	}
-	return p.sendWithExtraMetadata(from, to, subject, body, nil)
+	return p.sendWithExtraMetadata(from, to, subject, body, "", "", nil)
 }
 
-// sendWithExtraMetadata is the shared body of Send and SendDeduped: resolve
-// the sender route, derive title and thread label, merge extra metadata (the
-// dedup key), and create the message bead.
-func (p *Provider) sendWithExtraMetadata(from, to, subject, body string, extra map[string]string) (mail.Message, error) {
+// sendWithExtraMetadata is the shared body of Send, SendInThread and
+// SendDeduped: resolve the sender route, label the thread (a new one when
+// threadID is empty) and the answered message, merge extra metadata (the dedup
+// key), and create the message bead.
+func (p *Provider) sendWithExtraMetadata(from, to, subject, body, threadID, replyTo string, extra map[string]string) (mail.Message, error) {
 	from, metadata, err := p.resolveSenderRoute(from)
 	if err != nil {
 		return mail.Message{}, fmt.Errorf("beadmail send: %w", err)
@@ -178,8 +179,13 @@ func (p *Provider) sendWithExtraMetadata(from, to, subject, body string, extra m
 			metadata[k] = v
 		}
 	}
-	threadID := generateThreadID()
+	if threadID == "" {
+		threadID = generateThreadID()
+	}
 	labels := []string{"thread:" + threadID}
+	if replyTo != "" {
+		labels = append(labels, "reply-to:"+replyTo)
+	}
 
 	b, err := p.createMessageBead(mail.DeriveSubject(subject, body), body, from, to, labels, metadata)
 	if err != nil {
@@ -195,22 +201,7 @@ func (p *Provider) SendInThread(from, to, subject, body, threadID, replyTo strin
 	if to == "" {
 		return mail.Message{}, fmt.Errorf("beadmail send: recipient is required")
 	}
-	from, metadata, err := p.resolveSenderRoute(from)
-	if err != nil {
-		return mail.Message{}, fmt.Errorf("beadmail send: %w", err)
-	}
-	if threadID == "" {
-		threadID = generateThreadID()
-	}
-	labels := []string{"thread:" + threadID}
-	if replyTo != "" {
-		labels = append(labels, "reply-to:"+replyTo)
-	}
-	b, err := p.createMessageBead(mail.DeriveSubject(subject, body), body, from, to, labels, metadata)
-	if err != nil {
-		return mail.Message{}, fmt.Errorf("beadmail send: %w", err)
-	}
-	return beadToMessage(b), nil
+	return p.sendWithExtraMetadata(from, to, subject, body, threadID, replyTo, nil)
 }
 
 // SendDeduped implements the optional [mail.DedupSender] capability: it
@@ -244,7 +235,7 @@ func (p *Provider) SendDeduped(from, to, subject, body, key string) (mail.Messag
 	if suppressed {
 		return existing, true, nil
 	}
-	msg, err := p.sendWithExtraMetadata(from, to, subject, body, map[string]string{mail.DedupKeyMetadataKey: key})
+	msg, err := p.sendWithExtraMetadata(from, to, subject, body, "", "", map[string]string{mail.DedupKeyMetadataKey: key})
 	if err != nil {
 		return mail.Message{}, false, err
 	}
