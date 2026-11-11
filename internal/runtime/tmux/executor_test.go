@@ -522,8 +522,8 @@ func TestRespawnAgentMarksControllerTokenRemovedFromSessionEnv(t *testing.T) {
 	if err := ops.respawnAgent("gc-test-token-pin", "/proj", "claude", env); err != nil {
 		t.Fatalf("respawnAgent: %v", err)
 	}
-	if len(exec.calls) != 2 {
-		t.Fatalf("tmux calls = %d (%v), want 2 (set-environment then respawn-pane)", len(exec.calls), exec.calls)
+	if len(exec.calls) != 3 {
+		t.Fatalf("tmux calls = %d (%v), want 3 (credential marking, SSH login env marking, respawn-pane)", len(exec.calls), exec.calls)
 	}
 
 	setEnv := strings.Join(exec.calls[0], " ")
@@ -533,8 +533,8 @@ func TestRespawnAgentMarksControllerTokenRemovedFromSessionEnv(t *testing.T) {
 	if strings.Contains(setEnv, "-u GC_CONTROLLER_TOKEN") {
 		t.Errorf("first call = %q uses -u; that unsets the session entry and re-exposes the server's global value", setEnv)
 	}
-	if respawn := strings.Join(exec.calls[1], " "); !strings.Contains(respawn, "respawn-pane") {
-		t.Errorf("second call = %q, want respawn-pane", respawn)
+	if respawn := strings.Join(exec.calls[2], " "); !strings.Contains(respawn, "respawn-pane") {
+		t.Errorf("third call = %q, want respawn-pane", respawn)
 	}
 	// A non-empty key is a real value, not a withholding, and must not be
 	// marked for removal.
@@ -557,8 +557,8 @@ func TestRespawnAgentMarksControllerTokenRemovedFromSessionEnv(t *testing.T) {
 		if err := ops.respawnAgent("gc-test-beads-pin", "/proj", "claude", env); err != nil {
 			t.Fatalf("respawnAgent: %v", err)
 		}
-		if len(exec.calls) != 3 {
-			t.Fatalf("tmux calls = %d (%v), want two set-environment calls then respawn-pane", len(exec.calls), exec.calls)
+		if len(exec.calls) != 4 {
+			t.Fatalf("tmux calls = %d (%v), want two credential markings, SSH login env marking, then respawn-pane", len(exec.calls), exec.calls)
 		}
 		for i, key := range []string{"BEADS_DB", "BEADS_FUTURE_AUTHORITY"} {
 			setEnv := strings.Join(exec.calls[i], " ")
@@ -566,19 +566,19 @@ func TestRespawnAgentMarksControllerTokenRemovedFromSessionEnv(t *testing.T) {
 				t.Errorf("call %d = %q, want %s marked removed from the session env", i, setEnv, key)
 			}
 		}
-		if respawn := strings.Join(exec.calls[2], " "); !strings.Contains(respawn, "respawn-pane") {
-			t.Errorf("third call = %q, want respawn-pane", respawn)
+		if respawn := strings.Join(exec.calls[3], " "); !strings.Contains(respawn, "respawn-pane") {
+			t.Errorf("fourth call = %q, want respawn-pane", respawn)
 		}
 	})
 }
 
-// No withheld CREDENTIAL means no extra tmux round-trip. The nesting-detection
+// No withheld CREDENTIAL means no credential marking. The nesting-detection
 // flags every session env pins empty are deliberately included here: they are
 // not secrets, the `env -u` prefix already does what they need, and marking them
-// would put an extra tmux call on the hot path of every session in the repo for
+// would put extra tmux work on the hot path of every session in the repo for
 // no gain. Scope is a correctness property, not just a cost one — a marker
 // failure is fatal, so every key marked is a key that can fail a launch.
-func TestRespawnAgentSkipsSessionEnvMarkingWhenNoCredentialWithheld(t *testing.T) {
+func TestRespawnAgentMarksNoNestingFlagsWhenNoCredentialWithheld(t *testing.T) {
 	exec := &fakeExecutor{}
 	tm := NewTmux()
 	tm.exec = exec
@@ -594,8 +594,15 @@ func TestRespawnAgentSkipsSessionEnvMarkingWhenNoCredentialWithheld(t *testing.T
 	if err := ops.respawnAgent("gc-test-no-pins", "/proj", "claude", env); err != nil {
 		t.Fatalf("respawnAgent: %v", err)
 	}
-	if len(exec.calls) != 1 {
-		t.Fatalf("tmux calls = %d (%v), want 1 (respawn-pane only; nesting flags must not be marked)", len(exec.calls), exec.calls)
+	if len(exec.calls) != 2 {
+		t.Fatalf("tmux calls = %d (%v), want 2 (SSH login env marking, respawn-pane)", len(exec.calls), exec.calls)
+	}
+	for _, flag := range []string{"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_THREAD_ID", "CODEX_CI"} {
+		for _, call := range exec.calls {
+			if slices.Contains(call, flag) {
+				t.Errorf("call %v marks nesting flag %s; only credentials are marked", call, flag)
+			}
+		}
 	}
 }
 
