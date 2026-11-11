@@ -789,6 +789,7 @@ func (p *Provider) Attach(name string) error {
 	}
 	args = append(args, "attach-session", "-t", name)
 	cmd := exec.Command("tmux", args...)
+	cmd.Env = withoutSSHLoginEnv(os.Environ())
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

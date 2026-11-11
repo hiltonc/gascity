@@ -280,6 +280,7 @@ type realExecutor struct{}
 
 func (realExecutor) execute(args []string) (string, error) {
 	cmd := exec.Command("tmux", args...)
+	cmd.Env = withoutSSHLoginEnv(os.Environ())
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -292,6 +293,7 @@ func (realExecutor) execute(args []string) (string, error) {
 
 func (realExecutor) executeCtx(ctx context.Context, args []string) (string, error) {
 	cmd := exec.CommandContext(ctx, "tmux", args...)
+	cmd.Env = withoutSSHLoginEnv(os.Environ())
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -495,6 +497,9 @@ func (t *Tmux) NewSession(name, workDir string) error {
 	if err := t.probeServerAlive(); err != nil {
 		return err
 	}
+	if err := t.scrubServerSSHLoginEnv(); err != nil {
+		return err
+	}
 	args := []string{"new-session", "-d", "-s", name}
 	if workDir != "" {
 		args = append(args, "-c", workDir)
@@ -521,6 +526,9 @@ func (t *Tmux) NewSessionWithCommand(name, workDir, command string) error {
 		return err
 	}
 	if err := t.probeServerAlive(); err != nil {
+		return err
+	}
+	if err := t.scrubServerSSHLoginEnv(); err != nil {
 		return err
 	}
 	args := []string{"new-session", "-d", "-s", name}
@@ -675,6 +683,9 @@ func (t *Tmux) NewSessionWithCommandAndEnv(name, workDir, command string, env ma
 		return err
 	}
 	if err := t.probeServerAlive(); err != nil {
+		return err
+	}
+	if err := t.scrubServerSSHLoginEnv(); err != nil {
 		return err
 	}
 	args := []string{"new-session", "-d", "-s", name}
@@ -1654,7 +1665,7 @@ func (t *Tmux) ensureHiddenAttachedClient(target string) error {
 	}
 	cmdArgs = append(cmdArgs, "attach-session", "-t", target)
 	cmd := exec.CommandContext(ctx, "script", hiddenAttachScriptArgs(goruntime.GOOS, cmdArgs)...)
-	cmd.Env = append(cmd.Environ(), "TERM=xterm-256color")
+	cmd.Env = append(withoutSSHLoginEnv(cmd.Environ()), "TERM=xterm-256color")
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 
@@ -4023,6 +4034,9 @@ func (t *Tmux) SetMailClickBinding(_ string) error {
 // This is used for "hot reload" of agent sessions - instantly restart in place.
 // The pane parameter should be a pane ID (e.g., "%0") or session:window.pane format.
 func (t *Tmux) RespawnPane(pane, command string) error {
+	if err := t.withholdSSHLoginEnvFromRespawn(pane); err != nil {
+		return err
+	}
 	_, err := t.run("respawn-pane", "-k", "-t", pane, t.wrapPaneCommand(command))
 	return err
 }
@@ -4031,6 +4045,9 @@ func (t *Tmux) RespawnPane(pane, command string) error {
 // in the specified working directory. Use this when the pane's current working
 // directory may have been deleted.
 func (t *Tmux) RespawnPaneWithWorkDir(pane, workDir, command string) error {
+	if err := t.withholdSSHLoginEnvFromRespawn(pane); err != nil {
+		return err
+	}
 	args := []string{"respawn-pane", "-k", "-t", pane}
 	if workDir != "" {
 		args = append(args, "-c", workDir)

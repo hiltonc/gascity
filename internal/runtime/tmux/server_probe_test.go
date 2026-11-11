@@ -123,8 +123,8 @@ func TestNewSessionErrNoServerObservedSafeAllowsCreation(t *testing.T) {
 			if observerCalls != 1 {
 				t.Fatalf("observer calls = %d, want 1", observerCalls)
 			}
-			if len(fe.calls) < 2 || fe.calls[1][3] != "new-session" {
-				t.Fatalf("calls = %#v, want probe followed by new-session", fe.calls)
+			if len(fe.calls) < 3 || fe.calls[2][3] != "new-session" {
+				t.Fatalf("calls = %#v, want probe, SSH login env scrub, then new-session", fe.calls)
 			}
 		})
 	}
@@ -391,8 +391,8 @@ func TestNewSessionProbesBeforeCreatingWhenSocketSet(t *testing.T) {
 	if err := tm.NewSession("gc-probe-ok", ""); err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	if len(fe.calls) < 2 {
-		t.Fatalf("expected probe + new-session, got %d calls: %v", len(fe.calls), fe.calls)
+	if len(fe.calls) < 3 {
+		t.Fatalf("expected probe + SSH login env scrub + new-session, got %d calls: %v", len(fe.calls), fe.calls)
 	}
 	probe := fe.calls[0]
 	want := []string{"-u", "-L", "gc-test", "has-session", "-t", "=" + probeSessionName}
@@ -404,9 +404,9 @@ func TestNewSessionProbesBeforeCreatingWhenSocketSet(t *testing.T) {
 			t.Errorf("probe arg %d = %q, want %q", i, probe[i], want[i])
 		}
 	}
-	create := fe.calls[1]
+	create := fe.calls[2]
 	if create[3] != "new-session" {
-		t.Fatalf("second call should be new-session, got %v", create)
+		t.Fatalf("third call should be new-session, got %v", create)
 	}
 }
 
@@ -426,11 +426,11 @@ func TestNewSessionProceedsWhenProbeReportsNoServer(t *testing.T) {
 	if err := tm.NewSession("gc-fresh", ""); err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	if len(fe.calls) < 2 {
-		t.Fatalf("expected new-session to follow probe, got %d calls: %v", len(fe.calls), fe.calls)
+	if len(fe.calls) < 3 {
+		t.Fatalf("expected new-session to follow probe and SSH login env scrub, got %d calls: %v", len(fe.calls), fe.calls)
 	}
-	if fe.calls[1][3] != "new-session" {
-		t.Fatalf("expected new-session after no-server probe, got %v", fe.calls[1])
+	if fe.calls[2][3] != "new-session" {
+		t.Fatalf("expected new-session after no-server probe, got %v", fe.calls[2])
 	}
 }
 
